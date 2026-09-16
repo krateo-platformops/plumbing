@@ -447,13 +447,33 @@ func (t *transpiler) attachUnion(out *apiextensionsv1.JSONSchemaProps, node *sch
 	}
 
 	if constraintOnly {
+		// Members are transpiled by the normal path, which stamps structure onto them — a member with
+		// no usable type falls through to openObject() and gains `type: object` +
+		// x-kubernetes-preserve-unknown-fields. Both are FORBIDDEN inside a junctor and make the
+		// apiserver reject the entire CRD, so strip everything structural before emitting
+		// (see junctor.go for the rule and the builder-publish incident it froze).
 		var v []apiextensionsv1.JSONSchemaProps
+		vacuous := false
 		for _, m := range members {
-			sub := t.transpile(m, path+"/"+kind, stack)
-			if sub != nil {
-				v = append(v, *sub)
+			sub := junctorMemberSchema(m)
+			if sub == nil {
+				continue
 			}
+			sanitizeJunctorMember(sub) // belt-and-braces: nothing structural may survive here
+			if isVacuousJunctorMember(*sub) {
+				vacuous = true
+			}
+			v = append(v, *sub)
 		}
+
+		// A member that sanitizes to {} matches everything, which makes the whole union satisfied by
+		// any value: emitting it would be a no-op wearing a constraint's clothes. Drop the union and
+		// say so, rather than shipping a validation that silently never fails.
+		if vacuous || len(v) < 2 {
+			t.warn(path, kind+" carried no expressible constraints after removing structure forbidden inside a junctor -> union dropped")
+			return false
+		}
+
 		setter(v)
 		return false
 	}

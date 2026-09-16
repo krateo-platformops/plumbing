@@ -1,0 +1,268 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema",
+  "title": "BuilderPublish",
+  "description": "One Autopilot builder publish. The frontend emits this (gated); the composition creates the destination repository, optionally seeds it from a source repository, renders one git-provider LocalResource per file (committing the held bytes verbatim to a builder/<slug> branch on any SCM), and opens the change request. PER-PUBLISH fields (name/builder/branch/target/files/source) come from the claim; git/credentials/repository/pullRequest are INSTALL-LEVEL defaults (values.yaml) \u2014 the claim never carries a secret.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "builder",
+    "branch",
+    "target"
+  ],
+  "properties": {
+    "global": {
+      "type": "object",
+      "title": "Global values",
+      "description": "Helm global values passthrough. core-provider injects `global` into every composition's values before chart-inspector validates the render, so a root schema with additionalProperties:false MUST allow it \u2014 otherwise chart-inspector 500s and the composition never renders its LocalResource (issue #126). Every composition chart ships this."
+    },
+    "name": {
+      "type": "string",
+      "description": "Publish identity; LocalResource name prefix + krateo.io/publish label."
+    },
+    "builder": {
+      "type": "string",
+      "enum": [
+        "page",
+        "blueprint",
+        "controller"
+      ],
+      "description": "Neutral krateo.io/builder discriminator."
+    },
+    "branch": {
+      "type": "string",
+      "description": "Branch to commit onto, e.g. builder/my-dashboard (created off target.base)."
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "namespace",
+        "repo"
+      ],
+      "description": "The repo to publish into, within the install's git host.",
+      "properties": {
+        "namespace": {
+          "type": "string",
+          "description": "org (GitHub) / group[/subgroup] (GitLab) / workspace (Bitbucket)."
+        },
+        "repo": {
+          "type": "string",
+          "description": "repository / project."
+        },
+        "base": {
+          "type": "string",
+          "default": "main",
+          "description": "base branch the builder branch is cut from."
+        }
+      }
+    },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The held files \u2014 each becomes one LocalResource (verbatim, at path).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "content"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Full in-repo path; the composition splits it into fileName + toRepo.path."
+          },
+          "content": {
+            "type": "string",
+            "description": "Exact file bytes \u2014 committed verbatim."
+          }
+        }
+      }
+    },
+    "git": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "INSTALL-LEVEL git connection (values.yaml default). Not part of a claim.",
+      "properties": {
+        "scheme": {
+          "type": "string",
+          "enum": [
+            "https",
+            "http"
+          ],
+          "default": "https"
+        },
+        "host": {
+          "type": "string",
+          "default": "github.com"
+        },
+        "insecure": {
+          "type": "boolean",
+          "default": false
+        },
+        "scm": {
+          "type": "string",
+          "enum": [
+            "github"
+          ],
+          "default": "github",
+          "description": "Which SCM this install targets. Selects the repository kind rendered by templates/repository.yaml; the file commits are scm-blind either way. Only \"github\" has a provider (github-provider-kog); any other value fails the render rather than skipping creation silently."
+        }
+      }
+    },
+    "credentials": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "INSTALL-LEVEL git auth (values.yaml default). Not part of a claim.",
+      "properties": {
+        "authMethod": {
+          "type": "string",
+          "enum": [
+            "bearer",
+            "basic",
+            "cookiefile"
+          ],
+          "default": "basic"
+        },
+        "secretRef": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name"
+          ],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "namespace": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string",
+              "default": "token"
+            }
+          }
+        },
+        "username": {
+          "type": "string",
+          "minLength": 1,
+          "default": "x-access-token",
+          "description": "Username for basic auth. Not a credential \u2014 GitHub authenticates on the token in the password position and ignores this value; it only has to be non-empty. Rendered into a chart-owned Secret (templates/username-secret.yaml). Ignored when usernameRef is set."
+        },
+        "usernameRef": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name"
+          ],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "namespace": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string",
+              "default": "username"
+            }
+          }
+        }
+      }
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "INSTALL-LEVEL destination-repository policy (values.yaml default). Not part of a claim.",
+      "properties": {
+        "create": {
+          "type": "boolean",
+          "default": true,
+          "description": "Create the destination repository as a CR. false = it is pre-provisioned; only the file commits render."
+        },
+        "private": {
+          "type": "boolean",
+          "default": true
+        },
+        "autoInit": {
+          "type": "boolean",
+          "default": true,
+          "description": "Must stay true: without an initial commit the repo has no default branch and the file commits have nothing to clone from."
+        },
+        "description": {
+          "type": "string",
+          "default": "Created by Krateo"
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "OPTIONAL source repository to seed the destination from, before the held files are committed. Rendered as a git-provider Repo (fromRepo -> toRepo). Omit or leave url empty for the previous behaviour: an auto-init'd repository and the held files on a branch cut from it.",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "Clone URL of the template repository, e.g. https://github.com/org/template.git. Empty = no seed."
+        },
+        "branch": {
+          "type": "string",
+          "default": "main",
+          "description": "Branch in the SOURCE to copy from."
+        },
+        "path": {
+          "type": "string",
+          "description": "Subdirectory of the source to copy; the whole repository if unset."
+        },
+        "intoBranch": {
+          "type": "string",
+          "description": "Branch in the DESTINATION to seed. Defaults to target.base \u2014 seeding the base keeps the change-request diff to the authored files alone; point this at the builder branch to put the scaffold under review too."
+        },
+        "krateoIgnorePath": {
+          "type": "string",
+          "description": "Path to a .krateoignore in the source; the provider default is used if unset."
+        }
+      }
+    },
+    "pullRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The change request, opened by the composition once every file is committed. Requires github-provider-kog >= 0.3.0 (the release that restores github.krateo.io/PullRequest natively); set create=false on older installs and open it from the portal's deep link instead.",
+      "properties": {
+        "create": {
+          "type": "boolean",
+          "default": true,
+          "description": "Open the change request as a CR. false = stop at the pushed branch, the pre-1.9 behaviour."
+        },
+        "title": {
+          "type": "string",
+          "description": "Defaults to \"feat(<builder>): <name>\"."
+        },
+        "body": {
+          "type": "string",
+          "description": "Defaults to a line naming the builder, the file count and the claim."
+        }
+      }
+    },
+    "filesBundle": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "The held files as a MAP of in-repo path to file contents \u2014 the shape a human can author in the portal, since the Form widget renders a property-less object as a JSON textarea. Equivalent to `files`; give one or the other. The composition emits the same LocalResource set, ordered by path."
+    }
+  },
+  "anyOf": [
+    {
+      "required": [
+        "files"
+      ]
+    },
+    {
+      "required": [
+        "filesBundle"
+      ]
+    }
+  ]
+}
