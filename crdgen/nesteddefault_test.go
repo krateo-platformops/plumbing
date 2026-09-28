@@ -98,8 +98,13 @@ func TestParentWithUnsatisfiableRequiredChildIsLeftAlone(t *testing.T) {
 	}
 }
 
-// A required child that DOES have a default is fine: the materialized object satisfies itself.
-func TestParentWithDefaultedRequiredChildIsMaterialized(t *testing.T) {
+// A required child that has a default is STILL not safe, and this is the case that broke production
+// (core-provider#142).
+//
+// The first version of this guard assumed the default would be filled in, so `{}` would end up
+// valid. It does not: the apiserver validates a default LITERALLY against its own schema and does
+// not apply nested defaults to it first, so `{}` fails `required` regardless.
+func TestParentWithDefaultedRequiredChildIsNotMaterialized(t *testing.T) {
 	spec := obj(map[string]apiextensionsv1.JSONSchemaProps{
 		"image": obj(map[string]apiextensionsv1.JSONSchemaProps{
 			"tag": str("latest"),
@@ -108,8 +113,42 @@ func TestParentWithDefaultedRequiredChildIsMaterialized(t *testing.T) {
 
 	materializeDefaultedParents(&spec)
 
-	if got := defaultOf(t, spec, "image"); got != "{}" {
-		t.Errorf("required child carries a default, so materializing is safe; got %q", got)
+	if got := defaultOf(t, spec, "image"); got != "" {
+		t.Errorf("an object with ANY required property cannot be defaulted to {}: the apiserver "+
+			"rejects the CRD with \"tag: Required value\" even though tag has a default; got %q", got)
+	}
+}
+
+// The exact production shape from core-provider#142: builder-publish's configurationRef, nested one
+// level under an optional parent, requiring "name".
+//
+// Kept as a named fixture rather than folded into the case above because the nesting mattered to the
+// diagnosis — the first hypothesis was that the guard only inspected top-level parents. It did not;
+// the walk was always recursive, and the depth was a red herring. The real fault was the guard's
+// premise.
+func TestBuilderPublishConfigurationRefIsNotMaterialized(t *testing.T) {
+	cfgRef := obj(map[string]apiextensionsv1.JSONSchemaProps{
+		"name":      str("x"),
+		"namespace": str(""),
+	}, "name")
+
+	spec := obj(map[string]apiextensionsv1.JSONSchemaProps{
+		"repository":  obj(map[string]apiextensionsv1.JSONSchemaProps{"configurationRef": cfgRef}),
+		"pullRequest": obj(map[string]apiextensionsv1.JSONSchemaProps{"configurationRef": cfgRef}),
+	})
+
+	materializeDefaultedParents(&spec)
+
+	for _, parent := range []string{"repository", "pullRequest"} {
+		if got := defaultOf(t, spec, parent, "configurationRef"); got != "" {
+			t.Errorf("%s.configurationRef must not be materialized — this exact shape produced "+
+				"\"default.name: Required value\" and made the whole generated CRD invalid, so the "+
+				"CompositionDefinition could not sync at all; got %q", parent, got)
+		}
+		// The parent itself must also stay bare: its only descendant default is unreachable now.
+		if got := defaultOf(t, spec, parent); got != "" {
+			t.Errorf("%s must not be materialized either; got %q", parent, got)
+		}
 	}
 }
 

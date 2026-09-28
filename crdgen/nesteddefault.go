@@ -68,37 +68,65 @@ func materializeDefaultedParents(schema *apiextensionsv1.JSONSchemaProps) {
 }
 
 // hasDefaultedDescendant reports whether anything inside this object would actually be defaulted if
-// the object came into existence. Without this check, materializing is pure noise.
+// the object came into existence — REACHABLY so. Without this check, materializing is pure noise.
+//
+// Reachability is the subtle half. A default two levels down only applies if the intermediate object
+// also comes into existence, which happens when it is required by its parent or carries a default of
+// its own. Descending blindly makes a parent look worth materializing because of a default that can
+// never be reached, which is how builder-publish's `repository` got `default: {}` for the sake of a
+// `name` default sealed behind a configurationRef we correctly refused to materialize (#142).
+//
+// The depth-first walk in materializeDefaultedParents is what makes this cheap: by the time a parent
+// is evaluated, every child object has already had its own default decided, so `prop.Default != nil`
+// is an accurate answer to "will this exist".
 func hasDefaultedDescendant(schema *apiextensionsv1.JSONSchemaProps) bool {
+	required := map[string]bool{}
+	for _, r := range schema.Required {
+		required[r] = true
+	}
+
 	for name := range schema.Properties {
 		prop := schema.Properties[name]
 		if prop.Default != nil {
 			return true
 		}
-		if prop.Type == "object" && hasDefaultedDescendant(&prop) {
+		if prop.Type != "object" {
+			continue
+		}
+		// Only descend where the child will actually exist once this object does.
+		if !required[name] {
+			continue
+		}
+		if hasDefaultedDescendant(&prop) {
 			return true
 		}
 	}
 	return false
 }
 
-// safeToMaterialize reports whether `default: {}` on this object yields a value that still passes
-// the object's own validation.
+// safeToMaterialize reports whether `default: {}` on this object is accepted by the apiserver.
 //
-// Every required property must end up present: either it carries a default of its own, or it is an
-// object we will also materialize (the depth-first walk has already stamped it). A required
-// property that would remain absent makes the synthesized `{}` invalid, so the parent must be left
-// optional-and-absent instead — which is what the author wrote, and which is valid.
+// An object with ANY required property cannot be defaulted to `{}`. The apiserver validates a
+// default value LITERALLY against its own schema and does not apply nested defaults to it first, so
+// `{}` fails `required` even when every required property carries a default of its own.
+//
+// That distinction is the whole of krateo-platformops/core-provider#142. The first version of this
+// guard reasoned that a required property with a default would be filled in, so materializing was
+// safe — and shipped. builder-publish has, under two separate parents:
+//
+//	configurationRef: {type: object, required: ["name"], properties: {name, namespace}}
+//
+// which produced `default: {}` on configurationRef and a CRD the apiserver rejected outright:
+//
+//	spec...properties[repository].properties[configurationRef].default.name: Required value
+//
+// The generated CRD failed validation, so the CompositionDefinition could not sync at all — one bad
+// parent takes down the whole definition, not just that field. Defaulting is a convenience; it must
+// never cost the CRD its validity.
+//
+// Not "fixed" by synthesizing `{"name": <default>}` instead. That invents a value the author never
+// wrote into a field they marked required, which is precisely the field where guessing is least
+// welcome.
 func safeToMaterialize(schema *apiextensionsv1.JSONSchemaProps) bool {
-	for _, name := range schema.Required {
-		prop, ok := schema.Properties[name]
-		if !ok {
-			// Required but undeclared: we cannot reason about it, so do not risk it.
-			return false
-		}
-		if prop.Default == nil {
-			return false
-		}
-	}
-	return true
+	return len(schema.Required) == 0
 }
