@@ -57,6 +57,11 @@ func generateDirect(opts Options) ([]byte, error) {
 	if specProps == nil {
 		specProps = openObject()
 	}
+	// Give optional parents a `default: {}` when something beneath them is defaulted, so the
+	// apiserver materializes the parent and the nested defaults actually apply. Runs on spec only:
+	// status is written by controllers, not submitted by users, so there is no omitted-parent
+	// problem to solve there.
+	materializeDefaultedParents(specProps)
 
 	var statusProps *apiextensionsv1.JSONSchemaProps
 	if len(opts.StatusSchema) > 0 {
