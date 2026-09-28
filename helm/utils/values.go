@@ -18,6 +18,14 @@ type pluralizer interface {
 	GVKtoGVR(gvk schema.GroupVersionKind) (schema.GroupVersionResource, error)
 }
 
+// ValuesFromSpec returns an object's .spec as Helm values.
+//
+// A MISSING spec is "no values", exactly like `spec: {}` (#42). An object of a Kind whose schema
+// declares no properties — a composition of a parameter-less blueprint — has no spec at all: the
+// apiserver keeps an empty spec out of the object, and clients prune empty objects before they
+// send it. Treating that as an error failed every reconcile of such a composition (chart-inspector
+// answered 500, so the chart never rendered). The result is a non-nil map, because callers write
+// into it (InjectGlobalValues). A spec that exists but is not a map is still an error.
 func ValuesFromSpec(un *unstructured.Unstructured) (Values, error) {
 	if un == nil {
 		return nil, nil
@@ -25,10 +33,10 @@ func ValuesFromSpec(un *unstructured.Unstructured) (Values, error) {
 
 	spec, ok, err := maps.NestedMap(un.UnstructuredContent(), "spec")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("spec field is not an object: %w", err)
 	}
 	if !ok {
-		return nil, fmt.Errorf("spec field not found in unstructured object")
+		return Values{}, nil
 	}
 
 	return spec, nil

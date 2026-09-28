@@ -46,9 +46,19 @@ func TestValuesFromSpec(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "Error - missing spec field",
+			// A composition of a blueprint with no values has no spec at all (#42): no values,
+			// not an error — and a map a caller can write into.
+			name: "Missing spec means no values",
 			input: &unstructured.Unstructured{
-				Object: map[string]any{"kind": "Pod"},
+				Object: map[string]any{"kind": "E2eBp0928b"},
+			},
+			want:    Values{},
+			wantErr: false,
+		},
+		{
+			name: "Error - spec is not an object",
+			input: &unstructured.Unstructured{
+				Object: map[string]any{"spec": "not-a-map"},
 			},
 			want:    nil,
 			wantErr: true,
@@ -63,6 +73,9 @@ func TestValuesFromSpec(t *testing.T) {
 			} else {
 				assert.NoError(t, err)
 				assert.Equal(t, tt.want, got)
+				if tt.input != nil {
+					assert.NotNil(t, got, "a caller writes into the values; a nil map would panic")
+				}
 			}
 		})
 	}
