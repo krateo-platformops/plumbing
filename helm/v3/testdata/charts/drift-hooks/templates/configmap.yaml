@@ -9,6 +9,12 @@ metadata:
     # a DIFFERENT value each cycle and asserts the reconcile treats a traceparent-only
     # difference as a no-op (Reconcile step 4.5 copies the live value onto the target).
     krateo.io/traceparent: {{ .Values.traceparent | default "" | quote }}
+    # The companion stamp, written by the SAME post-renderer pass whenever the trace
+    # carries vendor state. Just as volatile, and step 4.5 originally neutralized only
+    # traceparent — so a tracestate-only change forced a revision and hooks every cycle.
+    # Rendered separately from traceparent so the test can vary ONE of them at a time and
+    # tell which key the neutralization actually covers.
+    krateo.io/tracestate: {{ .Values.tracestate | default "" | quote }}
 data:
   # Declared, mutable field. The field-drift test mutates this out-of-band and
   # asserts the reconcile patches it back to {{ .Values.color }}.

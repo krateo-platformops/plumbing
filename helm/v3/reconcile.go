@@ -26,6 +26,25 @@ import (
 // 4.5 in Reconcile) or it would defeat the apply-if-changed no-churn guarantee.
 const traceparentAnnotation = "krateo.io/traceparent"
 
+// tracestateAnnotation is the companion W3C annotation, written by the SAME post-renderer pass
+// whenever the trace context carries vendor state (helm/utils/postrenderer.go stamps it alongside
+// traceparent when Tracestate is non-empty). It is per-trace and therefore just as volatile, so it
+// must be neutralized identically. Step 4.5 originally copied traceparent alone, which left the
+// whole no-churn guarantee resting on tracestate happening to be empty.
+//
+// It IS empty under a bare OTel SDK, so the gap was latent rather than live; a vendor propagator or
+// any sampling state in tracestate makes it real. Note the cdc's digest path already treats both as
+// volatile and names them both (processor.stripTraceContext), and this is the third comparison path
+// over the same objects — a sibling path not inheriting the rule is exactly what caused the
+// revision-4463 churn incident.
+const tracestateAnnotation = "krateo.io/tracestate"
+
+// volatileTraceAnnotations is the closed set of per-reconcile trace-context annotations neutralized
+// in step 4.5. Deliberately an explicit list and NOT a krateo.io/trace* prefix match: a prefix would
+// silently absorb any future annotation in that namespace that IS declared desired state, and a
+// neutralized field never heals on drift — so membership has to be opted into rather than inferred.
+var volatileTraceAnnotations = []string{traceparentAnnotation, tracestateAnnotation}
+
 // Reconcile performs a fork-free, self-healing "apply-if-changed" reconcile of
 // a helm release using ONLY helm's exported Go API.
 //
@@ -134,10 +153,10 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 	}
 
 	// 4. GET each target object's live state (for the change-detection diff in step 5) and
-	//    capture its current krateo.io/traceparent (for the copy in step 4.5).
+	//    capture its current trace-context annotations (for the copy in step 4.5).
 	//    Missing (IsNotFound) => absent, will be created by the merge.
 	absent := make(map[string]bool, len(target))
-	liveTraceparent := make(map[string]string, len(target))
+	liveTrace := make(map[string]map[string]string, len(target))
 	liveObj := make(map[string]runtime.Object, len(target))
 	for _, info := range target {
 		key := infoKey(info)
@@ -150,30 +169,42 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 			continue
 		}
 		liveObj[key] = live
-		if tp := annotationOf(live, traceparentAnnotation); tp != "" {
-			liveTraceparent[key] = tp
+		for _, ann := range volatileTraceAnnotations {
+			v := annotationOf(live, ann)
+			if v == "" {
+				continue
+			}
+			if liveTrace[key] == nil {
+				liveTrace[key] = make(map[string]string, len(volatileTraceAnnotations))
+			}
+			liveTrace[key][ann] = v
 		}
 	}
 
-	// 4.5. Neutralize the volatile traceparent stamp. The helm post-renderer stamps a
-	// FRESH krateo.io/traceparent on every *.krateo.io child on each render (trace-context
-	// propagation). That value changes every reconcile, so without this the three-way merge
-	// below would patch it every cycle — an RV bump that reads as a real "change" (step 6),
-	// forcing a helm revision + hooks even though nothing else moved (the exact per-minute
-	// revision churn this reconcile exists to kill; observed on krateo.io-child compositions
-	// like snowplow's authn ServiceAccount and the installer umbrella). We copy the LIVE
-	// child's existing traceparent onto the rendered target so the annotation contributes no
-	// diff: when traceparent is the ONLY difference the merge patch is empty and helm skips the
-	// write entirely (RV stable -> changed=false -> no revision, no hooks). Genuine drift in
-	// every OTHER field still heals. A real change re-stamps a fresh traceparent through the
+	// 4.5. Neutralize the volatile trace-context stamps. The helm post-renderer stamps a FRESH
+	// krateo.io/traceparent — and krateo.io/tracestate when the trace carries vendor state — on
+	// every *.krateo.io child on each render (trace-context propagation). Those values change every
+	// reconcile, so without this the three-way merge below would patch them every cycle — an RV
+	// bump that reads as a real "change" (step 6), forcing a helm revision + hooks even though
+	// nothing else moved (the exact per-minute revision churn this reconcile exists to kill;
+	// observed on krateo.io-child compositions like snowplow's authn ServiceAccount and the
+	// installer umbrella). We copy the LIVE child's existing values onto the rendered target so the
+	// annotations contribute no diff: when they are the ONLY difference the merge patch is empty and
+	// helm skips the write entirely (RV stable -> changed=false -> no revision, no hooks). Genuine
+	// drift in every OTHER field still heals. A real change re-stamps fresh values through the
 	// actual Upgrade in step 7. Freshly-created children (no live value) keep the target stamp.
+	//
+	// Per annotation rather than all-or-nothing, so a child that carries traceparent but not yet
+	// tracestate still has its traceparent neutralized. Each key it lacks costs one revision the
+	// first time that key is written, then stays stable — the same one-shot as the very first
+	// traceparent, not recurring churn.
 	for _, info := range target {
 		key := infoKey(info)
 		if absent[key] {
 			continue
 		}
-		if tp, ok := liveTraceparent[key]; ok {
-			setAnnotation(info.Object, traceparentAnnotation, tp)
+		for ann, v := range liveTrace[key] {
+			setAnnotation(info.Object, ann, v)
 		}
 	}
 
