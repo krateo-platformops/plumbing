@@ -57,6 +57,13 @@ func liveTraceparent(t *testing.T, cs *kubernetes.Clientset, ns, name string) st
 	return cm.Annotations["krateo.io/traceparent"]
 }
 
+func liveTracestate(t *testing.T, cs *kubernetes.Clientset, ns, name string) string {
+	t.Helper()
+	cm, err := cs.CoreV1().ConfigMaps(ns).Get(context.Background(), name, metav1.GetOptions{})
+	require.NoError(t, err)
+	return cm.Annotations["krateo.io/tracestate"]
+}
+
 func liveSecretVal(t *testing.T, cs *kubernetes.Clientset, ns, name, key string) string {
 	t.Helper()
 	s, err := cs.CoreV1().Secrets(ns).Get(context.Background(), name, metav1.GetOptions{})
@@ -108,7 +115,9 @@ func TestControllerReconcile(t *testing.T) {
 			rel, err := cli.Install(ctx, releaseName, chartURL, &helmconfig.InstallConfig{ActionConfig: upCfg().ActionConfig})
 			require.NoError(t, err)
 			require.Equal(t, 1, rel.Revision)
-			t.Cleanup(func() { _ = cli.Uninstall(context.Background(), releaseName, &helmconfig.UninstallConfig{IgnoreNotFound: true}) })
+			t.Cleanup(func() {
+				_ = cli.Uninstall(context.Background(), releaseName, &helmconfig.UninstallConfig{IgnoreNotFound: true})
+			})
 
 			require.Equal(t, "blue", liveColor(t, cs, namespace, cmName))
 			revAfterInstall := helmRevisionCount(t, cs, namespace, releaseName)
@@ -210,13 +219,17 @@ func TestControllerReconcile(t *testing.T) {
 			// cycle (revision++). The chart's ConfigMap now carries
 			// krateo.io/traceparent={{ .Values.traceparent }} to simulate that stamp.
 			// =========================================================
-			cfgTP := func(color, tp string) *helmconfig.UpgradeConfig {
+			cfgTrace := func(color, tp, ts string) *helmconfig.UpgradeConfig {
 				return &helmconfig.UpgradeConfig{
 					ActionConfig: &helmconfig.ActionConfig{
 						TakeOwnership: true,
-						Values:        map[string]interface{}{"color": color, "traceparent": tp},
+						Values:        map[string]interface{}{"color": color, "traceparent": tp, "tracestate": ts},
 					},
 				}
+			}
+			// Holds tracestate fixed so this block varies traceparent ALONE.
+			cfgTP := func(color, tp string) *helmconfig.UpgradeConfig {
+				return cfgTrace(color, tp, "vendor=fixed")
 			}
 
 			// Establish a baseline traceparent (real change: "" -> TP-A).
@@ -252,6 +265,61 @@ func TestControllerReconcile(t *testing.T) {
 			assert.Equal(t, "yellow", liveColor(t, cs, namespace, cmName))
 			assert.Equal(t, "TP-REAL", liveTraceparent(t, cs, namespace, cmName), "a real upgrade re-stamps the fresh traceparent")
 			assert.Equal(t, revAfterTP+1, helmRevisionCount(t, cs, namespace, releaseName), "the real change bumps the revision exactly once")
+
+			// =========================================================
+			// (e2) TRACESTATE NO-CHURN — the same guarantee for the companion stamp.
+			// Step 4.5 originally copied krateo.io/traceparent alone, so the whole
+			// no-churn property rested on tracestate happening to be empty (it is,
+			// under a bare OTel SDK). A vendor propagator or any sampling state makes
+			// it non-empty and every cycle writes a revision and re-runs hooks.
+			//
+			// This block holds traceparent FIXED and varies tracestate alone, which is
+			// what makes it a test of the tracestate path rather than a repeat of (e):
+			// with only the traceparent copy in place, these reconciles are changes.
+			// =========================================================
+			cfgTS := func(ts string) *helmconfig.UpgradeConfig {
+				return cfgTrace("yellow", "TP-REAL", ts)
+			}
+
+			// The baseline is INHERITED, not established here: every reconcile in block (e) rendered
+			// tracestate as "vendor=fixed" to hold it constant while traceparent varied, so the live
+			// ConfigMap already carries that value. An earlier version of this block asserted that
+			// the first tracestate render was a real change, which failed — correctly — because step
+			// 4.5 neutralized it against the inherited live value. The code was right and the
+			// assertion was wrong.
+			baselineTS := liveTracestate(t, cs, namespace, cmName)
+			require.Equal(t, "vendor=fixed", baselineTS, "block (e) should have left tracestate at its fixed value")
+			revBaseTS := helmRevisionCount(t, cs, namespace, releaseName)
+			hooksBaseTS := hookFireCount(t, cs, namespace)
+
+			for i, ts := range []string{"TS-B", "TS-C", "TS-D", "TS-E", "TS-F"} {
+				r, err := cli.Reconcile(ctx, releaseName, chartURL, cfgTS(ts))
+				require.NoError(t, err)
+				assert.False(t, r.Changed, "tracestate-only reconcile #%d (render=%s) must be a no-op", i, ts)
+			}
+			revAfterTS := helmRevisionCount(t, cs, namespace, releaseName)
+			hooksAfterTS := hookFireCount(t, cs, namespace)
+			liveTS := liveTracestate(t, cs, namespace, cmName)
+			t.Logf("[tracestate] after 5 differing-tracestate reconciles: revisions %d->%d hookFires %d->%d liveTracestate=%q",
+				revBaseTS, revAfterTS, hooksBaseTS, hooksAfterTS, liveTS)
+			assert.Equal(t, revBaseTS, revAfterTS, "tracestate-only churn must NOT add helm revisions")
+			assert.Equal(t, hooksBaseTS, hooksAfterTS, "tracestate-only churn must NOT fire hooks")
+			assert.Equal(t, baselineTS, liveTS, "live tracestate must stay at baseline (never patched by the volatile render)")
+
+			// Both stamps changing at once, still with no declared change: the two
+			// neutralizations must compose rather than one masking the other.
+			resBoth, err := cli.Reconcile(ctx, releaseName, chartURL, cfgTrace("yellow", "TP-BOTH", "TS-BOTH"))
+			require.NoError(t, err)
+			assert.False(t, resBoth.Changed, "traceparent AND tracestate both changing is still a no-op")
+			assert.Equal(t, revAfterTS, helmRevisionCount(t, cs, namespace, releaseName), "neither stamp adds a revision")
+
+			// Contrast, so the block cannot pass by neutralizing everything: a real
+			// data change alongside both fresh stamps must still go through.
+			resReal, err := cli.Reconcile(ctx, releaseName, chartURL, cfgTrace("teal", "TP-BOTH", "TS-BOTH"))
+			require.NoError(t, err)
+			assert.True(t, resReal.Changed, "a real data change must still be detected amid both stamps changing")
+			assert.Equal(t, "teal", liveColor(t, cs, namespace, cmName))
+			assert.Equal(t, "TS-BOTH", liveTracestate(t, cs, namespace, cmName), "a real upgrade re-stamps the fresh tracestate")
 
 			// =========================================================
 			// (f) STRINGDATA NO-CHURN — a Secret authored via stringData must not

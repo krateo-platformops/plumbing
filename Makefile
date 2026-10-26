@@ -32,6 +32,62 @@ test-envtest: setup-envtest ## Run the envtest (real-apiserver) functional cache
 	KUBEBUILDER_ASSETS="$$($(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
 		go test -tags envtest ./... -count=1
 
+.PHONY: test-integration
+test-integration: ## Run the integration tests (real kind cluster) — helm reconcile no-churn + self-heal.
+	# The ONLY tests that exercise Reconcile end to end against a real apiserver, and therefore the
+	# only place the apply-if-changed no-churn guarantees are actually proven: the
+	# traceparent/tracestate neutralizations (step 4.5), the Secret stringData fold (4.6), adoption
+	# of live children missing from the stored manifest (4.7), and the before/after semantic diff
+	# that decides whether a revision is written at all (step 6).
+	#
+	# They sat behind `-tags integration` with no make target and no CI job, so none of it was
+	# protected: an edit deleting step 4.5 as redundant would leave CI green and resume per-minute
+	# revision churn in production (plumbing#51, finding 1). Step 4.5 is exactly the kind of code
+	# that looks redundant to a reader who has not traced why it exists.
+	#
+	# The suite provisions its own kind cluster through e2e-framework — findOrInstallKind installs
+	# the kind binary if absent — so this needs Docker and nothing else. It does NOT tear the
+	# cluster down (see TestMain), which is deliberate for local debugging and harmless on an
+	# ephemeral CI runner, but a local run leaves a `helm-test` cluster behind.
+	#
+	# -p 1 is REQUIRED, not tuning. The two integration packages each create their OWN kind cluster
+	# — helm/v3 makes "helm-test", endpoints makes "krateo" — and `go test` runs package binaries in
+	# PARALLEL by default, so both clusters get built at once. On an 8-CPU/16GB machine that is
+	# enough to fail cluster creation outright: measured, a full `./...` run failed in endpoints
+	# while endpoints run alone passed in 229s.
+	#
+	# (An earlier version of this comment said the two packages SHARE one cluster and interfere.
+	# They do not — separate clusters, separate names. The fix is the same; the reason is not, and
+	# the wrong reason would send the next reader looking for cross-test contamination that cannot
+	# happen.)
+	#
+	# Neither package destroys its cluster at teardown, so both are resident for the rest of the
+	# run and on the machine afterwards. That is two clusters' worth of CPU and memory, which is
+	# the real resource floor for this target — see test-integration-clean when a machine is
+	# already carrying clusters from other work.
+	#
+	# -skip is a TEMPORARY exclusion, not a design choice. TestFullStackAppRedisUpgrade fails on a
+	# CLEAN tree at main — verified by stashing every local change and running it alone — so the
+	# suite cannot go green until that is fixed, and a permanently-red job trains everyone to ignore
+	# it, which is the opposite of what #51 finding 1 is for. Tracked as #52, where removing this
+	# -skip is the stated acceptance criterion — because leaving it is how an exclusion stops
+	# looking like a stopgap and starts looking like a design choice.
+	go test -tags integration ./... -count=1 -p 1 -timeout 45m \
+		-skip 'TestFullStackAppRedisUpgrade'
+
+.PHONY: test-integration-clean
+test-integration-clean: ## test-integration, but delete the suites' kind clusters first (slower, resource-safe).
+	# The suites deliberately leave their clusters running so a failed run can be inspected and the
+	# next run starts faster. On a machine already carrying clusters from other work that becomes
+	# the failure mode instead: cluster creation fails and the suite reports a setup error rather
+	# than a test result. Measured on a machine holding five clusters on 8 CPUs.
+	#
+	# This target trades the warm-start saving for a guaranteed-clean slate. Prefer plain
+	# test-integration; reach for this one when you see `failed to create cluster`.
+	-kind delete cluster --name helm-test
+	-kind delete cluster --name krateo
+	$(MAKE) test-integration
+
 .PHONY: help
 help: ## Show this help.
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \

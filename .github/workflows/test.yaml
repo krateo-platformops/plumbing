@@ -31,6 +31,45 @@ jobs:
       - name: Functional cache-staleness tests (envtest)
         run: make test-envtest
 
+  integration:
+    # The `integration` suite is the only end-to-end proof of the apply-if-changed no-churn
+    # guarantees: the traceparent/tracestate neutralizations in Reconcile step 4.5, the Secret
+    # stringData fold (4.6), adoption of live children missing from the stored manifest (4.7), and
+    # the before/after semantic diff that gates whether a helm revision is written at all (step 6).
+    #
+    # Until now it had no runner. The tests existed, asserted the right things, and could not fail
+    # a pull request — so the guarantee they describe was a claim rather than a gate, and an edit
+    # deleting step 4.5 as redundant would have gone green while resuming the per-minute revision
+    # churn the reconcile exists to kill. A suite nothing runs is not a safety net (#51, finding 1).
+    #
+    # A separate job rather than another step in `test`, so a kind-provisioning failure is
+    # distinguishable at a glance from a unit or envtest failure and the fast suite still reports
+    # in under a minute.
+    name: integration (real cluster)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # No kind setup action here: each integration package creates and names its OWN cluster
+      # through e2e-framework (envfuncs.CreateCluster + kind.NewProvider) — helm/v3 makes
+      # "helm-test", endpoints makes "krateo" — and findOrInstallKind fetches the kind binary when
+      # it is absent. Provisioning one here would add a third, unused cluster.
+      #
+      # Two clusters is the resource floor: neither package destroys its own at teardown, so both
+      # are resident for the rest of the job. `make test-integration` passes -p 1 so they are built
+      # one at a time rather than concurrently, which is what makes that fit at all — building both
+      # at once failed outright on an 8-CPU machine. If this job ever fails with `failed to create
+      # cluster`, it is capacity, not code, and the fix is a larger runner rather than a retry.
+      - name: Integration tests (kind)
+        run: make test-integration
+
   lint-docs:
     name: lint-docs
     uses: krateo-platformops/.github/.github/workflows/lint-docs.yaml@main

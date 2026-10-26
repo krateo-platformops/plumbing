@@ -45,7 +45,24 @@ const duplicateResourcesChartDir = "testdata/charts/duplicate-resources"
 func TestMain(m *testing.M) {
 	xenv.SetTestMode(true)
 
-	namespace = "helm-test-system"
+	// A FRESH namespace per run, because the Finish hooks below are deliberately disabled so a
+	// failed run leaves its objects available for post-mortem inspection. With a fixed name that
+	// made the suite runnable exactly ONCE: the second invocation died in setup with
+	// `namespaces "helm-test-system" already exists` and reported FAIL in ~14s with no failing
+	// test names, which reads like a broken build rather than a dirty cluster. Nobody hit it
+	// while nothing ran this suite (#51, finding 1).
+	//
+	// Deleting the leftover namespace at setup was the obvious fix and it does not work: measured
+	// here, a used namespace sat in Terminating for 30+ minutes with every condition reporting
+	// success ("All content successfully removed", "All content-preserving finalizers finished")
+	// and never completed. Waiting on it just moves the failure to a timeout, and the timeout has
+	// no correct value — it depends on the previous run's debris.
+	//
+	// A unique name needs no cleanup, no waiting and no timeout, and it isolates runs from each
+	// other's releases as a side effect: revision counts and hook-fire counts start from zero
+	// rather than from whatever the last run left. Old namespaces accumulate in a reused local
+	// cluster, which is harmless and visible; CI runners are ephemeral.
+	namespace = fmt.Sprintf("helm-test-system-%d", time.Now().UnixNano()%1e9)
 	clusterName = "helm-test"
 	testenv = env.New()
 
