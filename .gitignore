@@ -35,3 +35,7 @@ experiments/**
 
 # make test-envtest installs setup-envtest here
 /bin/
+
+# Written by the helm/v3 integration suite (LogWriter in TestFullStackAppRedisUpgrade).
+# A multi-MB run artifact, not source.
+helm/v3/helm-upgrade.log
