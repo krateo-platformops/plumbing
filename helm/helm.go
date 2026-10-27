@@ -148,6 +148,14 @@ type ActionConfig struct {
 
 type GetConfig struct {
 	Version int
+	// Namespace overrides the client's namespace for this lookup. Empty means the client's own.
+	//
+	// A release is identified by name AND namespace, so without this a caller could only ask
+	// about releases in the namespace the client was built for — and callers that install into
+	// several namespaces (operators, test harnesses standing up prerequisites) had no way to ask
+	// "does this release already exist?" at all. Mirrors InstallConfig.Namespace and
+	// UpgradeConfig's handling, so the same override means the same thing on every verb.
+	Namespace string
 }
 
 type ListConfig struct {

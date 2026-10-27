@@ -4,6 +4,16 @@
 SHELL := /usr/bin/env bash
 
 LOCALBIN ?= $(CURDIR)/bin
+
+# The integration suites run `kind create cluster`, which WRITES TO THE DEFAULT KUBECONFIG and
+# switches its current-context. On a shared machine that silently repoints every bare kubectl and
+# helm command — including other people's, and including ones aimed at a production cluster.
+#
+# Pointing KUBECONFIG at a scratch file for these targets keeps them out of ~/.kube/config
+# entirely: nothing to restore afterwards and no window in which the default means something
+# unexpected. The suites themselves are unaffected, because e2e-framework builds each test client
+# from `kind get kubeconfig` written to its own temp file rather than from the default.
+INTEGRATION_KUBECONFIG ?= $(LOCALBIN)/integration.kubeconfig
 SETUP_ENVTEST ?= $(LOCALBIN)/setup-envtest
 # Kubebuilder envtest control-plane (kube-apiserver + etcd) version used by the `-tags envtest` tests.
 ENVTEST_K8S_VERSION ?= 1.36.0
@@ -66,7 +76,8 @@ test-integration: ## Run the integration tests (real kind cluster) — helm reco
 	# the real resource floor for this target — see test-integration-clean when a machine is
 	# already carrying clusters from other work.
 	#
-	go test -tags integration ./... -count=1 -p 1 -timeout 45m
+	@mkdir -p $(LOCALBIN)
+	KUBECONFIG=$(INTEGRATION_KUBECONFIG) go test -tags integration ./... -count=1 -p 1 -timeout 45m
 
 .PHONY: test-integration-clean
 test-integration-clean: ## test-integration, but delete the suites' kind clusters first (slower, resource-safe).
@@ -77,8 +88,9 @@ test-integration-clean: ## test-integration, but delete the suites' kind cluster
 	#
 	# This target trades the warm-start saving for a guaranteed-clean slate. Prefer plain
 	# test-integration; reach for this one when you see `failed to create cluster`.
-	-kind delete cluster --name helm-test
-	-kind delete cluster --name krateo
+	@mkdir -p $(LOCALBIN)
+	-KUBECONFIG=$(INTEGRATION_KUBECONFIG) kind delete cluster --name helm-test
+	-KUBECONFIG=$(INTEGRATION_KUBECONFIG) kind delete cluster --name krateo
 	$(MAKE) test-integration
 
 .PHONY: help

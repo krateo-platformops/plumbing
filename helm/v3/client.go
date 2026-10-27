@@ -364,7 +364,12 @@ func (c *client) newActionConfig(ctx context.Context, namespace string, restCfg 
 }
 
 func (c *client) GetRelease(ctx context.Context, releaseName string, cfg *helmconfig.GetConfig) (*helmconfig.Release, error) {
-	actionConfig, err := c.newActionConfig(ctx, c.namespace, c.restConfig, nil)
+	namespace := c.namespace
+	if cfg != nil && cfg.Namespace != "" {
+		namespace = cfg.Namespace
+	}
+
+	actionConfig, err := c.newActionConfig(ctx, namespace, c.restConfig, nil)
 	if err != nil {
 		return nil, err
 	}
