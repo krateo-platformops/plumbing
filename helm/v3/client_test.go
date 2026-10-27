@@ -23,8 +23,10 @@ import (
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/chartutil"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/kubernetes"
 
 	"sigs.k8s.io/e2e-framework/pkg/env"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
@@ -642,31 +644,111 @@ func TestInstallAndUninstall_TGZ(t *testing.T) {
 	testenv.Test(t, f)
 }
 
-// requireInstalled accepts an already-present prerequisite release instead of failing.
+// prereqReady is what "ready" MEANS for one prerequisite. Different prerequisites are installed
+// for different reasons, so a single definition of ready is wrong for at least one of them:
+// snowplow is installed purely for the CRDs it registers and its Deployment can never become
+// ready, while cnpg is useless until its admission webhook answers. Making each call site say
+// what it is waiting for keeps that visible instead of encoding it in a shared default.
+type prereqReady func(t *testing.T, c *envconf.Config, ctx context.Context, release string)
+
+// ensurePrerequisite installs a dependency release unless it is already present, then blocks
+// until `ready` says it is usable — on BOTH paths.
 //
-// The four operator/dependency installs below use fixed release names — redis-operator in
-// ot-operators, the other three in the client's default namespace — and nothing uninstalls them — so the second run of this test on a
-// reused cluster died in setup with "cannot re-use a name that is still in use", before reaching
-// anything it is meant to prove. Same shape as the leftover-namespace defect fixed in TestMain:
-// state the suite leaves behind makes it runnable exactly once.
+// Existing is not the same as usable, and the difference is not theoretical: a run reused a
+// `deployed` cnpg release whose operator pod was not up, and the subject install died on
+// `failed calling webhook "mcluster.cnpg.io": dial tcp ...:443: connect: connection refused`.
+// The next run passed because the operator had come up by then — the suite was timing-dependent
+// on a condition nobody checked. helm's Wait covers a fresh install and cannot cover reuse,
+// because there is no install to wait on; `ready` covers both.
 //
-// These are prerequisites, not the subject. An existing healthy release satisfies the requirement
-// as well as a fresh one does, so reuse is correct here rather than merely convenient — unlike the
-// release under test, which lands in the per-run namespace and cannot collide.
-//
-// Matched on the message because helm's "already exists" condition does not reach this wrapper as
-// a typed error; GetConfig carries no namespace, so GetRelease cannot be pointed at these
-// namespaces to ask the question directly.
-func requireInstalled(t *testing.T, err error, name string) {
+// Existence is asked, not inferred: GetRelease in the release's own namespace returns (nil, nil)
+// when absent. An earlier version matched helm's error MESSAGE for "already in use", because
+// GetConfig carried no namespace and GetRelease could not be pointed at these namespaces. That
+// was a workaround for a missing parameter — it would pass silently on a reworded error, and it
+// could not tell "already installed" from any other failure mentioning those words.
+// GetConfig.Namespace now exists, so the question is asked directly.
+func ensurePrerequisite(t *testing.T, c *envconf.Config, cli helmconfig.Client, ctx context.Context, name, namespace, repo string, ready prereqReady, cfg *helmconfig.InstallConfig) {
 	t.Helper()
-	if err == nil {
-		return
+
+	existing, err := cli.GetRelease(ctx, name, &helmconfig.GetConfig{Namespace: namespace})
+	require.NoError(t, err, "checking whether prerequisite release %q already exists in %q", name, namespace)
+	if existing != nil {
+		t.Logf("prerequisite release %q already present in %q (status %s); reusing it", name, namespace, existing.Status)
+	} else {
+		_, err = cli.Install(ctx, name, repo, cfg)
+		require.NoError(t, err, "installing prerequisite release %q into %q", name, namespace)
 	}
-	if strings.Contains(err.Error(), "cannot re-use a name that is still in use") {
-		t.Logf("prerequisite release %q already present; reusing it", name)
-		return
+
+	if ready != nil {
+		ready(t, c, ctx, name)
 	}
-	require.NoError(t, err)
+}
+
+// deploymentsReady waits until every Deployment belonging to the release has a ready replica.
+//
+// Selected by helm's standard app.kubernetes.io/instance label. A release that sets no such
+// Deployments is treated as ready: the check cannot be stricter than the labels allow, and that
+// is why a prerequisite whose readiness genuinely matters should say so with a more specific
+// expectation rather than relying on this one finding something.
+func deploymentsReady(t *testing.T, c *envconf.Config, ctx context.Context, release string) {
+	t.Helper()
+	cs, err := kubernetes.NewForConfig(c.Client().RESTConfig())
+	require.NoError(t, err, "building clientset to check prerequisite %q", release)
+
+	deadline := time.Now().Add(3 * time.Minute)
+	for {
+		deps, err := cs.AppsV1().Deployments(metav1.NamespaceAll).List(ctx, metav1.ListOptions{
+			LabelSelector: "app.kubernetes.io/instance=" + release,
+		})
+		require.NoError(t, err, "listing Deployments of prerequisite %q", release)
+
+		notReady := []string{}
+		for i := range deps.Items {
+			if deps.Items[i].Status.ReadyReplicas < 1 {
+				notReady = append(notReady, deps.Items[i].Namespace+"/"+deps.Items[i].Name)
+			}
+		}
+		if len(notReady) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("prerequisite %q still not ready after 3m: Deployments with no ready replica: %v\n"+
+				"the release exists, so this is an operator that never came up — anything depending on "+
+				"its admission webhooks will fail with connection refused", release, notReady)
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
+// kindServed waits until the API server serves a kind, which is what a chart rendering that kind
+// actually needs. It tests the exact condition whose absence produces
+// `no matches for kind "X" in version "Y": ensure CRDs are installed first`.
+//
+// Used where a prerequisite is installed FOR ITS CRDs rather than for a workload — in which case
+// waiting on pods would be both wrong and, for a workload that never becomes ready, fatal.
+func kindServed(groupVersion, kind string) prereqReady {
+	return func(t *testing.T, c *envconf.Config, ctx context.Context, release string) {
+		t.Helper()
+		cs, err := kubernetes.NewForConfig(c.Client().RESTConfig())
+		require.NoError(t, err, "building clientset to check %s %s from %q", groupVersion, kind, release)
+
+		deadline := time.Now().Add(3 * time.Minute)
+		for {
+			list, err := cs.Discovery().ServerResourcesForGroupVersion(groupVersion)
+			if err == nil {
+				for _, r := range list.APIResources {
+					if r.Kind == kind {
+						return
+					}
+				}
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s %s still not served 3m after prerequisite %q; a chart rendering it will "+
+					"fail with \"no matches for kind\"", groupVersion, kind, release)
+			}
+			time.Sleep(2 * time.Second)
+		}
+	}
 }
 
 func TestFullStackAppRedisUpgrade(t *testing.T) {
@@ -695,65 +777,75 @@ func TestFullStackAppRedisUpgrade(t *testing.T) {
 
 			// 3. Install Redis Operator
 			t.Log("Installing Redis Operator")
-			_, err = cli.Install(ctx, "redis-operator", "https://ot-container-kit.github.io/helm-charts", &helmconfig.InstallConfig{
-				Namespace:       "ot-operators",
-				CreateNamespace: true,
-				ActionConfig: &helmconfig.ActionConfig{
-					ChartName: "redis-operator",
-					// Wait:      true,
-					// Timeout:   120 * time.Second,
-				},
-			})
-			requireInstalled(t, err, "redis-operator")
+			ensurePrerequisite(t, c, cli, ctx, "redis-operator", "ot-operators", "https://ot-container-kit.github.io/helm-charts",
+				// its operator must be up to reconcile the Redis CR the subject chart creates
+				deploymentsReady,
+				&helmconfig.InstallConfig{
+					Namespace:       "ot-operators",
+					CreateNamespace: true,
+					ActionConfig: &helmconfig.ActionConfig{
+						ChartName: "redis-operator",
+						Wait:      true,
+						Timeout:   120 * time.Second,
+					},
+				})
 
 			// 4. Install CNPG Operator
 			t.Log("Installing CNPG Operator")
-			_, err = cli.Install(ctx, "cnpg", "https://cloudnative-pg.github.io/charts", &helmconfig.InstallConfig{
-				ActionConfig: &helmconfig.ActionConfig{
-					ChartName:    "cloudnative-pg",
-					ChartVersion: "0.27.1",
-					Wait:         true,
-					Timeout:      15 * time.Minute,
-				},
-			})
-			requireInstalled(t, err, "cnpg")
+			ensurePrerequisite(t, c, cli, ctx, "cnpg", "", "https://cloudnative-pg.github.io/charts",
+				// its admission webhook must answer, or the subject install fails on mcluster.cnpg.io
+				deploymentsReady,
+				&helmconfig.InstallConfig{
+					ActionConfig: &helmconfig.ActionConfig{
+						ChartName:    "cloudnative-pg",
+						ChartVersion: "0.27.1",
+						Wait:         true,
+						Timeout:      15 * time.Minute,
+					},
+				})
 
 			// 5. Install PG Cluster
 			t.Log("Installing PG Cluster")
-			_, err = cli.Install(ctx, "pg-cluster", "https://cloudnative-pg.github.io/charts", &helmconfig.InstallConfig{
-				ActionConfig: &helmconfig.ActionConfig{
-					ChartName:    "cluster",
-					ChartVersion: "0.5.0",
-					// Wait:         true,
-					// Timeout:      15 * time.Minute,
-					Values: map[string]interface{}{
-						"fullnameOverride": "pg-cluster",
+			ensurePrerequisite(t, c, cli, ctx, "pg-cluster", "", "https://cloudnative-pg.github.io/charts",
+				// a data-plane Cluster CR, not an operator: nothing here connects to the database,
+				// and CNPG manages its pods directly so there is no Deployment to wait on
+				nil,
+				&helmconfig.InstallConfig{
+					ActionConfig: &helmconfig.ActionConfig{
+						ChartName:    "cluster",
+						ChartVersion: "0.5.0",
+						Wait:         true,
+						Timeout:      15 * time.Minute,
+						Values: map[string]interface{}{
+							"fullnameOverride": "pg-cluster",
+						},
 					},
-				},
-			})
-			requireInstalled(t, err, "pg-cluster")
+				})
 
-			// 6. Install Snowplow
-			t.Log("Installing Snowplow")
-			_, err = cli.Install(ctx, "snowplow", "https://charts.krateo.io", &helmconfig.InstallConfig{
-				ActionConfig: &helmconfig.ActionConfig{
-					ChartName:    "snowplow",
-					ChartVersion: "0.20.6",
-					// Wait:         true,
-					// Timeout:      15 * time.Minute,
-					Values: map[string]interface{}{
-						"image": map[string]interface{}{
-							"repository": "ghcr.io/krateoplatformops/snowplow",
-							"pullPolicy": "IfNotPresent",
-						},
-						"service": map[string]interface{}{
-							"type":     "NodePort",
-							"nodePort": 30081,
-						},
+			// 6. Snowplow — installed for its CRDs, NOT for its workload.
+			//
+			// The subject chart renders RESTAction objects (templates.krateo.io/v1), which only exist
+			// because this chart registers them. Its Deployment, by contrast, can never become ready:
+			// it mounts a `jwt-sign-key` secret the suite does not create, so the pod sits in
+			// CreateContainerConfigError indefinitely — measured at 15h old, 0 restarts, never ready,
+			// while the test passed throughout.
+			//
+			// So its readiness expectation is the CRD being served, not a pod being up. An earlier
+			// version of this change removed the prerequisite entirely on the evidence that nothing
+			// asserts on snowplow and its pod never runs. That was wrong, and only a FRESH cluster
+			// showed it: a reused one still had the CRDs from a previous run, so the render kept
+			// working. "The workload is unused" is not "the release is unused".
+			t.Log("Installing Snowplow (for templates.krateo.io CRDs)")
+			ensurePrerequisite(t, c, cli, ctx, "snowplow", "", "https://charts.krateo.io",
+				kindServed("templates.krateo.io/v1", "RESTAction"),
+				&helmconfig.InstallConfig{
+					ActionConfig: &helmconfig.ActionConfig{
+						ChartName:    "snowplow",
+						ChartVersion: "0.20.6",
+						// Deliberately NOT Wait: helm would block until the Deployment is ready, and it
+						// never is (see above). The CRD gate below is what this install is waited on.
 					},
-				},
-			})
-			requireInstalled(t, err, "snowplow")
+				})
 
 			return ctx
 		}).
@@ -793,7 +885,10 @@ func TestFullStackAppRedisUpgrade(t *testing.T) {
 									"port": 8080,
 									"service": map[string]interface{}{
 										"port": 30098,
-										"type": "NodePort",
+										// ClusterIP: see the snowplow service above — a pinned
+										// NodePort is a cluster-scoped allocation and makes the
+										// suite runnable once per cluster.
+										"type": "ClusterIP",
 									},
 								},
 								"cnpg": map[string]interface{}{
@@ -812,7 +907,10 @@ func TestFullStackAppRedisUpgrade(t *testing.T) {
 									"port": 8080,
 									"service": map[string]interface{}{
 										"port": 30099,
-										"type": "NodePort",
+										// ClusterIP: see the snowplow service above — a pinned
+										// NodePort is a cluster-scoped allocation and makes the
+										// suite runnable once per cluster.
+										"type": "ClusterIP",
 									},
 								},
 								"redis": map[string]interface{}{
@@ -914,7 +1012,10 @@ func TestFullStackAppRedisUpgrade(t *testing.T) {
 									"port": 8080,
 									"service": map[string]interface{}{
 										"port": 30098,
-										"type": "NodePort",
+										// ClusterIP: see the snowplow service above — a pinned
+										// NodePort is a cluster-scoped allocation and makes the
+										// suite runnable once per cluster.
+										"type": "ClusterIP",
 									},
 								},
 								"cnpg": map[string]interface{}{
@@ -933,7 +1034,10 @@ func TestFullStackAppRedisUpgrade(t *testing.T) {
 									"port": 8080,
 									"service": map[string]interface{}{
 										"port": 30099,
-										"type": "NodePort",
+										// ClusterIP: see the snowplow service above — a pinned
+										// NodePort is a cluster-scoped allocation and makes the
+										// suite runnable once per cluster.
+										"type": "ClusterIP",
 									},
 								},
 								"redis": map[string]interface{}{
