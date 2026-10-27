@@ -642,6 +642,33 @@ func TestInstallAndUninstall_TGZ(t *testing.T) {
 	testenv.Test(t, f)
 }
 
+// requireInstalled accepts an already-present prerequisite release instead of failing.
+//
+// The four operator/dependency installs below use fixed release names — redis-operator in
+// ot-operators, the other three in the client's default namespace — and nothing uninstalls them — so the second run of this test on a
+// reused cluster died in setup with "cannot re-use a name that is still in use", before reaching
+// anything it is meant to prove. Same shape as the leftover-namespace defect fixed in TestMain:
+// state the suite leaves behind makes it runnable exactly once.
+//
+// These are prerequisites, not the subject. An existing healthy release satisfies the requirement
+// as well as a fresh one does, so reuse is correct here rather than merely convenient — unlike the
+// release under test, which lands in the per-run namespace and cannot collide.
+//
+// Matched on the message because helm's "already exists" condition does not reach this wrapper as
+// a typed error; GetConfig carries no namespace, so GetRelease cannot be pointed at these
+// namespaces to ask the question directly.
+func requireInstalled(t *testing.T, err error, name string) {
+	t.Helper()
+	if err == nil {
+		return
+	}
+	if strings.Contains(err.Error(), "cannot re-use a name that is still in use") {
+		t.Logf("prerequisite release %q already present; reusing it", name)
+		return
+	}
+	require.NoError(t, err)
+}
+
 func TestFullStackAppRedisUpgrade(t *testing.T) {
 	os.Setenv("DEBUG", "0")
 
@@ -677,7 +704,7 @@ func TestFullStackAppRedisUpgrade(t *testing.T) {
 					// Timeout:   120 * time.Second,
 				},
 			})
-			require.NoError(t, err)
+			requireInstalled(t, err, "redis-operator")
 
 			// 4. Install CNPG Operator
 			t.Log("Installing CNPG Operator")
@@ -689,7 +716,7 @@ func TestFullStackAppRedisUpgrade(t *testing.T) {
 					Timeout:      15 * time.Minute,
 				},
 			})
-			require.NoError(t, err)
+			requireInstalled(t, err, "cnpg")
 
 			// 5. Install PG Cluster
 			t.Log("Installing PG Cluster")
@@ -704,7 +731,7 @@ func TestFullStackAppRedisUpgrade(t *testing.T) {
 					},
 				},
 			})
-			require.NoError(t, err)
+			requireInstalled(t, err, "pg-cluster")
 
 			// 6. Install Snowplow
 			t.Log("Installing Snowplow")
@@ -726,7 +753,7 @@ func TestFullStackAppRedisUpgrade(t *testing.T) {
 					},
 				},
 			})
-			require.NoError(t, err)
+			requireInstalled(t, err, "snowplow")
 
 			return ctx
 		}).
@@ -866,7 +893,16 @@ func TestFullStackAppRedisUpgrade(t *testing.T) {
 						TakeOwnership: true,
 						Verbose:       true,
 						LogWriter:     logFile,
-						DryRun:        helmconfig.DryRunServer,
+						// NOT a dry run. This upgrade must actually apply, because the assertion
+						// below is about what the upgrade DELETES — a component dropped from the
+						// render when its feature is disabled. With DryRunServer (as this carried
+						// until #52) nothing was applied, so nothing was deleted and the assertion
+						// could not pass against any version of this library.
+						//
+						// That made this the only test anyone had written for disable-on-upgrade,
+						// and it proved nothing. The behaviour matters most to the installer, which
+						// can disable five components outright and drop others by unpinning
+						// (installer#523).
 						Values: map[string]interface{}{
 							"app": map[string]interface{}{
 								"backend": map[string]interface{}{
@@ -932,11 +968,38 @@ func TestFullStackAppRedisUpgrade(t *testing.T) {
 			)
 			require.NoError(t, err)
 
-			// 3. Verify Redis CR is deleted
-			err = c.Client().Resources().Get(ctx, releaseName+"-redis", namespace, redisObj)
-			assert.Error(t, err, "Expected an error because Redis CR should be deleted")
-			if err != nil {
-				assert.True(t, kerrors.IsNotFound(err), "Error should be IsNotFound")
+			// 3. Verify the Redis CR is actually gone.
+			//
+			// POLLED, not read once. The Redis CR is operator-managed, so helm issuing the delete
+			// is not the end of it: redis-operator has to clear its finalizer before the object
+			// leaves the API. A single Get immediately after Upgrade races that and would be flaky
+			// in the direction that looks like a product bug. Upgrade is also not configured to
+			// wait, and waiting would not help — Wait covers resources helm is creating, not
+			// third-party finalization of one it removed.
+			//
+			// Fails with the object's deletionTimestamp when it has one, because "still
+			// terminating after 2m" and "never deleted at all" are different findings and the
+			// error should say which.
+			deadline := time.Now().Add(2 * time.Minute)
+			var lastErr error
+			for {
+				lastErr = c.Client().Resources().Get(ctx, releaseName+"-redis", namespace, redisObj)
+				if kerrors.IsNotFound(lastErr) {
+					break
+				}
+				if time.Now().After(deadline) {
+					ts := redisObj.GetDeletionTimestamp()
+					if lastErr == nil && ts != nil {
+						t.Fatalf("Redis CR %s/%s still present 2m after the upgrade that disabled it; deletionTimestamp=%s, finalizers=%v — helm issued the delete but finalization did not complete",
+							namespace, releaseName+"-redis", ts, redisObj.GetFinalizers())
+					}
+					if lastErr == nil {
+						t.Fatalf("Redis CR %s/%s is still present 2m after the upgrade that disabled it, with NO deletionTimestamp — the upgrade never deleted it",
+							namespace, releaseName+"-redis")
+					}
+					t.Fatalf("unexpected error reading Redis CR %s/%s: %v", namespace, releaseName+"-redis", lastErr)
+				}
+				time.Sleep(2 * time.Second)
 			}
 
 			return ctx

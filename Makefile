@@ -66,14 +66,7 @@ test-integration: ## Run the integration tests (real kind cluster) — helm reco
 	# the real resource floor for this target — see test-integration-clean when a machine is
 	# already carrying clusters from other work.
 	#
-	# -skip is a TEMPORARY exclusion, not a design choice. TestFullStackAppRedisUpgrade fails on a
-	# CLEAN tree at main — verified by stashing every local change and running it alone — so the
-	# suite cannot go green until that is fixed, and a permanently-red job trains everyone to ignore
-	# it, which is the opposite of what #51 finding 1 is for. Tracked as #52, where removing this
-	# -skip is the stated acceptance criterion — because leaving it is how an exclusion stops
-	# looking like a stopgap and starts looking like a design choice.
-	go test -tags integration ./... -count=1 -p 1 -timeout 45m \
-		-skip 'TestFullStackAppRedisUpgrade'
+	go test -tags integration ./... -count=1 -p 1 -timeout 45m
 
 .PHONY: test-integration-clean
 test-integration-clean: ## test-integration, but delete the suites' kind clusters first (slower, resource-safe).
