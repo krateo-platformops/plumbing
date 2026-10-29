@@ -130,6 +130,38 @@ func WithLogger(logger action.DebugLog) ClientOption {
 	}
 }
 
+// WithCachedClients makes this client reuse a caller-supplied discovery client and RESTMapper
+// instead of building its own.
+//
+// WHY THIS EXISTS. Without it, a client whose cachedClients is nil falls to the uncached
+// RESTClientGetter, whose ToRESTMapper builds a fresh DeferredDiscoveryRESTMapper — a full API
+// discovery of every group, version and resource in the cluster. A caller that constructs a client
+// per unit of work therefore pays that discovery per unit of work.
+//
+// Measured in krateo-core-provider#202: the composition-dynamic-controller builds two clients per
+// Observe and reconciles every 60s, so a controller managing NOTHING spent ~38s of every 60s and
+// allocated 5.19 TB over 16 hours, ~45% of it in NewDiscoveryRESTMapper. WithCRDInformer did
+// populate cachedClients, but created them per client, so the cache died with the client — and it
+// additionally starts a CRD informer goroutine, which is a cost the caller may not want.
+//
+// Build the CachedClients once per process with NewCachedClients and pass the same pointer to
+// every client. Sharing is safe: DeferredDiscoveryRESTMapper guards its delegate with a mutex, and
+// the memory-cached discovery client is likewise synchronised.
+//
+// Freshness is preserved without the informer: the client already calls
+// cachedClients.mapper.Reset() when an operation fails on a REST-mapping miss, which is the
+// targeted invalidation — it resets exactly when a lookup proves the cache stale, rather than on
+// every CRD event in the cluster.
+func WithCachedClients(cc *CachedClients) ClientOption {
+	return func(c *client) error {
+		if cc == nil {
+			return fmt.Errorf("WithCachedClients: cached clients must not be nil")
+		}
+		c.cachedClients = cc
+		return nil
+	}
+}
+
 // WithCRDInformer enables automatic discovery cache invalidation when CustomResourceDefinitions change.
 // This is useful for applications that need to handle dynamic CRD registration.
 // The informer will start watching CRDs and reset the discovery cache on Add, Update, or Delete events.
