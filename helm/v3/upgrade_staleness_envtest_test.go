@@ -155,7 +155,7 @@ func TestEnvtest_UpgradePicksUpCRDVersionRegisteredAfterWarmup(t *testing.T) {
 	if preErr == nil {
 		t.Fatal("control: Gadget resolved before its CRD existed — the cluster or the fixture is wrong")
 	}
-	if !isRESTMappingMiss(preErr) {
+	if !IsRESTMappingMiss(preErr) {
 		t.Fatalf("control: pre-registration failure should be a mapping miss, got: %v", preErr)
 	}
 

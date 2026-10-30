@@ -8,8 +8,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	discoveryfake "k8s.io/client-go/discovery/fake"
 	memory "k8s.io/client-go/discovery/cached/memory"
+	discoveryfake "k8s.io/client-go/discovery/fake"
 	"k8s.io/client-go/restmapper"
 	clientgotesting "k8s.io/client-go/testing"
 )
@@ -17,7 +17,7 @@ import (
 // TestIsRESTMappingMiss_Variants complements TestIsRESTMappingMiss in mappingmiss_test.go.
 // That test already covers: nil, an unrelated error, helm's full stringified render error, the
 // bare "resource mapping not found" substring, and a %w-wrapped typed *meta.NoKindMatchError.
-// Here we pin down the REMAINING branches of isRESTMappingMiss (read in client.go) so every
+// Here we pin down the REMAINING branches of IsRESTMappingMiss (read in client.go) so every
 // variant it claims to match is exercised exactly once and false-positives stay excluded:
 //   - meta.IsNoMatchError on a DIRECT (unwrapped) typed error,
 //   - the "no matches for kind" substring on its own,
@@ -67,8 +67,8 @@ func TestIsRESTMappingMiss_Variants(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := isRESTMappingMiss(tc.err); got != tc.want {
-				t.Fatalf("isRESTMappingMiss(%q) = %v, want %v", tc.err, got, tc.want)
+			if got := IsRESTMappingMiss(tc.err); got != tc.want {
+				t.Fatalf("IsRESTMappingMiss(%q) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
 	}
@@ -89,7 +89,7 @@ func newMappingMissMapper(seed ...*metav1.APIResourceList) (*restmapper.Deferred
 }
 
 // TestMapperResetPicksUpNewlyRegisteredKind proves the reset-then-retry CONTRACT that
-// client.Install depends on. In client.go, Install on an isRESTMappingMiss error does exactly:
+// client.Install depends on. In client.go, Install on an IsRESTMappingMiss error does exactly:
 //
 //	c.cachedClients.mapper.Reset()
 //	// re-init the action config and run install() a second time
@@ -100,7 +100,7 @@ func newMappingMissMapper(seed ...*metav1.APIResourceList) (*restmapper.Deferred
 // SAME concrete *DeferredDiscoveryRESTMapper the client holds:
 //
 //	attempt 1 (pre-registration)  -> RESTMapping MUST miss with a NoKindMatchError
-//	                                  (this is precisely what isRESTMappingMiss classifies true)
+//	                                  (this is precisely what IsRESTMappingMiss classifies true)
 //	register the CRD's resource   -> simulate the CRD add the informer would have raced
 //	Reset()                       -> the single invalidation Install performs before its retry
 //	attempt 2 (post-Reset)        -> RESTMapping MUST now succeed
@@ -136,12 +136,12 @@ func TestMapperResetPicksUpNewlyRegisteredKind(t *testing.T) {
 	// observed by the discovery cache.
 	mapper, fd := newMappingMissMapper(baseGroup)
 
-	// Attempt 1: must miss, and must miss in the way isRESTMappingMiss classifies as a mapping miss.
+	// Attempt 1: must miss, and must miss in the way IsRESTMappingMiss classifies as a mapping miss.
 	_, err := mapper.RESTMapping(gk, version)
 	if err == nil {
 		t.Fatalf("attempt 1: expected a mapping miss for %s/%s before registration, got nil", gk, version)
 	}
-	if !isRESTMappingMiss(err) {
+	if !IsRESTMappingMiss(err) {
 		t.Fatalf("attempt 1: error should be classified as a REST mapping miss, got %T: %v", err, err)
 	}
 
@@ -165,7 +165,7 @@ func TestMapperResetPicksUpNewlyRegisteredKind(t *testing.T) {
 	// mapping is still a miss. This pins that Reset is causally required, not incidental.
 	if _, err := mapper.RESTMapping(gk, version); err == nil {
 		t.Fatalf("control: mapping unexpectedly succeeded before Reset — the memcache should still be stale")
-	} else if !isRESTMappingMiss(err) {
+	} else if !IsRESTMappingMiss(err) {
 		t.Fatalf("control: pre-Reset error should still be a mapping miss, got %T: %v", err, err)
 	}
 

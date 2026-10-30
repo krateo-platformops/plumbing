@@ -22,8 +22,8 @@ func TestIsRESTMappingMiss(t *testing.T) {
 		{"typed NoKindMatchError wrapped", fmt.Errorf("render: %w", &meta.NoKindMatchError{GroupKind: schema.GroupKind{Group: "composition.krateo.io", Kind: "SnowplowCrds"}, SearchedVersions: []string{"v1-9-0"}}), true},
 	}
 	for _, tc := range cases {
-		if got := isRESTMappingMiss(tc.err); got != tc.want {
-			t.Errorf("%s: isRESTMappingMiss=%v want %v", tc.name, got, tc.want)
+		if got := IsRESTMappingMiss(tc.err); got != tc.want {
+			t.Errorf("%s: IsRESTMappingMiss=%v want %v", tc.name, got, tc.want)
 		}
 	}
 }

@@ -22,13 +22,32 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-// isRESTMappingMiss reports whether err is a "the REST mapper does not know this kind yet" failure —
-// i.e. the object's CRD exists but is not (yet) in the discovery cache. helm surfaces this while
-// building the manifest as a stringified "no matches for kind ... ensure CRDs are installed first" /
-// "resource mapping not found", so a stale discovery cache (e.g. a composition CRD created moments
-// earlier in the same bootstrap) wedges the whole render until the process is restarted. We match both
-// the typed error (when %w-wrapped) and helm's stringified form.
-func isRESTMappingMiss(err error) bool {
+// IsRESTMappingMiss reports whether err is a "the REST mapper does not know this kind" failure.
+// helm surfaces it while building the manifest as a stringified "no matches for kind ... ensure CRDs
+// are installed first" / "resource mapping not found", so both the typed error (when %w-wrapped) and
+// helm's stringified form are matched.
+//
+// IT DOES NOT DISTINGUISH A TRANSIENT MISS FROM A PERMANENT ONE, and a caller that needs to must
+// establish that separately. Two different situations produce the identical error:
+//
+//   - the CRD EXISTS but is not yet in the discovery cache — transient, and what this detector was
+//     written for: a composition CRD created moments earlier in the same bootstrap wedges the whole
+//     render until the mapper is reset
+//   - the CRD IS NOT SERVED AT ALL — permanent until someone installs it, where a reset accomplishes
+//     nothing and a retry loops forever
+//
+// Inside this package the ambiguity is harmless: the only use is deciding whether resetting the
+// mapper and retrying ONCE is worth attempting, and that is the right action for both cases. A
+// caller that turns this into a verdict — an HTTP status, a condition on a resource, an alert —
+// needs more than this function returns. A client built WithCachedClients has already had its one
+// reset-and-retry by the time it sees the error; a client built WithCRDInformer has its mapper reset
+// on CRD arrival instead, so a miss that survives either mechanism is evidence of absence rather
+// than staleness. Neither fact is visible here.
+//
+// Exported for krateo-platformops/core-provider#265, where chart-inspector returns 500/InternalError
+// for a blueprint referencing an unserved kind. Exported rather than copied because a second
+// strings.Contains over helm's wording in another repository would drift from this one silently.
+func IsRESTMappingMiss(err error) bool {
 	if err == nil {
 		return false
 	}
@@ -282,7 +301,7 @@ func (c *client) retryOnStaleMapping(
 		return err
 	}
 	err = op(ac)
-	if err == nil || c.cachedClients == nil || !isRESTMappingMiss(err) {
+	if err == nil || c.cachedClients == nil || !IsRESTMappingMiss(err) {
 		return err
 	}
 	c.cachedClients.mapper.Reset()
@@ -331,7 +350,7 @@ func (c *client) Upgrade(ctx context.Context, releaseName, chartRef string, cfg 
 
 			r, e := upgradeClient.RunWithContext(ctx, releaseName, chart, cfg.Values)
 			if e != nil {
-				// Wrapped with %w so isRESTMappingMiss still sees the typed NoKindMatchError, and
+				// Wrapped with %w so IsRESTMappingMiss still sees the typed NoKindMatchError, and
 				// so the caller's message is unchanged from before this retry existed.
 				return fmt.Errorf("upgrade failed: %w", e)
 			}
