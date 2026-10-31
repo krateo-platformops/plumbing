@@ -65,7 +65,7 @@ func TestRetryOnStaleMapping(t *testing.T) {
 		},
 		{
 			// helm stringifies the miss when it surfaces through the post-renderer, which is how
-			// the umbrella's failure actually arrived. isRESTMappingMiss matches that form too.
+			// the umbrella's failure actually arrived. IsRESTMappingMiss matches that form too.
 			name:      "helm's stringified miss is also retried",
 			cached:    &cc,
 			errs:      []error{errors.New(`no matches for kind "GithubProviderKog" in version "composition.krateo.io/v0-6-0"`), nil},
