@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	jsonpatch "github.com/evanphx/json-patch/v5"
@@ -272,6 +273,27 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 	// kube.InterfaceThreeWayMerge, so type-assert to reach it (no fork), falling back to the 2-way
 	// Update if a KubeClient ever doesn't implement it. helm refreshes every target Info's Object to
 	// its POST-merge server state (patch branch: Refresh; no-op branch: Get) — step 6 relies on that.
+	// 5a. Jobs that are ALREADY LIVE are removed from both sides of the merge (#276).
+	//
+	// A Job's spec.template is immutable. So when a live Job's template differs from the target's
+	// — which is exactly what an orphan from an earlier release looks like — the patch can never
+	// succeed, and because ONE error fails this whole call, every other child of the composition
+	// stops converging too. Observed on a0: six keystone Jobs left over from release v0-3-16 wedged
+	// the v0-3-18 composition permanently at Synced=False/ReconcileError.
+	//
+	// Skipping is correct rather than merely expedient: a Job is RUN-ONCE, so "drift" in one is not
+	// a meaningful concept. Re-applying it can only fail (differing template) or re-run work that
+	// already completed. Applying a genuinely NEW Job is helm's upgrade path, not the self-heal's.
+	//
+	// Removed from BOTH lists deliberately. Dropping it from target alone would make helm consider
+	// it deleted; dropping it from current alone reaches the no-original branch that the adoption
+	// loop above exists to avoid.
+	current, target, skipped := filterLiveJobs(current, target)
+	if len(skipped) > 0 && c.debugLog != nil {
+		c.debugLog("reconcile: self-heal is not patching %d already-live Job(s), whose pod template is immutable: %s",
+			len(skipped), strings.Join(skipped, ", "))
+	}
+
 	tw, ok := kc.(kube.InterfaceThreeWayMerge)
 	var res *kube.Result
 	if ok {
@@ -582,4 +604,65 @@ func normalizeSecretStringData(obj runtime.Object) {
 	}
 	_ = unstructured.SetNestedMap(u.Object, di, "data")
 	unstructured.RemoveNestedField(u.Object, "stringData")
+}
+
+// skipLiveJobs returns the infoKeys of batch Jobs that appear in BOTH current (live) and target
+// (rendered). Those are the ones a three-way merge would try to patch, and a Job's pod template
+// is immutable, so the patch fails whenever the templates differ (#276).
+//
+// Keyed on group+kind rather than on a string match of the apiVersion, so batch/v1 and any future
+// batch version are both covered.
+func skipLiveJobs(current, target kube.ResourceList) []string {
+	live := map[string]bool{}
+	for _, info := range current {
+		live[infoKey(info)] = true
+	}
+	var keys []string
+	for _, tinfo := range target {
+		gvk := tinfo.Object.GetObjectKind().GroupVersionKind()
+		if gvk.Group != "batch" || gvk.Kind != "Job" {
+			continue
+		}
+		if k := infoKey(tinfo); live[k] {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// filterLiveJobs removes already-live batch Jobs from BOTH lists and returns what it removed.
+//
+// One function rather than two statements at the call site, so a test exercises the same pairing
+// production does. With the filtering split across two expressions, a mutant that dropped the Job
+// from target ALONE survived every test — because the test had to reconstruct the pairing itself
+// and therefore verified its own code rather than the caller's.
+//
+// Both sides matter and in different ways: dropping from target alone makes helm consider the Job
+// deleted, and dropping from current alone reaches the no-original branch that the adoption loop
+// above exists to avoid.
+func filterLiveJobs(current, target kube.ResourceList) (kube.ResourceList, kube.ResourceList, []string) {
+	skipped := skipLiveJobs(current, target)
+	if len(skipped) == 0 {
+		return current, target, nil
+	}
+	return withoutKeys(current, skipped), withoutKeys(target, skipped), skipped
+}
+
+// withoutKeys returns the list minus the entries whose infoKey is in keys.
+func withoutKeys(list kube.ResourceList, keys []string) kube.ResourceList {
+	if len(keys) == 0 {
+		return list
+	}
+	drop := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		drop[k] = true
+	}
+	out := make(kube.ResourceList, 0, len(list))
+	for _, info := range list {
+		if !drop[infoKey(info)] {
+			out = append(out, info)
+		}
+	}
+	return out
 }
