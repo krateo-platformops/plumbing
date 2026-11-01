@@ -46,6 +46,24 @@ type ReconcileResult struct {
 	Deleted        int
 	PatchedUpdated int
 	Release        *Release
+	// ChangedObjects identifies the children this reconcile created, deleted or patched, as
+	// "group/version/Kind/namespace/name". The counts above say THAT something drifted;
+	// core-provider#175's open half is that nothing said WHICH child — so an operator seeing
+	// "patched=1" a hundred times an hour had no way to reach the cause. Diagnosing one such case
+	// took a cluster-wide differential across five compositions; this line would have named the
+	// child outright.
+	//
+	// Free to collect: the loop that decides `patched` already computes this identity per child
+	// (infoKey) and already holds both the live and target objects. No extra read, no extra decode,
+	// no new comparison.
+	//
+	// CAPPED, and the cap is part of the design rather than tidiness. The composition that prompted
+	// this writes two revisions a minute, so an uncapped list would turn a diagnostic into the same
+	// log-volume problem #175 is about.
+	ChangedObjects []string
+	// ChangedObjectsOmitted is how many identities exceeded the cap and were not listed, so a
+	// reader can tell a genuinely short list from a truncated one.
+	ChangedObjectsOmitted int
 }
 
 // Client is the interface that the rest of your app uses.
