@@ -321,6 +321,18 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 	created := len(res.Created)
 	deleted := len(res.Deleted)
 	patched := 0
+
+	// core-provider#175: collect WHICH children changed, not only how many. The identity is already
+	// computed below (infoKey) for the comparison that decides `patched`, so this adds no read, no
+	// decode and no comparison — only a bounded slice append.
+	changedObjects := newChangedObjectSet(maxChangedObjects)
+	for _, info := range res.Created {
+		changedObjects.add(infoKey(info))
+	}
+	for _, info := range res.Deleted {
+		changedObjects.add(infoKey(info))
+	}
+
 	for _, info := range target {
 		key := infoKey(info)
 		if absent[key] {
@@ -330,21 +342,25 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 		if cerr != nil {
 			// Undetermined -> fail safe by treating it as a change.
 			patched++
+			changedObjects.add(key)
 			continue
 		}
 		if changedChild {
 			patched++
+			changedObjects.add(key)
 		}
 	}
 
 	changed := created > 0 || deleted > 0 || patched > 0
 
 	result := &helmconfig.ReconcileResult{
-		Changed:        changed,
-		Created:        created,
-		Deleted:        deleted,
-		PatchedUpdated: patched,
-		Release:        stored,
+		Changed:               changed,
+		Created:               created,
+		Deleted:               deleted,
+		PatchedUpdated:        patched,
+		Release:               stored,
+		ChangedObjects:        changedObjects.names,
+		ChangedObjectsOmitted: changedObjects.omitted,
 	}
 
 	if !changed {
@@ -665,4 +681,46 @@ func withoutKeys(list kube.ResourceList, keys []string) kube.ResourceList {
 		}
 	}
 	return out
+}
+
+// maxChangedObjects caps how many child identities a ReconcileResult carries. Ten is enough to name
+// the drifting child in every case observed — steady-state drift has been one or two children, not
+// dozens — while bounding the log line on a composition that reconciles every thirty seconds.
+//
+// The cap exists because the composition that prompted core-provider#175 writes two helm revisions
+// per minute. An uncapped list would make the diagnostic into the same log-volume problem the issue
+// is about.
+const maxChangedObjects = 10
+
+// changedObjectSet collects child identities under a cap, counting what it drops.
+//
+// Deduplicating as well as capping: a child can be reached from more than one of the created,
+// deleted and patched lists in edge cases (a recreate), and naming it twice would suggest two
+// children drifted when one did.
+type changedObjectSet struct {
+	names   []string
+	seen    map[string]struct{}
+	omitted int
+	limit   int
+}
+
+func newChangedObjectSet(limit int) *changedObjectSet {
+	return &changedObjectSet{seen: make(map[string]struct{}), limit: limit}
+}
+
+// add records an identity, or counts it as omitted once the cap is reached. A duplicate is neither
+// recorded nor counted as omitted — it is not a child the reader is missing.
+func (c *changedObjectSet) add(key string) {
+	if key == "" {
+		return
+	}
+	if _, dup := c.seen[key]; dup {
+		return
+	}
+	c.seen[key] = struct{}{}
+	if len(c.names) >= c.limit {
+		c.omitted++
+		return
+	}
+	c.names = append(c.names, key)
 }
