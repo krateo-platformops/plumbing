@@ -84,6 +84,31 @@ type ReconcileResult struct {
 	// No revision is persisted on a partial apply: the real Upgrade that would write one patches the
 	// same objects and would fail the same way, so Reconcile returns before it.
 	AppliedPartially bool
+	// IntendedDeletions identifies the children the merge was ASKED to delete — those present in
+	// the stored manifest and absent from the render — as "group/version/Kind/namespace/name".
+	//
+	// WHY INTENT AND NOT JUST THE OUTCOME (core-provider#304). `Deleted` reports what helm says it
+	// removed. On its own it cannot distinguish three states that matter:
+	//
+	//	intended 0, deleted 0   nothing was removed from the render. Correct, and the common case.
+	//	intended 1, deleted 1   the removal converged.
+	//	intended 1, deleted 0   THE DEFECT. Either helm's deletion loop never ran — it sits AFTER
+	//	                        the error switch in pkg/kube/client.go, so one unpatchable object
+	//	                        skips every deletion — or the delete was issued and did not stick.
+	//
+	// A caller seeing only `deleted: 0` cannot tell the first from the third, which is exactly how
+	// #304 went unnoticed: a node removed from a spec left its child alive for sixteen minutes
+	// while the log said deleted:0, and that same line is printed by every healthy steady-state
+	// reconcile.
+	//
+	// Computed with helm's OWN ResourceList.Difference against the same two lists the merge
+	// receives, so it matches helm's matching exactly (group+kind+name+namespace, version-
+	// independent via isMatchingInfo) rather than replicating it. Taken after filterLiveJobs and
+	// the adoption pass, so it reflects the lists as actually handed over.
+	IntendedDeletions []string
+	// IntendedDeletionsOmitted is how many identities exceeded the cap and were not listed, so a
+	// reader can tell a genuinely short list from a truncated one.
+	IntendedDeletionsOmitted int
 }
 
 // Client is the interface that the rest of your app uses.
