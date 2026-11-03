@@ -64,6 +64,26 @@ type ReconcileResult struct {
 	// ChangedObjectsOmitted is how many identities exceeded the cap and were not listed, so a
 	// reader can tell a genuinely short list from a truncated one.
 	ChangedObjectsOmitted int
+	// AppliedPartially reports that the self-heal apply converged SOME children and failed on
+	// others (core-provider#276). When it is true, Reconcile returns BOTH this result and a
+	// non-nil error, and the error names the children that failed.
+	//
+	// WHY THE RESULT IS RETURNED AT ALL ON ERROR. helm's own update collects per-object errors and
+	// CONTINUES — pkg/kube/client.go appends to updateErrors, appends to res.Updated "regardless",
+	// and returns a populated Result alongside the joined error. So the other children really did
+	// converge. Reconcile used to answer that with `return nil, err`, throwing the populated result
+	// away: the change detection below never ran, the stored digest never advanced, and a
+	// composition reported total failure while most of it was healthy. Observed on a0, where six
+	// orphaned Jobs from an earlier release wedged a Keystone composition permanently.
+	//
+	// A caller that follows the Go idiom and checks err before touching the result will see only a
+	// failure, which is the OLD behaviour and remains safe. A caller that wants to distinguish
+	// "nothing converged" from "most of it converged" must check this field — hence a named bool
+	// rather than relying on result != nil, which is easy to read past.
+	//
+	// No revision is persisted on a partial apply: the real Upgrade that would write one patches the
+	// same objects and would fail the same way, so Reconcile returns before it.
+	AppliedPartially bool
 }
 
 // Client is the interface that the rest of your app uses.
