@@ -301,8 +301,26 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 	} else {
 		res, err = kc.Update(current, target, cfg.Force)
 	}
-	if err != nil {
-		return nil, fmt.Errorf("reconcile: kube update (self-heal apply): %w", err)
+
+	// 5b. A PARTIAL apply keeps its result (#276).
+	//
+	// helm's update collects per-object errors and CONTINUES: pkg/kube/client.go appends the
+	// failure to updateErrors, appends the info to res.Updated "regardless" (its comment), and
+	// returns a POPULATED Result alongside the joined error. ResourceList.Visit stops only on a
+	// non-nil return from the visitor, which that path never gives. So every child is attempted and
+	// the ones that could be patched were.
+	//
+	// This used to be `return nil, err`, which threw that away: the change detection in step 6
+	// never ran, so the stored digest never advanced and the composition reported TOTAL failure
+	// while most of it was converging. Six orphaned Jobs from an earlier release wedged a Keystone
+	// composition permanently on a0 — the Jobs could never be patched (immutable spec.template),
+	// and the error about them erased the evidence that everything else was fine.
+	//
+	// res == nil is a different thing: the call failed before producing any result, and nothing can
+	// be said about any child. That still aborts.
+	applyErr, abort := classifyApply(res, err)
+	if abort {
+		return nil, applyErr
 	}
 
 	// 6. Decide whether the server-PERSISTED state actually changed — not merely whether the merge
@@ -361,6 +379,20 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 		Release:               stored,
 		ChangedObjects:        changedObjects.names,
 		ChangedObjectsOmitted: changedObjects.omitted,
+		AppliedPartially:      applyErr != nil,
+	}
+
+	// A partial apply returns the diagnostics AND the error, and does not persist a revision.
+	//
+	// Returning here rather than falling through to step 7 is deliberate: that step runs a real
+	// Upgrade, which patches the same objects and would fail the same way — so proceeding would
+	// turn one honest partial result into a second identical failure, and could persist a revision
+	// for a release whose children are not all in the target state.
+	//
+	// The caller gets created/deleted/patched and the named ChangedObjects for the children that
+	// DID converge, which is the information that was being destroyed.
+	if applyErr != nil {
+		return result, applyErr
 	}
 
 	if !changed {
@@ -723,4 +755,37 @@ func (c *changedObjectSet) add(key string) {
 		return
 	}
 	c.names = append(c.names, key)
+}
+
+// classifyApply decides what a self-heal merge result means (#276).
+//
+// EXTRACTED rather than inlined, because the decision is the whole fix and inlining it would make
+// it reachable only by driving the entire Reconcile — which needs a release store, a rendered
+// chart, an action config and a fake KubeClient that returns a populated result alongside an error.
+// This repo already prefers extracted decisions for exactly that reason (filterLiveJobs,
+// changedObjectSet), and a decision that can only be tested through six layers of setup is a
+// decision that will be tested by nobody.
+//
+// The three cases, and why the middle one exists at all:
+//
+//	res == nil, err != nil   ABORT. The call failed before producing a result, so nothing is known
+//	                         about any child and there is nothing to report.
+//	res != nil, err != nil   PARTIAL. helm's update collects per-object errors and continues, so
+//	                         the children it could patch were patched. Keep the result and return
+//	                         the error with it.
+//	err == nil               clean.
+//
+// The returned error is wrapped but NOT parsed. helm joins the per-object messages with " && " and
+// each already names its object (`cannot patch "keystone-bootstrap" with kind Job: ...`), so
+// splitting that string to re-derive identities would mean parsing a dependency's formatting to
+// recover information it already handed over in readable form.
+func classifyApply(res *kube.Result, err error) (applyErr error, abort bool) {
+	if err == nil {
+		return nil, false
+	}
+	if res == nil {
+		return fmt.Errorf("reconcile: kube update (self-heal apply): %w", err), true
+	}
+	return fmt.Errorf("reconcile: self-heal apply converged some children and failed on others: %w",
+		err), false
 }
