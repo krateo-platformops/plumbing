@@ -294,6 +294,19 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 			len(skipped), strings.Join(skipped, ", "))
 	}
 
+	// 5c. Record what the merge is ASKED to delete, before it runs (#304).
+	//
+	// helm's Deleted count alone cannot distinguish "nothing was removed from the render" from
+	// "something was removed and the deletion did not happen" — both read as deleted:0, and the
+	// second is the defect in #304: a node removed from a spec left its child alive while the log
+	// printed the same line every healthy reconcile prints.
+	//
+	// Uses helm's OWN ResourceList.Difference on the same two lists the merge receives, so the
+	// matching is helm's (group+kind+name+namespace, version-independent) rather than a
+	// reimplementation that could drift from it. Taken HERE, after filterLiveJobs and the adoption
+	// pass, so it reflects the lists as actually handed over rather than as first built.
+	intended := intendedDeletions(current, target, maxChangedObjects)
+
 	tw, ok := kc.(kube.InterfaceThreeWayMerge)
 	var res *kube.Result
 	if ok {
@@ -380,6 +393,11 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 		ChangedObjects:        changedObjects.names,
 		ChangedObjectsOmitted: changedObjects.omitted,
 		AppliedPartially:      applyErr != nil,
+
+		// Carried even when it equals Deleted, so a caller can always compare the two rather than
+		// having to infer that an absent field means "nothing was intended".
+		IntendedDeletions:        intended.names,
+		IntendedDeletionsOmitted: intended.omitted,
 	}
 
 	// A partial apply returns the diagnostics AND the error, and does not persist a revision.
@@ -788,4 +806,31 @@ func classifyApply(res *kube.Result, err error) (applyErr error, abort bool) {
 	}
 	return fmt.Errorf("reconcile: self-heal apply converged some children and failed on others: %w",
 		err), false
+}
+
+// intendedDeletions names the children the merge is ASKED to delete: present in `current`, absent
+// from `target` (core-provider#304).
+//
+// EXTRACTED rather than inlined, and the reason is a mutant that survived. With the loop written
+// inline in Reconcile, reversing it to target.Difference(current) COMPILED and the unit test still
+// PASSED — because the test called Difference itself rather than the production code. It validated
+// my understanding of helm's set operation, not the use of it. That is a self-confounding test: it
+// reconstructs the thing under test instead of exercising it.
+//
+// With the decision behind a name, the same reversal fails the test. The package already prefers
+// this shape for the same reason (filterLiveJobs, changedObjectSet, classifyApply).
+//
+// DIRECTION MATTERS AND IS NOT SYMMETRIC: current minus target is a removal, target minus current
+// is an addition, and the latter belongs to Created. Counting additions here would make every
+// install report pending deletions.
+//
+// Uses helm's OWN ResourceList.Difference, so the matching is isMatchingInfo —
+// name+namespace+kind+group, VERSION-INDEPENDENT — rather than a reimplementation that could drift
+// from what helm actually deletes.
+func intendedDeletions(current, target kube.ResourceList, limit int) *changedObjectSet {
+	out := newChangedObjectSet(limit)
+	for _, info := range current.Difference(target) {
+		out.add(infoKey(info))
+	}
+	return out
 }
