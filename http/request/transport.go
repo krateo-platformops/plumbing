@@ -147,13 +147,17 @@ func (rt *debuggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, e
 }
 
 type basicAuthRoundTripper struct {
-	username string
-	password string `datapolicy:"password"`
-	rt       http.RoundTripper
+	username   string
+	password   string `datapolicy:"password"`
+	originHost string
+	rt         http.RoundTripper
 }
 
 func (rt *basicAuthRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	if len(req.Header.Get("Authorization")) != 0 {
+		return rt.rt.RoundTrip(req)
+	}
+	if !sameHost(req, rt.originHost) {
 		return rt.rt.RoundTrip(req)
 	}
 	req = cloneRequest(req)
@@ -162,12 +166,16 @@ func (rt *basicAuthRoundTripper) RoundTrip(req *http.Request) (*http.Response, e
 }
 
 type bearerAuthRoundTripper struct {
-	bearer string
-	rt     http.RoundTripper
+	bearer     string
+	originHost string
+	rt         http.RoundTripper
 }
 
 func (rt *bearerAuthRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	if len(req.Header.Get("Authorization")) != 0 {
+		return rt.rt.RoundTrip(req)
+	}
+	if !sameHost(req, rt.originHost) {
 		return rt.rt.RoundTrip(req)
 	}
 
@@ -180,11 +188,15 @@ func (rt *bearerAuthRoundTripper) RoundTrip(req *http.Request) (*http.Response, 
 
 type awsAuthRoundTripper struct {
 	headerPayload string
+	originHost    string
 	rt            http.RoundTripper
 }
 
 func (rt *awsAuthRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	if len(req.Header.Get("Authorization")) != 0 {
+		return rt.rt.RoundTrip(req)
+	}
+	if !sameHost(req, rt.originHost) {
 		return rt.rt.RoundTrip(req)
 	}
 
@@ -193,4 +205,34 @@ func (rt *awsAuthRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 
 	req.Header.Set("Authorization", token)
 	return rt.rt.RoundTrip(req)
+}
+
+// sameHost reports whether req is going to the host the credential was configured for
+// (core-provider#307).
+//
+// WHY THE ROUND-TRIPPER AND NOT CheckRedirect. net/http strips Authorization on a redirect, and
+// these round-trippers then put it back: their guard was "if the header is ABSENT, add it", and
+// after the strip it is absent. So the stdlib's protection never engaged. A CheckRedirect alone
+// cannot fix that, because the round-tripper runs AFTER it — the guard has to be here, where the
+// credential is attached, so that no later layer can undo it.
+//
+// EXACT host:port, and no subdomain allowance, deliberately. The stdlib permits a hop to a
+// SUBDOMAIN of the origin and ignores the port entirely — its own comment says so
+// (client.go:992-1009, "Permit sending auth/cookie headers from foo.com to sub.foo.com"), and
+// idnaASCIIFromURL compares url.Hostname() (transport.go:2947). Both were measured on a live
+// harness by the oasgen-provider session and then confirmed in the Go source. So
+// api.example.com -> evil.api.example.com carries the credential under the stdlib and must not
+// here.
+//
+// A string-suffix or Contains matcher would be WORSE than the stdlib rather than better: it admits
+// api.example.com.attacker.net, a name an attacker can register. Equality is the only comparison
+// that gets both axes right, which is why this is == and not a helper with an allowlist.
+//
+// An EMPTY originHost refuses. That is the destructive-default rule on a security path: a value we
+// could not determine must not become a value we act on. The cost is a 401 an operator can see.
+func sameHost(req *http.Request, originHost string) bool {
+	if originHost == "" || req.URL == nil {
+		return false
+	}
+	return req.URL.Host == originHost
 }
