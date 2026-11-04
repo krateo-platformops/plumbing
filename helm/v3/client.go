@@ -336,6 +336,14 @@ func (c *client) Upgrade(ctx context.Context, releaseName, chartRef string, cfg 
 		return nil, fmt.Errorf("failed to check dependencies: %w", err)
 	}
 
+	// Same classification as Install (#325), and OUTSIDE the retry on purpose: schema validation
+	// resolves nothing against the cluster, so a stale RESTMapper cannot affect its answer and
+	// re-running it per attempt would be waste. That is the same reasoning the comment above gives
+	// for keeping chart loading and validation outside the retry.
+	if err := validateValuesSchema(chart, cfg.Values); err != nil {
+		return nil, err
+	}
+
 	var rel *release.Release
 	err = c.retryOnStaleMapping(ctx, c.namespace, c.restConfig, cfg.ActionConfig,
 		func(ac *action.Configuration) error {
@@ -422,6 +430,15 @@ func (c *client) install(ctx context.Context, namespace, releaseName, chartRef s
 	chart, err = c.checkDependencies(ctx, chart, chartRef, cfg.ActionConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check dependencies: %w", err)
+	}
+
+	// Classify a values-schema violation BEFORE helm flattens it (#325). helm validates again
+	// during render and that run is the authority; this one exists only to learn the KIND of
+	// failure while chartutil's typed error still exists. Returning early means the caller gets
+	// ErrValuesSchema instead of an install failure whose cause is buried in a Status body at a
+	// status code that says "not your fault".
+	if err := validateValuesSchema(chart, cfg.Values); err != nil {
+		return nil, err
 	}
 
 	rel, err := installClient.RunWithContext(ctx, chart, cfg.Values)
