@@ -110,7 +110,22 @@ func applyListConfig(client *action.List, cfg *helmconfig.ListConfig) {
 	client.Sort = action.Sorter(cfg.Sort)
 	client.ByDate = cfg.ByDate
 	client.SortReverse = cfg.SortReverse
-	client.StateMask = action.ListStates(cfg.StateMask)
+	// ZERO MEANS "NOT SPECIFIED", and overwriting unconditionally was a silent destroyer
+	// (plumbing#74). action.NewList has already set ListDeployed|ListFailed; assigning cfg's zero
+	// value replaced that with 0, and helm's filterStateMask skips EVERY release when the mask is 0
+	// (pkg/action/list.go: `mask := l.StateMask & currentStatus; if mask == 0 { continue }`). So a
+	// caller that simply did not set the field got an EMPTY SLICE AND A NIL ERROR.
+	//
+	// There is nothing a caller can check against that. And the plausible value is the destructive
+	// one: on an adoption path "no releases exist" means install a second release beside the live
+	// one (core-provider#303), and on a teardown path it means "nothing to clean up".
+	//
+	// Nobody was broken, because both known callers set the field explicitly — which is also why no
+	// test covered this: the coverage gap and the absence of impact have the same cause, so it read
+	// as safe.
+	if cfg.StateMask != 0 {
+		client.StateMask = action.ListStates(cfg.StateMask)
+	}
 	client.Limit = cfg.Limit
 	client.Offset = cfg.Offset
 	client.Filter = cfg.Filter

@@ -18,11 +18,11 @@ import (
 // silence, one unchanged event is forcibly published after maxSilence from the
 // first suppression in the current suppressed streak.
 type ThrottledRecorder struct {
-	mu          sync.Mutex
-	inner       record.EventRecorder
-	maxSilence  time.Duration
-	now         func() time.Time
-	signatures  map[string]eventState
+	mu         sync.Mutex
+	inner      record.EventRecorder
+	maxSilence time.Duration
+	now        func() time.Time
+	signatures map[string]eventState
 }
 
 var _ record.EventRecorder = (*ThrottledRecorder)(nil)
