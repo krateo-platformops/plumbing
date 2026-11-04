@@ -69,6 +69,13 @@ func FromSecret(ctx context.Context, rc *rest.Config, name, namespace string) (E
 		res.Insecure, _ = strconv.ParseBool(string(v))
 	}
 
+	// ParseBool's error is dropped, as for debug and insecure above - but here the failure mode is
+	// SAFE: an unparseable value leaves the field false, which REFUSES. A security opt-out that
+	// defaulted on when its value was malformed would be the destructive default.
+	if v, ok := sec.Data[passCredentialsLabel]; ok {
+		res.PassCredentialsOnRedirect, _ = strconv.ParseBool(string(v))
+	}
+
 	if v, ok := sec.Data[awsAccessKeyLabel]; ok {
 		res.AwsAccessKey = string(v)
 	}
@@ -122,18 +129,19 @@ func Store(ctx context.Context, rc *rest.Config, ns string, ep Endpoint) error {
 }
 
 const (
-	clientCertLabel   = "client-certificate-data"
-	clientKeyLabel    = "client-key-data"
-	caLabel           = "certificate-authority-data"
-	proxyUrlLabel     = "proxy-url"
-	serverUrlLabel    = "server-url"
-	debugLabel        = "debug"
-	passwordLabel     = "password"
-	usernameLabel     = "username"
-	tokenLabel        = "token"
-	insecureLabel     = "insecure"
-	awsAccessKeyLabel = "aws-access-key"
-	awsSecretKeyLabel = "aws-secret-key"
-	awsRegionLabel    = "aws-region"
-	awsServiceLabel   = "aws-service"
+	clientCertLabel      = "client-certificate-data"
+	clientKeyLabel       = "client-key-data"
+	caLabel              = "certificate-authority-data"
+	proxyUrlLabel        = "proxy-url"
+	serverUrlLabel       = "server-url"
+	debugLabel           = "debug"
+	passwordLabel        = "password"
+	usernameLabel        = "username"
+	tokenLabel           = "token"
+	insecureLabel        = "insecure"
+	passCredentialsLabel = "pass-credentials-on-redirect"
+	awsAccessKeyLabel    = "aws-access-key"
+	awsSecretKeyLabel    = "aws-secret-key"
+	awsRegionLabel       = "aws-region"
+	awsServiceLabel      = "aws-service"
 )

@@ -11,6 +11,27 @@ type Endpoint struct {
 	Password                 string `json:"password,omitempty"`
 	Debug                    bool   `json:"debug"`
 	Insecure                 bool   `json:"insecure"`
+	// PassCredentialsOnRedirect lets a credential follow a redirect to a DIFFERENT host:port
+	// (core-provider#307). Default false, which refuses.
+	//
+	// NAMED FOR THE HOP, not for the destination, deliberately. helm's equivalent is
+	// PassCredentialsAll, and an operator reads "all" as a statement about which destinations are
+	// allowed rather than about every hop of a chain they never see. The installer session made
+	// exactly that point about an allowAnyHost flag elsewhere: the people who set such a flag are
+	// by definition debugging something, and they are the least likely to be thinking about
+	// redirects.
+	//
+	// IT REMOVES THE WHOLE GUARD, not part of it. With this set, a credential will follow a 302
+	// anywhere the endpoint sends it - including a subdomain, a different port, or an unrelated
+	// host. There is no partial setting and that is on purpose: a half-guard would be harder to
+	// reason about than none.
+	//
+	// It exists because the strict default has a legitimate casualty: an endpoint configured
+	// without a port that redirects to one - an on-prem GHES, or a corporate proxy - is a real
+	// deployment, and helm's own chart getter has carried PassCredentialsAll for that reason since
+	// long before this. Measured on krateo-057: 0 of 3 external targets issue any 3xx, so nothing
+	// there needs it; the field is for the deployment that does.
+	PassCredentialsOnRedirect bool `json:"passCredentialsOnRedirect,omitempty"`
 	// AWS garbage fields for their proprietary authentication header
 	AwsAccessKey string `json:"awsAccessKey"`
 	AwsSecretKey string `json:"awsSecretKey"`
