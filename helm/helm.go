@@ -3,6 +3,7 @@ package helm
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -375,3 +376,27 @@ const (
 	// StatusPendingRollback indicates that a rollback operation is underway.
 	StatusPendingRollback Status = "pending-rollback"
 )
+
+// ErrValuesSchema marks a failure to satisfy a chart's values.schema.json, as opposed to a failure
+// of the operation itself. A consumer classifies with errors.Is and can then answer 4xx rather than
+// 5xx: the input is invalid, and nothing about the server is wrong.
+//
+// A PLAIN SENTINEL, NOT helm's TYPE, and that is the same decision as Hook above. helm's
+// chartutil.JSONSchemaValidationError would make helm.sh/helm/v3 a DIRECT requirement of every
+// consumer that wants to classify this -- chart-inspector has it as indirect and should keep it
+// that way. Detection needs helm and lives in helm/v3; the sentinel needs nothing and lives here.
+//
+// WHY A SENTINEL IS NEEDED AT ALL, measured against helm v3.20.2. helm HAS a typed error and
+// discards it before any caller sees it:
+//
+//	chartutil/jsonschema.go:150  return JSONSchemaValidationError{err}   // typed, exported
+//	chartutil/jsonschema.go:80   sb.WriteString(err.Error())             // type -> string
+//	chartutil/jsonschema.go:107  return errors.New(sb.String())          // plain error
+//	chartutil/values.go:168      fmt.Errorf(errFmt, err.Error())         // %s, not %w
+//
+// The chain is broken twice, and the render path uses the flattening entry point
+// (chartutil/values.go:167). So errors.As on helm's own type cannot work downstream of an install,
+// however correct it looks: the type exists and never arrives. Classifying by message text would
+// mean depending on the format of a strings.Builder with no compatibility promise, which is the
+// thing helm's wording has already changed under this repo once.
+var ErrValuesSchema = errors.New("chart values do not satisfy the chart's values.schema.json")
