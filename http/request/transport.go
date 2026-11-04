@@ -147,17 +147,18 @@ func (rt *debuggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, e
 }
 
 type basicAuthRoundTripper struct {
-	username   string
-	password   string `datapolicy:"password"`
-	originHost string
-	rt         http.RoundTripper
+	username       string
+	password       string `datapolicy:"password"`
+	originHost     string
+	passOnRedirect bool
+	rt             http.RoundTripper
 }
 
 func (rt *basicAuthRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	if len(req.Header.Get("Authorization")) != 0 {
 		return rt.rt.RoundTrip(req)
 	}
-	if !sameHost(req, rt.originHost) {
+	if !sameHost(req, rt.originHost, rt.passOnRedirect) {
 		return rt.rt.RoundTrip(req)
 	}
 	req = cloneRequest(req)
@@ -166,16 +167,17 @@ func (rt *basicAuthRoundTripper) RoundTrip(req *http.Request) (*http.Response, e
 }
 
 type bearerAuthRoundTripper struct {
-	bearer     string
-	originHost string
-	rt         http.RoundTripper
+	bearer         string
+	originHost     string
+	passOnRedirect bool
+	rt             http.RoundTripper
 }
 
 func (rt *bearerAuthRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	if len(req.Header.Get("Authorization")) != 0 {
 		return rt.rt.RoundTrip(req)
 	}
-	if !sameHost(req, rt.originHost) {
+	if !sameHost(req, rt.originHost, rt.passOnRedirect) {
 		return rt.rt.RoundTrip(req)
 	}
 
@@ -187,16 +189,17 @@ func (rt *bearerAuthRoundTripper) RoundTrip(req *http.Request) (*http.Response, 
 }
 
 type awsAuthRoundTripper struct {
-	headerPayload string
-	originHost    string
-	rt            http.RoundTripper
+	headerPayload  string
+	originHost     string
+	passOnRedirect bool
+	rt             http.RoundTripper
 }
 
 func (rt *awsAuthRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	if len(req.Header.Get("Authorization")) != 0 {
 		return rt.rt.RoundTrip(req)
 	}
-	if !sameHost(req, rt.originHost) {
+	if !sameHost(req, rt.originHost, rt.passOnRedirect) {
 		return rt.rt.RoundTrip(req)
 	}
 
@@ -230,7 +233,14 @@ func (rt *awsAuthRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 //
 // An EMPTY originHost refuses. That is the destructive-default rule on a security path: a value we
 // could not determine must not become a value we act on. The cost is a 401 an operator can see.
-func sameHost(req *http.Request, originHost string) bool {
+func sameHost(req *http.Request, originHost string, passOnRedirect bool) bool {
+	// The OPT-OUT, and it is checked before the anchor on purpose: an operator who set it has
+	// declared that this endpoint's redirects are trusted, and that declaration should not be
+	// overridden by an anchor we could not parse. Refusing an explicitly-permitted endpoint is the
+	// failure mode that looks like a pass when you only test the attack.
+	if passOnRedirect {
+		return true
+	}
 	if originHost == "" || req.URL == nil {
 		return false
 	}

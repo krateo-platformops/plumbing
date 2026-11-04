@@ -44,6 +44,7 @@ func HTTPClientForEndpoint(ep *endpoints.Endpoint, ex *RequestInfo) (*http.Clien
 	// empty anchor — FAIL CLOSED. The cost is a 401 the operator can see; the alternative is a
 	// credential sent to a host nobody chose, which is silent.
 	originHost := originHostOf(ep.ServerURL)
+	passOnRedirect := ep.PassCredentialsOnRedirect
 
 	switch {
 	case countTrue > 1:
@@ -51,17 +52,19 @@ func HTTPClientForEndpoint(ep *endpoints.Endpoint, ex *RequestInfo) (*http.Clien
 
 	case ep.HasTokenAuth():
 		rt = &bearerAuthRoundTripper{
-			bearer:     ep.Token,
-			originHost: originHost,
-			rt:         rt,
+			bearer:         ep.Token,
+			originHost:     originHost,
+			passOnRedirect: passOnRedirect,
+			rt:             rt,
 		}
 
 	case ep.HasBasicAuth():
 		rt = &basicAuthRoundTripper{
-			username:   ep.Username,
-			password:   ep.Password,
-			originHost: originHost,
-			rt:         rt,
+			username:       ep.Username,
+			password:       ep.Password,
+			originHost:     originHost,
+			passOnRedirect: passOnRedirect,
+			rt:             rt,
 		}
 
 	case ep.HasAwsAuth():
@@ -69,9 +72,10 @@ func HTTPClientForEndpoint(ep *endpoints.Endpoint, ex *RequestInfo) (*http.Clien
 			return nil, fmt.Errorf("extra request options required for AWS authentication")
 		} else {
 			rt = &awsAuthRoundTripper{
-				headerPayload: ComputeAwsSignature(ep, ex),
-				originHost:    originHost,
-				rt:            rt,
+				headerPayload:  ComputeAwsSignature(ep, ex),
+				originHost:     originHost,
+				passOnRedirect: passOnRedirect,
+				rt:             rt,
 			}
 		}
 	}
@@ -94,7 +98,7 @@ func HTTPClientForEndpoint(ep *endpoints.Endpoint, ex *RequestInfo) (*http.Clien
 	return &http.Client{
 		Transport: rt,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) > 0 && req.URL.Host != via[0].URL.Host {
+			if !passOnRedirect && len(via) > 0 && req.URL.Host != via[0].URL.Host {
 				req.Header.Del("Authorization")
 			}
 			return nil

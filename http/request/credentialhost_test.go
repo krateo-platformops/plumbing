@@ -190,7 +190,7 @@ func TestSameHost_Axes(t *testing.T) {
 			}
 			req := &http.Request{URL: u, Header: http.Header{}}
 
-			if got := sameHost(req, origin); got != tc.want {
+			if got := sameHost(req, origin, false); got != tc.want {
 				t.Errorf("sameHost(%q, %q) = %v, want %v: %s",
 					tc.reqHost, origin, got, tc.want, tc.because)
 			}
@@ -199,11 +199,78 @@ func TestSameHost_Axes(t *testing.T) {
 
 	// No anchor refuses, whatever the request says.
 	u, _ := url.Parse("https://api.example.com/x")
-	if sameHost(&http.Request{URL: u, Header: http.Header{}}, "") {
+	if sameHost(&http.Request{URL: u, Header: http.Header{}}, "", false) {
 		t.Error("an empty origin host must refuse: a value we could not determine must not become " +
 			"a value we act on")
 	}
-	if sameHost(&http.Request{Header: http.Header{}}, origin) {
+	if sameHost(&http.Request{Header: http.Header{}}, origin, false) {
 		t.Error("a nil URL must refuse rather than panic")
 	}
+}
+
+// THE OPT-OUT, and it needs its own rows because a security escape hatch that silently does
+// nothing is worse than not having one (core-provider#307).
+//
+// The strict default has a legitimate casualty: an endpoint configured without a port that
+// redirects to one — an on-prem GHES, a corporate proxy — is a real deployment, and helm's own
+// chart getter has carried PassCredentialsAll for exactly that since long before this. Measured on
+// krateo-057 by the installer session: 0 of 3 external targets issue any 3xx, so nothing there
+// needs it. The field is for the deployment that does.
+func TestPassCredentialsOnRedirect(t *testing.T) {
+	t.Run("OFF by default: the credential does not follow", func(t *testing.T) {
+		origin, sawAuth := redirectPair(t, func(destURL string) string { return destURL })
+		ep := &endpoints.Endpoint{ServerURL: origin, Token: "SECRET-TOKEN"}
+		cli, err := HTTPClientForEndpoint(ep, nil)
+		if err != nil {
+			t.Fatalf("client: %v", err)
+		}
+		resp, err := cli.Get(origin)
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
+		resp.Body.Close()
+		if *sawAuth != "" {
+			t.Errorf("default must refuse, destination saw %q", *sawAuth)
+		}
+	})
+
+	t.Run("ON: the credential follows, because the operator said so", func(t *testing.T) {
+		origin, sawAuth := redirectPair(t, func(destURL string) string { return destURL })
+		ep := &endpoints.Endpoint{
+			ServerURL:                 origin,
+			Token:                     "SECRET-TOKEN",
+			PassCredentialsOnRedirect: true,
+		}
+		cli, err := HTTPClientForEndpoint(ep, nil)
+		if err != nil {
+			t.Fatalf("client: %v", err)
+		}
+		resp, err := cli.Get(origin)
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
+		resp.Body.Close()
+		// THIS is the arm that matters. An escape hatch asserted only by "the default refuses"
+		// could be implemented as a no-op and look correct — the operator sets it, nothing
+		// changes, and the RESTAction still 401s with no indication why.
+		if *sawAuth != "Bearer SECRET-TOKEN" {
+			t.Errorf("with PassCredentialsOnRedirect the destination must see the credential, "+
+				"saw %q. An opt-out that does nothing is worse than none: the operator believes "+
+				"they have re-enabled it", *sawAuth)
+		}
+	})
+
+	// And at the unit level: the opt-out wins even when the anchor is unusable. An operator who
+	// declared this endpoint's redirects trusted should not be overridden by a ServerURL we could
+	// not parse — refusing an explicitly-permitted endpoint is the failure that looks like a pass.
+	t.Run("ON overrides an empty anchor", func(t *testing.T) {
+		u, _ := url.Parse("https://anywhere.example.com/x")
+		req := &http.Request{URL: u, Header: http.Header{}}
+		if !sameHost(req, "", true) {
+			t.Error("the opt-out must win over an unparseable anchor")
+		}
+		if sameHost(req, "", false) {
+			t.Error("and without it, an empty anchor must still refuse")
+		}
+	})
 }
