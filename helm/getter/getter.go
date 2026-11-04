@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"github.com/krateo-platformops/plumbing/dialguard"
 	"io"
 	"net/http"
 	"strings"
@@ -144,10 +145,13 @@ func fetch(ctx context.Context, opts GetOptions) (io.Reader, error) {
 }
 
 func newHTTPClient(opts GetOptions) *http.Client {
-	transport := &http.Transport{
-		DisableCompression: true,
-		Proxy:              http.ProxyFromEnvironment,
-	}
+	// THIS TRANSPORT HAD NO DialContext AT ALL, so it used the zero-value dialer and nothing
+	// constrained the destination — on the path that fetches a chart from a URL written in a
+	// CompositionDefinition's spec, which is core-provider#306's primary path. The guarded dialer
+	// is installed here rather than a field being added to the old literal, so the omission cannot
+	// recur silently.
+	transport := dialguard.Transport()
+	transport.DisableCompression = true
 
 	if opts.InsecureSkipVerifyTLS {
 		transport.TLSClientConfig = &tls.Config{

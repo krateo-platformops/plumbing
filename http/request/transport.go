@@ -5,12 +5,11 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"fmt"
-	"net"
+	"github.com/krateo-platformops/plumbing/dialguard"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"strings"
-	"time"
 
 	xcontext "github.com/krateo-platformops/plumbing/context"
 	"github.com/krateo-platformops/plumbing/endpoints"
@@ -74,21 +73,13 @@ func tlsConfigFor(ep *endpoints.Endpoint) (http.RoundTripper, error) {
 	return res, nil
 }
 
+// defaultTransport returns the guarded transport (core-provider#306 / snowplow#1131). The dialer's
+// Control hook refuses link-local, unspecified and multicast destinations on the address ACTUALLY
+// DIALLED, which is what closes DNS rebinding and makes hostname spelling irrelevant. Previously
+// this built its own dialer with no Control, so every endpoint reachable through this package could
+// dial 169.254.169.254.
 func defaultTransport() *http.Transport {
-	dialer := &net.Dialer{
-		Timeout:   30 * time.Second,
-		KeepAlive: 30 * time.Second,
-	}
-
-	return &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           dialer.DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-	}
+	return dialguard.Transport()
 }
 
 func parseProxyURL(proxyURL string) (*url.URL, error) {

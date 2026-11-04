@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/krateo-platformops/plumbing/dialguard"
 	"io"
 	"math"
 	"math/big"
@@ -171,8 +172,11 @@ func WithJWKSRequestTimeout(d time.Duration) JWKSOption {
 // base URL.
 func NewJWKSKeySource(url string, opts ...JWKSOption) *JWKSKeySource {
 	s := &JWKSKeySource{
-		url:                url,
-		httpClient:         &http.Client{Timeout: defaultJWKSRequestTimeout},
+		url: url,
+		// dialguard.Client rather than &http.Client{}: a bare client uses http.DefaultTransport,
+		// whose dialer has no Control hook, so this dial bypassed the destination policy entirely
+		// (core-provider#306 / snowplow#1131).
+		httpClient:         dialguard.Client(defaultJWKSRequestTimeout),
 		ttl:                defaultJWKSCacheTTL,
 		minRefreshInterval: defaultJWKSMinRefreshInterval,
 		now:                time.Now,
