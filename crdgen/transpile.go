@@ -249,18 +249,32 @@ func (t *transpiler) transpile(node *schemas.Type, path string, stack map[string
 		return t.transpileAllOf(node, path, stack)
 	}
 
-	// x-kubernetes-int-or-string: a structural int-or-string node carries no `type`.
-	if node.XIntOrString {
-		out.XIntOrString = true
-		if node.Title != "" {
-			out.Title = node.Title
-		}
-		return out
-	}
+	// x-kubernetes-int-or-string: a structural int-or-string node carries no `type`. It arrives
+	// either as the explicit extension in the input, or as a `type: ["integer","string"]` union,
+	// which is the same claim written in JSON Schema's own vocabulary.
+	//
+	// THIS USED TO RETURN EARLY HERE, carrying only XIntOrString and Title. That silently dropped
+	// `pattern`, `enum`, `default`, bounds and every other common keyword on an int-or-string node
+	// — and the apiserver accepts those keywords alongside the extension, so they were both legal
+	// and lost. It is now a case in the switch below, which falls through to the common-keyword
+	// block like every other node.
+	intOrString := node.XIntOrString || isIntOrStringUnion(node.Type)
 
 	// Resolve the (possibly nullable) primary type. OAS 3.0 `nullable` and JSON Schema
 	// type:["x","null"] both map to structural `nullable`.
 	typ, nullable := primaryType(node.Type)
+
+	// A union this transpiler cannot express structurally keeps its first member, which is what
+	// primaryType has always done — but it no longer does so silently. `["T","null"]` is NOT this
+	// case: it maps exactly onto `nullable` above and loses nothing.
+	if !intOrString {
+		if dropped := droppedUnionMembers(node.Type); len(dropped) > 0 {
+			t.warn(path, fmt.Sprintf("type %v is a union this schema cannot express structurally; "+
+				"keeping %q and dropping %v. A value of a dropped type will be refused by the "+
+				"apiserver even though the source schema accepts it",
+				[]string(node.Type), typ, dropped))
+		}
+	}
 	if nullable || node.Nullable {
 		out.Nullable = true
 	}
@@ -271,6 +285,16 @@ func (t *transpiler) transpile(node *schemas.Type, path string, stack map[string
 	}
 
 	switch {
+	// FIRST, because an int-or-string node is defined by what it accepts rather than by a `type`,
+	// and every case below keys off `typ` — which for a union is only ever one of its members.
+	case intOrString:
+		out.XIntOrString = true
+		// The arm that distinguishes this fix from the loss it replaces: a `pattern` or a bound on
+		// an int-or-string node is legal and enforced (the apiserver applies the string keywords to
+		// the string branch and leaves integers alone), so dropping them narrows nothing and loses
+		// the author's constraint.
+		copyScalarValidation(out, node)
+
 	case len(node.Properties) > 0 || (node.AdditionalProperties != nil && node.AdditionalProperties.Type != nil):
 		out.Type = "object"
 		t.fillObject(out, node, path, stack)
@@ -511,7 +535,15 @@ func (t *transpiler) attachUnion(out *apiextensionsv1.JSONSchemaProps, node *sch
 }
 
 func (t *transpiler) copyEnum(out *apiextensionsv1.JSONSchemaProps, node *schemas.Type, path string) {
-	if len(node.Enum) == 0 || out.Type == "" || out.Type == "object" {
+	// `out.Type == ""` is the untyped case the apiserver would reject an enum on — EXCEPT for an
+	// int-or-string node, which deliberately carries no `type` and does accept one. That arm was
+	// unreachable until #77: an int-or-string node used to return from transpile before reaching
+	// here, so admitting it now is not a relaxation of a decision, it is the first time the
+	// decision has had to be made.
+	if len(node.Enum) == 0 || out.Type == "object" {
+		return
+	}
+	if out.Type == "" && !out.XIntOrString {
 		return
 	}
 	for _, e := range node.Enum {
@@ -645,6 +677,42 @@ func isScalarItems(out *apiextensionsv1.JSONSchemaProps) bool {
 
 // primaryType returns the single structural type and whether the node is nullable
 // (type given as ["T","null"]).
+// isIntOrStringUnion reports whether the non-null members are EXACTLY integer and string.
+//
+// Narrow on purpose. `x-kubernetes-int-or-string` means precisely "an integer or a string", so it
+// is the structural spelling of that one union and of no other. A looser test — "contains string"
+// or "any two scalars" — would claim a node accepts things it does not, which is worse than the
+// narrowing it would replace: a wrong ACCEPT admits an object the renderer then cannot read, with
+// no error anywhere, while a wrong reject is at least loud.
+func isIntOrStringUnion(tl schemas.TypeList) bool {
+	seen := map[string]bool{}
+	for _, t := range tl {
+		if t == schemas.TypeNameNull {
+			continue
+		}
+		seen[t] = true
+	}
+	return len(seen) == 2 && seen[schemas.TypeNameInteger] && seen[schemas.TypeNameString]
+}
+
+// droppedUnionMembers returns the non-null members primaryType discards: everything after the
+// first. Used only to say so — the behaviour is unchanged.
+func droppedUnionMembers(tl schemas.TypeList) []string {
+	var kept bool
+	var dropped []string
+	for _, t := range tl {
+		if t == schemas.TypeNameNull {
+			continue
+		}
+		if !kept {
+			kept = true
+			continue
+		}
+		dropped = append(dropped, t)
+	}
+	return dropped
+}
+
 func primaryType(tl schemas.TypeList) (string, bool) {
 	if len(tl) == 0 {
 		return "", false
