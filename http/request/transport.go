@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"time"
 
 	xcontext "github.com/krateo-platformops/plumbing/context"
@@ -149,7 +150,7 @@ func (rt *debuggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, e
 type basicAuthRoundTripper struct {
 	username       string
 	password       string `datapolicy:"password"`
-	originHost     string
+	origin         origin
 	passOnRedirect bool
 	rt             http.RoundTripper
 }
@@ -158,7 +159,7 @@ func (rt *basicAuthRoundTripper) RoundTrip(req *http.Request) (*http.Response, e
 	if len(req.Header.Get("Authorization")) != 0 {
 		return rt.rt.RoundTrip(req)
 	}
-	if !sameHost(req, rt.originHost, rt.passOnRedirect) {
+	if !sameOrigin(req, rt.origin, rt.passOnRedirect) {
 		return rt.rt.RoundTrip(req)
 	}
 	req = cloneRequest(req)
@@ -168,7 +169,7 @@ func (rt *basicAuthRoundTripper) RoundTrip(req *http.Request) (*http.Response, e
 
 type bearerAuthRoundTripper struct {
 	bearer         string
-	originHost     string
+	origin         origin
 	passOnRedirect bool
 	rt             http.RoundTripper
 }
@@ -177,7 +178,7 @@ func (rt *bearerAuthRoundTripper) RoundTrip(req *http.Request) (*http.Response, 
 	if len(req.Header.Get("Authorization")) != 0 {
 		return rt.rt.RoundTrip(req)
 	}
-	if !sameHost(req, rt.originHost, rt.passOnRedirect) {
+	if !sameOrigin(req, rt.origin, rt.passOnRedirect) {
 		return rt.rt.RoundTrip(req)
 	}
 
@@ -190,7 +191,7 @@ func (rt *bearerAuthRoundTripper) RoundTrip(req *http.Request) (*http.Response, 
 
 type awsAuthRoundTripper struct {
 	headerPayload  string
-	originHost     string
+	origin         origin
 	passOnRedirect bool
 	rt             http.RoundTripper
 }
@@ -199,7 +200,7 @@ func (rt *awsAuthRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 	if len(req.Header.Get("Authorization")) != 0 {
 		return rt.rt.RoundTrip(req)
 	}
-	if !sameHost(req, rt.originHost, rt.passOnRedirect) {
+	if !sameOrigin(req, rt.origin, rt.passOnRedirect) {
 		return rt.rt.RoundTrip(req)
 	}
 
@@ -210,8 +211,19 @@ func (rt *awsAuthRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 	return rt.rt.RoundTrip(req)
 }
 
-// sameHost reports whether req is going to the host the credential was configured for
-// (core-provider#307).
+// origin is the trust anchor for a credential: the SCHEME and the host:port the operator
+// configured (core-provider#307).
+//
+// WHY SCHEME IS PART OF IT, and why the first version of this fix was incomplete. That version
+// compared url.Host alone, and url.Host carries no scheme — measured, with a control:
+//
+//	https://api.example.com -> http://api.example.com   same Host? true
+//	https://api.example.com -> https://evil.example.net  same Host? false   (control)
+//
+// So a server that redirected its own HTTPS endpoint to plaintext HTTP was "the same host", and the
+// bearer token went out in cleartext on the same host the operator had configured for TLS. Go's
+// client follows such a downgrade by default. Host equality is the right rule for the host axis and
+// says nothing at all about the channel; an origin is the pair.
 //
 // WHY THE ROUND-TRIPPER AND NOT CheckRedirect. net/http strips Authorization on a redirect, and
 // these round-trippers then put it back: their guard was "if the header is ABSENT, add it", and
@@ -231,9 +243,67 @@ func (rt *awsAuthRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 // api.example.com.attacker.net, a name an attacker can register. Equality is the only comparison
 // that gets both axes right, which is why this is == and not a helper with an allowlist.
 //
-// An EMPTY originHost refuses. That is the destructive-default rule on a security path: a value we
-// could not determine must not become a value we act on. The cost is a 401 an operator can see.
-func sameHost(req *http.Request, originHost string, passOnRedirect bool) bool {
+// The ZERO VALUE refuses. That is the destructive-default rule on a security path: a value we could
+// not determine must not become a value we act on. The cost is a 401 an operator can see.
+type origin struct {
+	scheme string
+	host   string
+}
+
+// known reports whether an anchor was determined at all. An unparseable or host-less URL is not an
+// anchor, and a credential has nothing to be measured against.
+func (o origin) known() bool { return o.host != "" }
+
+func (o origin) String() string {
+	if !o.known() {
+		return "<no anchor>"
+	}
+	return o.scheme + "://" + o.host
+}
+
+// permits reports whether a credential anchored at o may be attached to a request going to dst.
+//
+// The host must match exactly. The scheme may IMPROVE but never degrade: http -> https is allowed
+// because it is the ordinary HSTS/redirect-to-TLS hop to the very same host over a strictly better
+// channel, and refusing it would break a common real configuration for no security gain. https ->
+// http is refused, because that is the downgrade described above. Anything else — a scheme we do
+// not recognise, or a change in either direction between other schemes — is refused.
+func (o origin) permits(dst origin) bool {
+	if !o.known() || !dst.known() {
+		return false
+	}
+	if o.host != dst.host {
+		return false
+	}
+	if o.scheme == dst.scheme {
+		return true
+	}
+	return o.scheme == "http" && dst.scheme == "https"
+}
+
+// originOfURL reads an anchor off a parsed URL.
+//
+// The host is lowercased because DNS names are case-insensitive, so a case difference is NOT a
+// different host and refusing it would be a false refusal. Default ports are elided for the same
+// reason: https://h and https://h:443 are one endpoint, and url.Host reports them differently.
+// Both normalisations are applied to each side of the comparison, so neither can admit a host the
+// exact comparison would have rejected.
+func originOfURL(u *url.URL) origin {
+	if u == nil || u.Host == "" {
+		return origin{}
+	}
+	scheme, host := strings.ToLower(u.Scheme), strings.ToLower(u.Host)
+	switch scheme {
+	case "http":
+		host = strings.TrimSuffix(host, ":80")
+	case "https":
+		host = strings.TrimSuffix(host, ":443")
+	}
+	return origin{scheme: scheme, host: host}
+}
+
+// sameOrigin reports whether req is going somewhere the credential anchored at o may follow.
+func sameOrigin(req *http.Request, o origin, passOnRedirect bool) bool {
 	// The OPT-OUT, and it is checked before the anchor on purpose: an operator who set it has
 	// declared that this endpoint's redirects are trusted, and that declaration should not be
 	// overridden by an anchor we could not parse. Refusing an explicitly-permitted endpoint is the
@@ -241,8 +311,8 @@ func sameHost(req *http.Request, originHost string, passOnRedirect bool) bool {
 	if passOnRedirect {
 		return true
 	}
-	if originHost == "" || req.URL == nil {
+	if req.URL == nil {
 		return false
 	}
-	return req.URL.Host == originHost
+	return o.permits(originOfURL(req.URL))
 }

@@ -143,68 +143,142 @@ func TestNoAnchorMeansNoCredential(t *testing.T) {
 // reimplementation, and they were right: api.example.com.attacker.net against a configured
 // api.example.com. A suffix or Contains matcher ADMITS it, and it is a name an attacker can
 // register. Their own suite covers the leading-label axis and never covered this one.
-func TestSameHost_Axes(t *testing.T) {
-	const origin = "api.example.com"
+// THE SCHEME AXIS was added after the fact, and the reason is worth keeping: the first version of
+// this guard compared url.Host alone, which carries no scheme. Measured, with a control:
+//
+//	https://api.example.com -> http://api.example.com   same Host? true
+//	https://api.example.com -> https://evil.example.net  same Host? false
+//
+// So a TLS endpoint that redirected to plaintext on its OWN host passed the guard and the bearer
+// token went out in the clear. The snowplow session compared scheme+host+port at their egress and
+// said so in passing; that remark is what prompted the measurement. Every row below therefore
+// varies the whole destination URL rather than just the host — a table that fixes the scheme cannot
+// fail when the scheme is the thing being ignored, which is exactly how the first version shipped.
+func TestSameOrigin_Axes(t *testing.T) {
+	anchor := originOf("https://api.example.com")
+	if !anchor.known() {
+		t.Fatal("premise: the fixture anchor must parse, or every row below refuses for the " +
+			"wrong reason and the negative rows pass vacuously")
+	}
 
 	for _, tc := range []struct {
 		name    string
-		reqHost string
+		reqURL  string
 		want    bool
 		because string
 	}{
 		{
-			name: "exact match", reqHost: "api.example.com", want: true,
-			because: "the configured host must work, or the guard refuses everything and the " +
+			name: "exact match", reqURL: "https://api.example.com/x", want: true,
+			because: "the configured origin must work, or the guard refuses everything and the " +
 				"negative rows below pass for the wrong reason",
 		},
 		{
-			name: "SUBDOMAIN of the origin", reqHost: "evil.api.example.com", want: false,
+			name: "SUBDOMAIN of the origin", reqURL: "https://evil.api.example.com/x", want: false,
 			because: "net/http PERMITS this hop — client.go:992 isDomainOrSubdomain, and its own " +
 				"comment says the allowance is intentional. We must not inherit it",
 		},
 		{
-			name: "attacker-registered PARENT", reqHost: "api.example.com.attacker.net", want: false,
+			name: "attacker-registered PARENT", reqURL: "https://api.example.com.attacker.net/x", want: false,
 			because: "a HasSuffix or Contains matcher admits this, and attacker.net is registrable. " +
 				"This is the row a reimplementation fails, and it is why the comparison is == " +
 				"rather than a suffix test",
 		},
 		{
-			name: "same name, DIFFERENT port", reqHost: "api.example.com:8443", want: false,
+			name: "same name, DIFFERENT port", reqURL: "https://api.example.com:8443/x", want: false,
 			because: "net/http compares url.Hostname() (transport.go:2947), so a port change is " +
 				"invisible to it. Comparing url.Host makes it visible here",
 		},
 		{
-			name: "unrelated host", reqHost: "attacker.net", want: false,
+			name: "unrelated host", reqURL: "https://attacker.net/x", want: false,
 			because: "the baseline case, and the one the stdlib does catch",
 		},
 		{
-			name: "prefix of the origin", reqHost: "example.com", want: false,
+			name: "prefix of the origin", reqURL: "https://example.com/x", want: false,
 			because: "a HasPrefix matcher would reject this and admit the parent row above; both " +
 				"directions have to be wrong for the right reason",
 		},
+		{
+			name: "TLS DOWNGRADE to the same host", reqURL: "http://api.example.com/x", want: false,
+			because: "THE ROW THE FIRST VERSION FAILED. url.Host is identical for both, so a " +
+				"host-only comparison sends the token in cleartext to the very host the operator " +
+				"configured for TLS, and Go follows such a redirect by default",
+		},
+		{
+			name: "TLS downgrade with the default port spelled out", reqURL: "http://api.example.com:80/x", want: false,
+			because: "default-port elision must not launder a downgrade: :80 normalises away, so " +
+				"the host matches and only the scheme check can refuse this",
+		},
+		{
+			name: "explicit default port on the SAME scheme", reqURL: "https://api.example.com:443/x", want: true,
+			because: "https://h and https://h:443 are one endpoint. Refusing this would be a FALSE " +
+				"refusal, and a guard that over-refuses gets switched off",
+		},
+		{
+			name: "UPPERCASE host", reqURL: "https://API.Example.COM/x", want: true,
+			because: "DNS is case-insensitive, so this is the same host. Another false-refusal row: " +
+				"the normalisation is applied to both sides, so it cannot admit a host that exact " +
+				"comparison would reject",
+		},
+		{
+			name: "a non-HTTP scheme on the same host", reqURL: "ftp://api.example.com/x", want: false,
+			because: "only the http->https improvement is permitted; any other scheme change is a " +
+				"channel we never evaluated",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			u, err := url.Parse("https://" + tc.reqHost + "/x")
+			u, err := url.Parse(tc.reqURL)
 			if err != nil {
 				t.Fatalf("fixture URL: %v", err)
 			}
 			req := &http.Request{URL: u, Header: http.Header{}}
 
-			if got := sameHost(req, origin, false); got != tc.want {
-				t.Errorf("sameHost(%q, %q) = %v, want %v: %s",
-					tc.reqHost, origin, got, tc.want, tc.because)
+			if got := sameOrigin(req, anchor, false); got != tc.want {
+				t.Errorf("sameOrigin(%q, anchor=%s) = %v, want %v: %s",
+					tc.reqURL, anchor, got, tc.want, tc.because)
 			}
 		})
 	}
 
+	// THE UPGRADE, as its own case because its anchor differs: configured http, redirected to https
+	// on the same host. This is the ordinary HSTS hop and it must be PERMITTED — the destination is
+	// the same host over a strictly better channel, and refusing it would break a real deployment
+	// for no security gain. It is also the row that proves the scheme rule is DIRECTIONAL rather
+	// than plain equality, which a `o.scheme == dst.scheme` mutant would pass the downgrade rows on.
+	t.Run("http -> https upgrade on the same host is permitted", func(t *testing.T) {
+		plain := originOf("http://api.example.com")
+		if !plain.known() {
+			t.Fatal("premise: the http anchor must parse")
+		}
+		u, _ := url.Parse("https://api.example.com/x")
+		if !sameOrigin(&http.Request{URL: u, Header: http.Header{}}, plain, false) {
+			t.Error("an http -> https hop to the same host must be permitted: refusing it is a " +
+				"false refusal on the commonest redirect there is, and the channel improves")
+		}
+		// And the reverse from the same pair, so the direction is asserted rather than assumed.
+		d, _ := url.Parse("http://api.example.com/x")
+		tls := originOf("https://api.example.com")
+		if sameOrigin(&http.Request{URL: d, Header: http.Header{}}, tls, false) {
+			t.Error("https -> http must still refuse; if both directions pass, the scheme check " +
+				"has become unconditional")
+		}
+	})
+
 	// No anchor refuses, whatever the request says.
 	u, _ := url.Parse("https://api.example.com/x")
-	if sameHost(&http.Request{URL: u, Header: http.Header{}}, "", false) {
-		t.Error("an empty origin host must refuse: a value we could not determine must not become " +
+	if sameOrigin(&http.Request{URL: u, Header: http.Header{}}, origin{}, false) {
+		t.Error("an unknown anchor must refuse: a value we could not determine must not become " +
 			"a value we act on")
 	}
-	if sameHost(&http.Request{Header: http.Header{}}, origin, false) {
+	if sameOrigin(&http.Request{Header: http.Header{}}, anchor, false) {
 		t.Error("a nil URL must refuse rather than panic")
+	}
+
+	// An anchor we could not parse must be UNKNOWN, not a zero-host origin that accidentally
+	// matches a request with no host.
+	for _, bad := range []string{"", "not a url", "https://", "/only/a/path"} {
+		if originOf(bad).known() {
+			t.Errorf("originOf(%q) must not yield an anchor", bad)
+		}
 	}
 }
 
@@ -263,14 +337,31 @@ func TestPassCredentialsOnRedirect(t *testing.T) {
 	// And at the unit level: the opt-out wins even when the anchor is unusable. An operator who
 	// declared this endpoint's redirects trusted should not be overridden by a ServerURL we could
 	// not parse — refusing an explicitly-permitted endpoint is the failure that looks like a pass.
-	t.Run("ON overrides an empty anchor", func(t *testing.T) {
+	t.Run("ON overrides an unknown anchor", func(t *testing.T) {
 		u, _ := url.Parse("https://anywhere.example.com/x")
 		req := &http.Request{URL: u, Header: http.Header{}}
-		if !sameHost(req, "", true) {
+		if !sameOrigin(req, origin{}, true) {
 			t.Error("the opt-out must win over an unparseable anchor")
 		}
-		if sameHost(req, "", false) {
-			t.Error("and without it, an empty anchor must still refuse")
+		if sameOrigin(req, origin{}, false) {
+			t.Error("and without it, an unknown anchor must still refuse")
+		}
+	})
+
+	// AND IT MUST ALSO COVER THE DOWNGRADE, because that is the whole point of an opt-out: an
+	// operator who declared this endpoint's redirects trusted has accepted its hops, and a guard
+	// that honoured the opt-out on the host axis but silently kept refusing on the scheme axis
+	// would be the "opt-out that does nothing" shape in a narrower disguise.
+	t.Run("ON also permits a downgrade the operator accepted", func(t *testing.T) {
+		d, _ := url.Parse("http://api.example.com/x")
+		req := &http.Request{URL: d, Header: http.Header{}}
+		anchor := originOf("https://api.example.com")
+		if !sameOrigin(req, anchor, true) {
+			t.Error("with the opt-out set, the scheme check must not keep refusing: a partial " +
+				"escape hatch leaves the operator with a 401 and no explanation")
+		}
+		if sameOrigin(req, anchor, false) {
+			t.Error("CONTROL: without it the same hop must refuse, or the row above proves nothing")
 		}
 	})
 }

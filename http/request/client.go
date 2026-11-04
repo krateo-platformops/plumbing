@@ -36,14 +36,19 @@ func HTTPClientForEndpoint(ep *endpoints.Endpoint, ex *RequestInfo) (*http.Clien
 		countTrue += 1
 	}
 
-	// THE HOST THE OPERATOR CONFIGURED is the trust anchor for every credential below
-	// (core-provider#307). Captured once, here, because this is the only place that still knows it:
-	// by the time a RoundTrip runs on a redirected request, the original host is gone.
+	// THE ORIGIN THE OPERATOR CONFIGURED is the trust anchor for every credential below
+	// (core-provider#307): the scheme AND the host:port. Captured once, here, because this is the
+	// only place that still knows it: by the time a RoundTrip runs on a redirected request, the
+	// original origin is gone.
 	//
-	// An unparseable or empty ServerURL yields "", and the round-trippers refuse to attach on an
-	// empty anchor — FAIL CLOSED. The cost is a 401 the operator can see; the alternative is a
-	// credential sent to a host nobody chose, which is silent.
-	originHost := originHostOf(ep.ServerURL)
+	// SCHEME is part of the anchor because the first version of this fix compared the host alone,
+	// and url.Host carries no scheme — so an https endpoint that redirected to plaintext http on
+	// the SAME host was "the same host" and the credential went out in the clear. See origin.permits.
+	//
+	// An unparseable or empty ServerURL yields the zero origin, and the round-trippers refuse to
+	// attach on an unknown anchor — FAIL CLOSED. The cost is a 401 the operator can see; the
+	// alternative is a credential sent to a host nobody chose, which is silent.
+	anchor := originOf(ep.ServerURL)
 	passOnRedirect := ep.PassCredentialsOnRedirect
 
 	switch {
@@ -53,7 +58,7 @@ func HTTPClientForEndpoint(ep *endpoints.Endpoint, ex *RequestInfo) (*http.Clien
 	case ep.HasTokenAuth():
 		rt = &bearerAuthRoundTripper{
 			bearer:         ep.Token,
-			originHost:     originHost,
+			origin:         anchor,
 			passOnRedirect: passOnRedirect,
 			rt:             rt,
 		}
@@ -62,7 +67,7 @@ func HTTPClientForEndpoint(ep *endpoints.Endpoint, ex *RequestInfo) (*http.Clien
 		rt = &basicAuthRoundTripper{
 			username:       ep.Username,
 			password:       ep.Password,
-			originHost:     originHost,
+			origin:         anchor,
 			passOnRedirect: passOnRedirect,
 			rt:             rt,
 		}
@@ -73,7 +78,7 @@ func HTTPClientForEndpoint(ep *endpoints.Endpoint, ex *RequestInfo) (*http.Clien
 		} else {
 			rt = &awsAuthRoundTripper{
 				headerPayload:  ComputeAwsSignature(ep, ex),
-				originHost:     originHost,
+				origin:         anchor,
 				passOnRedirect: passOnRedirect,
 				rt:             rt,
 			}
@@ -89,16 +94,24 @@ func HTTPClientForEndpoint(ep *endpoints.Endpoint, ex *RequestInfo) (*http.Clien
 	// permits api.example.com -> evil.api.example.com, measured by the oasgen-provider session on a
 	// live harness and then confirmed in the Go source.
 	//
-	// This strips on ANY host change, exact on host:port, which is what the chart getter already
-	// does (plumbing helm/getter/getter.go:106-114) and is stronger than the stdlib on both axes.
+	// This strips on any ORIGIN change — exact on host:port, and on a scheme downgrade — which is
+	// stronger than the stdlib on every axis it gets wrong.
+	//
+	// It is compared against via[0], the FIRST request of the chain, rather than against the
+	// configured anchor: this layer exists for an Authorization a CALLER set directly via
+	// opts.Headers, and such a caller's own first request is the origin it chose. The round-trippers
+	// below use the configured anchor, which is the right reference for a credential THEY attach.
 	//
 	// It is NOT sufficient alone: the auth round-trippers run AFTER CheckRedirect and would re-add
-	// the header. The host-aware guard in each of them is the real fix; this covers an Authorization
-	// a CALLER set directly via opts.Headers, which no round-tripper knows about.
+	// the header. The origin-aware guard in each of them is the real fix; this covers the header a
+	// caller set, which no round-tripper knows about.
 	return &http.Client{
 		Transport: rt,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if !passOnRedirect && len(via) > 0 && req.URL.Host != via[0].URL.Host {
+			if passOnRedirect || len(via) == 0 {
+				return nil
+			}
+			if !originOfURL(via[0].URL).permits(originOfURL(req.URL)) {
 				req.Header.Del("Authorization")
 			}
 			return nil
@@ -106,18 +119,19 @@ func HTTPClientForEndpoint(ep *endpoints.Endpoint, ex *RequestInfo) (*http.Clien
 	}, nil
 }
 
-// originHostOf returns the host:port of a configured server URL, or "" when it cannot be parsed.
+// originOf returns the anchor of a configured server URL, or the zero origin when it cannot be
+// determined.
 //
-// "" means "no anchor", and every credential round-tripper treats that as refuse-to-attach. That is
-// the destructive-default rule applied to a security path: a value we could not determine must not
-// become a value we act on.
-func originHostOf(serverURL string) string {
+// The zero origin means "no anchor", and every credential round-tripper treats that as
+// refuse-to-attach. That is the destructive-default rule applied to a security path: a value we
+// could not determine must not become a value we act on.
+func originOf(serverURL string) origin {
 	if serverURL == "" {
-		return ""
+		return origin{}
 	}
 	u, err := url.Parse(serverURL)
-	if err != nil || u.Host == "" {
-		return ""
+	if err != nil {
+		return origin{}
 	}
-	return u.Host
+	return originOfURL(u)
 }
