@@ -25,6 +25,54 @@ type Release struct {
 	// time.Since(Updated) is how long the operation has been in flight, which callers use to
 	// tell a legitimately in-progress operation from a genuinely stuck one.
 	Updated time.Time
+
+	// Hooks are the release's lifecycle hooks. helm keeps them OUT of Manifest by construction —
+	// releaseutil.SortManifests splits them into their own slice — so a consumer that reads only
+	// Manifest cannot see them at all.
+	//
+	// WHY THIS IS EXPOSED (core-provider#311). chart-inspector derives a composition's RBAC from a
+	// dry-run install: the tracer records the API calls, and the result is narrowed against
+	// Manifest. A dry run executes no hooks and Manifest excludes them, so NO grant was ever
+	// generated for a hook object. A `pre-delete` hook therefore turned teardown into an uninstall
+	// that could never succeed — measured on a real cluster, with the controlled comparison being
+	// one template rendering four objects of which only the hook-annotated one went ungranted.
+	//
+	// The hooks are available on a DRY RUN: helm populates rel.Hooks at action/install.go:317 and
+	// returns early for a dry run at :364 — after. And collection is PHASE-AGNOSTIC: SortManifests
+	// gathers every hook and merely records its Events, so a pre-delete hook is present in the
+	// result of an install probe.
+	Hooks []Hook
+}
+
+// Hook is one lifecycle hook of a release, projected from helm's release.Hook.
+//
+// PROJECTED RATHER THAN RE-EXPORTED, deliberately. Release exists so a consumer does not take a
+// direct dependency on helm's types — chart-inspector has helm.sh/helm/v3 as an INDIRECT
+// requirement and should keep it that way. Re-exporting []*release.Hook, or helm's HookEvent, would
+// make helm direct for every consumer that touches a hook. Only the fields a consumer needs are
+// carried; everything else about a hook (weight, delete policies, last run) stays helm's business.
+type Hook struct {
+	// Name is the hook object's name, and Kind its Kubernetes kind.
+	Name string
+	Kind string
+	// Path is the chart-relative template path, which is what makes a hook diagnosable: an
+	// operator told "this hook has no RBAC" needs to know which file to look at.
+	Path string
+	// Manifest is the rendered document. It carries the apiVersion and namespace that Kind alone
+	// does not, so a consumer resolving a GVK must parse this rather than infer from Kind.
+	Manifest string
+	// Events are the hook's phases ("pre-delete", "post-install", ...) as plain strings.
+	//
+	// A consumer deciding RBAC must NOT filter on these: an object needs its permissions
+	// regardless of which phase fires it, and helm deletes a previous hook object under
+	// before-hook-creation whatever its phase. Carried because a diagnostic should be able to say
+	// WHICH hook, not so the set can be narrowed.
+	Events []string
+}
+
+// GetHooks returns the release's lifecycle hooks. Mirrors GetManifest.
+func (r *Release) GetHooks() []Hook {
+	return r.Hooks
 }
 
 func (r *Release) String() string {
