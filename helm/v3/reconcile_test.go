@@ -465,6 +465,88 @@ func TestControllerReconcile(t *testing.T) {
 			require.NoError(t, err)
 			assert.False(t, res.Changed, "after adoption the resource is tracked -> steady no-op")
 
+			// =========================================================
+			// (i) AN OPERATOR-ADDED KEY ON A CHART-MANAGED SECRET MUST SURVIVE THE SELF-HEAL.
+			//
+			// This answers a REACHABILITY question, not a correctness one. core-provider#307's
+			// opt-in is a Secret key, `pass-credentials-on-redirect`, and on a Krateo cluster
+			// every endpoint Secret is rendered by a component chart — measured by the installer
+			// session on krateo-057: all five (clickhouse, blueprints, sse-proxy-internal,
+			// controller-render, blueprint-render) carry managed-by=Helm. So the documented
+			// remedy, `kubectl patch secret <ep>`, adds a field to an object a cdc composition
+			// owns, and the installer session's expectation was that the self-heal would revert
+			// it on the next reconcile:
+			//
+			//	"the opt-in exists but cannot be set on any of the five endpoints that would
+			//	 need it, because the thing that would set it is the thing the reconciler
+			//	 removes."
+			//
+			// If that were true the fix would be four component charts plus an installer
+			// passthrough rather than one Secret key. They declined to test it by patching a live
+			// Secret — correctly, their rule is never to hand-patch a managed resource — and asked
+			// for the behaviour to be confirmed rather than asserted. So it is confirmed HERE,
+			// against a real apiserver, where no production object is involved.
+			//
+			// The code reading says it survives: Force is false (core-provider's cdc sets it
+			// nowhere), so helm takes createPatch -> CreateThreeWayJSONMergePatch(original,
+			// target, live), and a three-way merge deletes only keys that were in ORIGINAL and
+			// are absent from TARGET. A key present solely in LIVE appears in neither, so it is
+			// never in the patch. With force=true helm would instead call helper.Replace
+			// (kube/client.go:711) and the key would be gone.
+			//
+			// THE CONTROL IS THE LOAD-BEARING HALF. "An added key survived" is exactly what a
+			// reconcile that did nothing at all would also produce, so the same cycle must be
+			// shown to heal real drift on the SAME object. Without that arm this test would pass
+			// against a self-heal that had been switched off entirely.
+			// =========================================================
+			const addedKey = "pass-credentials-on-redirect"
+			sec, err := cs.CoreV1().Secrets(namespace).Get(ctx, secretName, metav1.GetOptions{})
+			require.NoError(t, err)
+			if sec.Data == nil {
+				sec.Data = map[string][]byte{}
+			}
+			// The operator's out-of-band addition...
+			sec.Data[addedKey] = []byte("true")
+			// ...and, in the same write, drift on a DECLARED key, which is the control.
+			sec.Data["token"] = []byte("tok-DRIFTED-OUT-OF-BAND")
+			_, err = cs.CoreV1().Secrets(namespace).Update(ctx, sec, metav1.UpdateOptions{})
+			require.NoError(t, err)
+			require.Equal(t, "true", liveSecretVal(t, cs, namespace, secretName, addedKey),
+				"premise: the added key must be live before the reconcile, or this measures nothing")
+			require.Equal(t, "tok-DRIFTED-OUT-OF-BAND", liveSecretVal(t, cs, namespace, secretName, "token"),
+				"premise: the declared key must be drifted before the reconcile, or the control is vacuous")
+
+			res, err = cli.Reconcile(ctx, releaseName, chartURL, cfgTok("yellow", "tok-CHANGED"))
+			require.NoError(t, err)
+
+			gotAdded := liveSecretVal(t, cs, namespace, secretName, addedKey)
+			gotDeclared := liveSecretVal(t, cs, namespace, secretName, "token")
+			t.Logf("[operator-key] Changed=%v  added key %q=%q (want \"true\")  declared key token=%q (want \"tok-CHANGED\")",
+				res.Changed, addedKey, gotAdded, gotDeclared)
+
+			// THE CONTROL first: if this fails, the subject below proves nothing.
+			require.Equal(t, "tok-CHANGED", gotDeclared,
+				"CONTROL: the reconcile must heal drift on a DECLARED key of this same Secret. "+
+					"If it did not, the reconcile was a no-op and the surviving key below is "+
+					"not evidence of anything")
+
+			// THE SUBJECT.
+			assert.Equal(t, "true", gotAdded,
+				"an operator-added key on a chart-managed Secret must survive the self-heal: a "+
+					"three-way merge deletes only keys that were in the stored manifest and are "+
+					"absent from the render, and this key is in neither. If this fails, "+
+					"core-provider#307's opt-in is unreachable on every endpoint Secret a "+
+					"component chart renders, and the remedy moves into those charts")
+
+			// And it must keep surviving, because once is consistent with a patch that happened to
+			// be computed before the addition landed.
+			for i := 0; i < 3; i++ {
+				_, err = cli.Reconcile(ctx, releaseName, chartURL, cfgTok("yellow", "tok-CHANGED"))
+				require.NoError(t, err)
+			}
+			assert.Equal(t, "true", liveSecretVal(t, cs, namespace, secretName, addedKey),
+				"the added key must survive REPEATED reconciles, not just the first")
+
 			return ctx
 		}).
 		Feature()
