@@ -68,5 +68,28 @@ func toWrapperRelease(rel *release.Release) *helmconfig.Release {
 	if rel.Info != nil {
 		r.Updated = rel.Info.LastDeployed.Time // helm's pkg/time.Time -> stdlib time.Time
 	}
+	// Hooks are carried because helm keeps them OUT of Manifest, so a consumer reading only
+	// Manifest cannot see them (core-provider#311: no RBAC was ever generated for a hook object,
+	// which made a pre-delete hook's uninstall impossible). Projected into plumbing's own Hook so
+	// a consumer does not take a direct dependency on helm's release package.
+	//
+	// Events are copied rather than aliased: helm's HookEvent is a distinct string type, and
+	// returning it would put helm in a consumer's import graph for a field they read as text.
+	for _, h := range rel.Hooks {
+		if h == nil {
+			continue
+		}
+		ev := make([]string, 0, len(h.Events))
+		for _, e := range h.Events {
+			ev = append(ev, string(e))
+		}
+		r.Hooks = append(r.Hooks, helmconfig.Hook{
+			Name:     h.Name,
+			Kind:     h.Kind,
+			Path:     h.Path,
+			Manifest: h.Manifest,
+			Events:   ev,
+		})
+	}
 	return r
 }
