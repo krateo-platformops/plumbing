@@ -5,8 +5,8 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"github.com/krateo-platformops/plumbing/dialguard"
 	"io"
-	"net"
 	"net/http"
 	"sort"
 	"strings"
@@ -28,13 +28,13 @@ const (
 	LegacyLayerMediaType = "application/tar+gzip" // Fallback for legacy registries
 )
 
-// Shared Transport to enable Connection Pooling
+// Shared Transport to enable Connection Pooling.
+//
+// The dialer is dialguard's (core-provider#306 / snowplow#1131): the OCI path carries a chart URL
+// from a CompositionDefinition's spec, so it is one of the destinations a user influences.
 var sharedTransport = &http.Transport{
-	Proxy: http.ProxyFromEnvironment,
-	DialContext: (&net.Dialer{
-		Timeout:   30 * time.Second,
-		KeepAlive: 30 * time.Second,
-	}).DialContext,
+	Proxy:                 http.ProxyFromEnvironment,
+	DialContext:           dialguard.Dialer().DialContext,
 	ForceAttemptHTTP2:     true,
 	MaxIdleConns:          100,
 	IdleConnTimeout:       90 * time.Second,

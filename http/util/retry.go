@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/krateo-platformops/plumbing/dialguard"
 	"math/rand"
 	"net/http"
 	"strconv"
@@ -66,7 +67,10 @@ type RetryClient struct {
 // Do executes the request with retry logic only for idempotent methods.
 func (rc *RetryClient) Do(req *http.Request) (*http.Response, error) {
 	if rc.Client == nil {
-		rc.Client = http.DefaultClient
+		// NOT http.DefaultClient: its transport is process-shared and its dialer has no Control
+		// hook, so this fallback silently bypassed the destination policy
+		// (core-provider#306 / snowplow#1131).
+		rc.Client = dialguard.Client(0)
 	}
 
 	// enforce QPS/Burst limits
