@@ -62,9 +62,32 @@ func (ep *Endpoint) HasCertAuth() bool {
 }
 
 // HasAwsAuth returns whether the configuration has AWS authentication or not.
+//
+// ALL FOUR SigV4 INPUTS, and the fourth term used to be a DUPLICATE of AwsSecretKey rather than
+// AwsService — so this reported "has AWS auth" for a configuration that cannot produce a valid
+// signature. `A && A` is `A`, so the typo was invisible until go 1.26's vet made "redundant and" an
+// error and the package stopped building.
+//
+// Why AwsService is the missing term and not a guess: ComputeAwsSignature uses it twice, in the
+// credential scope and in the signing-key derivation (http/request/util.go:146, :158). With it
+// empty, the scope reads ".../<region>//aws4_request" and the key is derived over an empty service,
+// so AWS answers SignatureDoesNotMatch. Returning true for that is a false positive about the one
+// thing the predicate exists to decide.
+//
+// THE BEHAVIOUR CHANGE, stated rather than buried — three call sites, all in http/request:
+//
+//	access+secret+region+service          signs, works                  unchanged
+//	access+secret+region, NO service      signed with an EMPTY service   -> now unsigned,
+//	                                      and rejected by AWS               failing visibly
+//	the same, PLUS a bearer token         countTrue==2, so client.go      -> countTrue==1,
+//	                                      REFUSES the request outright       the token is used
+//
+// No configuration that works today stops working. The third row is the one worth noticing: an
+// endpoint whose bearer token is complete is refused today because incomplete AWS fields sit beside
+// it, and that request starts succeeding.
 func (ep *Endpoint) HasAwsAuth() bool {
 	return len(ep.AwsAccessKey) != 0 &&
 		len(ep.AwsSecretKey) != 0 &&
 		len(ep.AwsRegion) != 0 &&
-		len(ep.AwsSecretKey) != 0
+		len(ep.AwsService) != 0
 }

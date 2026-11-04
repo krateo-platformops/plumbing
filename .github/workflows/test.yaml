@@ -25,6 +25,46 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # ASSERT THE TOOLCHAIN PIN REACHED THIS RUNNER, rather than trusting two settings to agree.
+      #
+      # go.mod pins `toolchain go1.26.10`, and that pin is what govulncheck prices the standard
+      # library against: with the pin, plumbing reports 25 called vulnerabilities; without it, 59,
+      # because the toolchain then falls back to the `go` directive (#73).
+      #
+      # THE PIN REACHES A RUNNER BY TWO DIFFERENT ROUTES, and the dangerous combination is the
+      # cross — found by the oasgen-provider session measuring their own CI rather than reading it:
+      #
+      #   setup-go  GOTOOLCHAIN  effective
+      #   v6        local        1.26.10   v6 reads the toolchain line and installs it directly
+      #   v5        auto         1.26.10   v5 installs the DIRECTIVE, then `go` self-downloads
+      #   v5        local        1.26.0    WRONG STDLIB, SILENTLY -- or a hard failure
+      #
+      # This job is the first row. Each half looks fine in isolation, and the broken pair is reached
+      # by changing EITHER one for an unrelated reason — bumping the action, or setting
+      # GOTOOLCHAIN=local for determinism. So the right guard is not a comment telling the next
+      # person which pair is safe; it is an assertion that the version actually in use matches the
+      # pin, which holds whichever half changes.
+      #
+      # It FAILS when go.mod has no toolchain line, deliberately: a guard that passes over a missing
+      # pin reports success for the exact state it exists to catch.
+      - name: Assert the toolchain pin reached this runner
+        run: |
+          set -euo pipefail
+          want=$(awk '/^toolchain /{print $2; exit}' go.mod)
+          if [ -z "$want" ]; then
+            echo "::error::go.mod declares no 'toolchain' line, so this guard has nothing to check and govulncheck would price the stdlib against the 'go' directive instead (plumbing#73). Restore the pin or delete this step deliberately."
+            exit 1
+          fi
+          got=$(go env GOVERSION)
+          echo "toolchain pin: $want"
+          echo "go env GOVERSION: $got"
+          echo "setup-go/GOTOOLCHAIN: $(go env GOTOOLCHAIN)"
+          if [ "$want" != "$got" ]; then
+            echo "::error::the toolchain pin $want did NOT reach this runner (GOVERSION=$got). Either setup-go stopped reading the toolchain line (v5 ignores it) or GOTOOLCHAIN=local blocked the self-download. CI is building and scanning a different standard library than the pin declares."
+            exit 1
+          fi
+          echo "pin reached the runner"
+
       - name: Unit tests (race)
         run: make test-race
 
@@ -56,6 +96,46 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      # ASSERT THE TOOLCHAIN PIN REACHED THIS RUNNER, rather than trusting two settings to agree.
+      #
+      # go.mod pins `toolchain go1.26.10`, and that pin is what govulncheck prices the standard
+      # library against: with the pin, plumbing reports 25 called vulnerabilities; without it, 59,
+      # because the toolchain then falls back to the `go` directive (#73).
+      #
+      # THE PIN REACHES A RUNNER BY TWO DIFFERENT ROUTES, and the dangerous combination is the
+      # cross — found by the oasgen-provider session measuring their own CI rather than reading it:
+      #
+      #   setup-go  GOTOOLCHAIN  effective
+      #   v6        local        1.26.10   v6 reads the toolchain line and installs it directly
+      #   v5        auto         1.26.10   v5 installs the DIRECTIVE, then `go` self-downloads
+      #   v5        local        1.26.0    WRONG STDLIB, SILENTLY -- or a hard failure
+      #
+      # This job is the first row. Each half looks fine in isolation, and the broken pair is reached
+      # by changing EITHER one for an unrelated reason — bumping the action, or setting
+      # GOTOOLCHAIN=local for determinism. So the right guard is not a comment telling the next
+      # person which pair is safe; it is an assertion that the version actually in use matches the
+      # pin, which holds whichever half changes.
+      #
+      # It FAILS when go.mod has no toolchain line, deliberately: a guard that passes over a missing
+      # pin reports success for the exact state it exists to catch.
+      - name: Assert the toolchain pin reached this runner
+        run: |
+          set -euo pipefail
+          want=$(awk '/^toolchain /{print $2; exit}' go.mod)
+          if [ -z "$want" ]; then
+            echo "::error::go.mod declares no 'toolchain' line, so this guard has nothing to check and govulncheck would price the stdlib against the 'go' directive instead (plumbing#73). Restore the pin or delete this step deliberately."
+            exit 1
+          fi
+          got=$(go env GOVERSION)
+          echo "toolchain pin: $want"
+          echo "go env GOVERSION: $got"
+          echo "setup-go/GOTOOLCHAIN: $(go env GOTOOLCHAIN)"
+          if [ "$want" != "$got" ]; then
+            echo "::error::the toolchain pin $want did NOT reach this runner (GOVERSION=$got). Either setup-go stopped reading the toolchain line (v5 ignores it) or GOTOOLCHAIN=local blocked the self-download. CI is building and scanning a different standard library than the pin declares."
+            exit 1
+          fi
+          echo "pin reached the runner"
 
       # No kind setup action here: each integration package creates and names its OWN cluster
       # through e2e-framework (envfuncs.CreateCluster + kind.NewProvider) — helm/v3 makes
