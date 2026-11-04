@@ -44,10 +44,12 @@ const (
 )
 
 // generateDirect is the direct-transpiler implementation of Generate.
-func generateDirect(opts Options) ([]byte, error) {
+func generateDirect(opts Options) ([]byte, []string, error) {
 	specSchema, err := schemas.FromJSONReader(bytes.NewReader(opts.SpecSchema))
 	if err != nil {
-		return nil, fmt.Errorf("parsing spec schema: %w", err)
+		// Before the transpiler exists, so there are no warnings to return — nil rather than an
+		// empty slice, so a caller cannot read "no warnings collected" as "warnings were checked".
+		return nil, nil, fmt.Errorf("parsing spec schema: %w", err)
 	}
 
 	tr := &transpiler{refs: map[string]*schemas.Type{}}
@@ -67,7 +69,7 @@ func generateDirect(opts Options) ([]byte, error) {
 	if len(opts.StatusSchema) > 0 {
 		statusSchema, err := schemas.FromJSONReader(bytes.NewReader(opts.StatusSchema))
 		if err != nil {
-			return nil, fmt.Errorf("parsing status schema: %w", err)
+			return nil, tr.warnings, fmt.Errorf("parsing status schema: %w", err)
 		}
 		st := &transpiler{refs: map[string]*schemas.Type{}}
 		st.collectRefs(statusSchema)
@@ -83,15 +85,26 @@ func generateDirect(opts Options) ([]byte, error) {
 
 	crd := tr.assembleCRD(opts, specProps, statusProps)
 
+	// BEFORE validateCRD, deliberately: the pass exists so the apiserver's own gate sees a schema
+	// that can pass it. Running it after would leave the generation failing with the error the pass
+	// was written to prevent.
+	if n := dropUnbudgetableUniquenessRules(crd); n > 0 {
+		tr.warnings = append(tr.warnings, fmt.Sprintf(
+			"dropped %d generated uniqueness rule(s): the array is bounded but an enclosing "+
+				"array/map is not, and the CEL cost estimator multiplies by every ancestor bound — "+
+				"the rule would be refused at any own-bound. Add maxItems/maxProperties to the "+
+				"enclosing array(s) to get uniqueness enforced.", n))
+	}
+
 	if err := validateCRD(crd); err != nil {
-		return nil, fmt.Errorf("generated CRD failed the apiserver's own validation (this is a crdgen bug, not a config error): %w", err)
+		return nil, tr.warnings, fmt.Errorf("generated CRD failed the apiserver's own validation (this is a crdgen bug, not a config error): %w", err)
 	}
 
 	out, err := yaml.Marshal(crd)
 	if err != nil {
-		return nil, fmt.Errorf("marshalling CRD: %w", err)
+		return nil, tr.warnings, fmt.Errorf("marshalling CRD: %w", err)
 	}
-	return append([]byte("---\n"), out...), nil
+	return append([]byte("---\n"), out...), tr.warnings, nil
 }
 
 type transpiler struct {
@@ -261,10 +274,12 @@ func (t *transpiler) transpile(node *schemas.Type, path string, stack map[string
 	case len(node.Properties) > 0 || (node.AdditionalProperties != nil && node.AdditionalProperties.Type != nil):
 		out.Type = "object"
 		t.fillObject(out, node, path, stack)
+		copyObjectValidation(out, node)
 
 	case typ == schemas.TypeNameObject:
 		// Typed object with no declared properties -> open object (accept arbitrary content).
 		out.Type = "object"
+		copyObjectValidation(out, node)
 		if node.AdditionalProperties != nil && node.AdditionalProperties.IsBool && node.AdditionalProperties.Bool {
 			out.XPreserveUnknownFields = boolPtr(true)
 		} else if node.AdditionalProperties == nil {
@@ -536,6 +551,34 @@ func copyScalarValidation(out *apiextensionsv1.JSONSchemaProps, node *schemas.Ty
 	}
 }
 
+// copyObjectValidation copies the object-size constraints. It exists because they were MISSING:
+// schemas.Type parses maxProperties/minProperties (schemas/model.go) and nothing copied them to the
+// CRD, so an author who bounded a map had the bound silently dropped.
+//
+// Two consequences, and the second is why this was found at all:
+//
+//   - the author's constraint was lost. maxProperties is permitted in a structural schema, so there
+//     was never a reason not to emit it.
+//   - a map ancestor was therefore ALWAYS unbounded to the apiserver's cost estimator, which
+//     multiplies by the product of every enclosing array/map bound. A uniqueness rule anywhere
+//     under a map was unbudgetable no matter what the author wrote, and the only advice we could
+//     give them ("bound the enclosing map") did not work.
+//
+// Found by a surviving mutant: walkDropUnbudgetable's `node.MaxProperties != nil` term could never
+// be true on a transpiled schema, so a mutant that deleted it changed nothing any test could see.
+// The mutant was reachable in production and unreachable from the suite — the gap was the emitter,
+// not the test.
+func copyObjectValidation(out *apiextensionsv1.JSONSchemaProps, node *schemas.Type) {
+	if node.MinProperties > 0 {
+		v := int64(node.MinProperties)
+		out.MinProperties = &v
+	}
+	if node.MaxProperties > 0 {
+		v := int64(node.MaxProperties)
+		out.MaxProperties = &v
+	}
+}
+
 func copyArrayValidation(out *apiextensionsv1.JSONSchemaProps, node *schemas.Type) {
 	if node.MinItems > 0 {
 		v := int64(node.MinItems)
@@ -732,4 +775,126 @@ func validateCRD(v1crd *apiextensionsv1.CustomResourceDefinition) error {
 		return fmt.Errorf("%d structural error(s): %s", len(errs), strings.Join(msgs, "; "))
 	}
 	return nil
+}
+
+// uniquenessRule is the exact rule applyUniqueItems emits. Matched on BOTH the rule text and the
+// message so the pass below can only ever remove OUR rule — an author's own
+// x-kubernetes-validations entry is not ours to drop, and silently deleting a hand-written
+// constraint would be a far worse defect than the one this fixes.
+const (
+	uniquenessRule    = "self.all(x, self.exists_one(y, y == x))"
+	uniquenessMessage = "Items must be unique"
+)
+
+// dropUnbudgetableUniquenessRules removes the generated uniqueness rule from any array whose
+// ANCESTORS are not all bounded, and reports how many it removed.
+//
+// # The defect this fixes (reported by the oasgen-provider session)
+//
+// applyUniqueItems emits an O(n^2) CEL uniqueness rule gated on the array's OWN maxItems. The
+// apiserver's cost estimator does not price a rule by its own array's bound: it multiplies by the
+// product of EVERY enclosing array/map bound, and an unbounded ancestor falls back to a cardinality
+// of up to ~10^6 (MaxRequestSizeBytes / (minSerializedSize + 1)). So the rule is refused however
+// tightly the array itself is bounded.
+//
+// Measured through the real generator, with the ancestor-bounded arm as the control:
+//
+//	own maxItems 2  under an UNBOUNDED ancestor  -> refused,  3.1x over the per-rule budget
+//	own maxItems 4  under an UNBOUNDED ancestor  -> refused,  9.4x
+//	own maxItems 8  under an UNBOUNDED ancestor  -> refused, 32.1x
+//	own maxItems 8  under a BOUNDED ancestor     -> GENERATED OK   <- isolates the ancestor
+//	own maxItems 32 at the top level             -> GENERATED OK
+//
+// And because validateCRD runs the apiserver's own gate before emitting, the symptom is not a chart
+// that fails to install — it is a CRD that never generates, surfacing as a composition that never
+// converges.
+//
+// # Why a post-pass rather than a check at the emitting site
+//
+// applyUniqueItems receives only the local node: copyArrayValidation passes (out, node) and nothing
+// in the recursive transpiler threads a path or an ancestor stack. Threading one would touch every
+// converter for one caller's benefit.
+//
+// The deeper reason is that the constraint is a property of the WHOLE PATH, so it belongs in a pass
+// that can see the path. The finished schema has every bound; the emitting site has exactly one.
+//
+// # Dropping is already the documented fallback
+//
+// applyUniqueItems drops the rule when maxItems is absent, for the same cost reason, and says so:
+// "A working CRD that just does not enforce uniqueness on this field beats one the apiserver
+// refuses to register." This extends that judgement to the case it got wrong. Losing a constraint
+// is the smaller loss; the alternative is losing the entire CRD.
+func dropUnbudgetableUniquenessRules(crd *apiextensionsv1.CustomResourceDefinition) int {
+	if crd == nil {
+		return 0
+	}
+	dropped := 0
+	for i := range crd.Spec.Versions {
+		v := &crd.Spec.Versions[i]
+		if v.Schema == nil || v.Schema.OpenAPIV3Schema == nil {
+			continue
+		}
+		// The root itself is an object and is not a cardinality multiplier, so ancestors start
+		// bounded.
+		dropped += walkDropUnbudgetable(v.Schema.OpenAPIV3Schema, true)
+	}
+	return dropped
+}
+
+// walkDropUnbudgetable descends a schema carrying whether every enclosing array/map is bounded.
+func walkDropUnbudgetable(node *apiextensionsv1.JSONSchemaProps, ancestorsBounded bool) int {
+	if node == nil {
+		return 0
+	}
+	dropped := 0
+
+	// Remove OUR uniqueness rule when an enclosing array/map is unbounded. The array's own bound is
+	// already required by applyUniqueItems; this is about everything above it.
+	if !ancestorsBounded && len(node.XValidations) > 0 {
+		kept := make([]apiextensionsv1.ValidationRule, 0, len(node.XValidations))
+		for _, r := range node.XValidations {
+			if r.Rule == uniquenessRule && r.Message == uniquenessMessage {
+				dropped++
+				continue
+			}
+			kept = append(kept, r)
+		}
+		if len(kept) == 0 {
+			// Leave the field nil rather than an empty slice: the apiserver's cost estimate is
+			// gated on len(XValidations) > 0, and an empty-but-present slice is a difference the
+			// emitted YAML would show for no reason.
+			node.XValidations = nil
+		} else {
+			node.XValidations = kept
+		}
+	}
+
+	// An ARRAY multiplies by its maxItems; unbounded, it multiplies by the estimator's fallback.
+	//
+	// Both item forms are walked. A structural CRD schema forbids the tuple form (JSONSchemas), so
+	// this transpiler never emits one — but walking it costs two lines and the alternative is a
+	// silent miss if that ever changes.
+	if node.Items != nil {
+		if node.Items.Schema != nil {
+			dropped += walkDropUnbudgetable(node.Items.Schema, ancestorsBounded && node.MaxItems != nil)
+		}
+		for i := range node.Items.JSONSchemas {
+			dropped += walkDropUnbudgetable(&node.Items.JSONSchemas[i], ancestorsBounded && node.MaxItems != nil)
+		}
+	}
+
+	// A MAP (additionalProperties with a schema) multiplies by its maxProperties.
+	if node.AdditionalProperties != nil && node.AdditionalProperties.Schema != nil {
+		dropped += walkDropUnbudgetable(node.AdditionalProperties.Schema,
+			ancestorsBounded && node.MaxProperties != nil)
+	}
+
+	// Named properties of an object are NOT a multiplier — each is a distinct field, so the
+	// ancestor-bounded state passes through unchanged.
+	for name := range node.Properties {
+		p := node.Properties[name]
+		dropped += walkDropUnbudgetable(&p, ancestorsBounded)
+		node.Properties[name] = p
+	}
+	return dropped
 }
