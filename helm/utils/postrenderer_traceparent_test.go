@@ -57,15 +57,15 @@ func TestLabelsPostRender_Traceparent(t *testing.T) {
 
 func TestIsKrateoAPIGroup(t *testing.T) {
 	cases := map[string]bool{
-		"composition.krateo.io/v0-1-6":  true,
-		"core.krateo.io/v1alpha1":       true,
-		"krateo.io/v1":                  true,
+		"composition.krateo.io/v0-1-6":   true,
+		"core.krateo.io/v1alpha1":        true,
+		"krateo.io/v1":                   true,
 		"widgets.templates.krateo.io/v1": true,
-		"v1":                            false, // core k8s (Service, ConfigMap)
-		"apps/v1":                       false, // Deployment
-		"networking.k8s.io/v1":          false, // Ingress
-		"cert-manager.io/v1":            false, // not krateo
-		"notkrateo.io/v1":               false, // suffix must be .krateo.io, not krateo.io substring
+		"v1":                             false, // core k8s (Service, ConfigMap)
+		"apps/v1":                        false, // Deployment
+		"networking.k8s.io/v1":           false, // Ingress
+		"cert-manager.io/v1":             false, // not krateo
+		"notkrateo.io/v1":                false, // suffix must be .krateo.io, not krateo.io substring
 	}
 	for apiVersion, want := range cases {
 		if got := isKrateoAPIGroup(apiVersion); got != want {

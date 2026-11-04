@@ -280,7 +280,18 @@ type ListConfig struct {
 	ByDate      bool
 	SortReverse bool
 	// StateMask accepts a bitmask of states for items to show.
-	// The default is ListDeployed
+	//
+	// LEAVE IT AT ZERO TO GET HELM'S OWN DEFAULT, which is ListDeployed|ListFailed — the same set
+	// the `helm list` CLI shows. A zero value means "not specified" and is NOT applied
+	// (plumbing#74); before that fix it was assigned through, and helm skips every release when
+	// the mask is 0, so an unset field returned an empty slice with a nil error.
+	//
+	// The previous text here said "The default is ListDeployed", copied from helm's own comment at
+	// pkg/action/list.go:119 — which is wrong about its own code at :142. The CLI's `list --help`
+	// is the accurate statement: "By default, it lists only releases that are deployed or failed."
+	// So a FAILED release is not hidden by default; what --all adds is superseded, uninstalled,
+	// uninstalling and the pending-* family, and `pending-install` is the one that hides an install
+	// that never completed.
 	StateMask ListStates
 	// Limit is the number of items to return per Run()
 	Limit int
