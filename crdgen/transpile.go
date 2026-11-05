@@ -44,7 +44,7 @@ const (
 )
 
 // generateDirect is the direct-transpiler implementation of Generate.
-func generateDirect(opts Options) ([]byte, []string, error) {
+func generateDirect(opts Options) ([]byte, []Warning, error) {
 	specSchema, err := schemas.FromJSONReader(bytes.NewReader(opts.SpecSchema))
 	if err != nil {
 		// Before the transpiler exists, so there are no warnings to return — nil rather than an
@@ -68,9 +68,9 @@ func generateDirect(opts Options) ([]byte, []string, error) {
 	// stamping off for a consumer whose `default`s describe rather than instruct.
 	if !opts.NoParentDefaults {
 		for _, p := range materializeDefaultedParents(specProps, "spec") {
-			tr.warnings = append(tr.warnings, fmt.Sprintf("%s: given default {} so its nested defaults "+
-				"apply when it is omitted; the apiserver stores the defaulted values in every object that "+
-				"omits it (set Options.NoParentDefaults to disable)", p))
+			tr.warnings = append(tr.warnings, Warning{Path: p, Kind: KindParentDefaulted,
+				Message: "given default {} so its nested defaults apply when it is omitted; the apiserver " +
+					"stores the defaulted values in every object that omits it (set Options.NoParentDefaults to disable)"})
 		}
 	}
 
@@ -98,11 +98,11 @@ func generateDirect(opts Options) ([]byte, []string, error) {
 	// that can pass it. Running it after would leave the generation failing with the error the pass
 	// was written to prevent.
 	if n := dropUnbudgetableUniquenessRules(crd); n > 0 {
-		tr.warnings = append(tr.warnings, fmt.Sprintf(
+		tr.warnings = append(tr.warnings, Warning{Kind: KindConstraintDropped, Message: fmt.Sprintf(
 			"dropped %d generated uniqueness rule(s): the array is bounded but an enclosing "+
 				"array/map is not, and the CEL cost estimator multiplies by every ancestor bound — "+
 				"the rule would be refused at any own-bound. Add maxItems/maxProperties to the "+
-				"enclosing array(s) to get uniqueness enforced.", n))
+				"enclosing array(s) to get uniqueness enforced.", n)})
 	}
 
 	if err := validateCRD(crd); err != nil {
@@ -118,7 +118,7 @@ func generateDirect(opts Options) ([]byte, []string, error) {
 
 type transpiler struct {
 	refs     map[string]*schemas.Type // JSON-pointer-keyed $defs table
-	warnings []string
+	warnings []Warning
 }
 
 // collectRefs builds the $defs table keyed by full JSON pointer. It indexes $defs at EVERY nesting
@@ -205,8 +205,8 @@ func normalizeRefPointer(ref string) string {
 	return strings.ReplaceAll(ref, "/definitions/", "/$defs/")
 }
 
-func (t *transpiler) warn(path, reason string) {
-	t.warnings = append(t.warnings, fmt.Sprintf("%s: %s", path, reason))
+func (t *transpiler) warn(path string, kind WarningKind, reason string) {
+	t.warnings = append(t.warnings, Warning{Path: path, Kind: kind, Message: reason})
 }
 
 // transpile converts a schemas.Type node into a structural apiextensionsv1.JSONSchemaProps.
@@ -231,12 +231,12 @@ func (t *transpiler) transpile(node *schemas.Type, path string, stack map[string
 		key := normalizeRefPointer(ref)
 		target, ok := t.refs[key]
 		if !ok {
-			t.warn(path, "unresolved $ref "+ref+" -> open object")
+			t.warn(path, KindStructureLoosened, "unresolved $ref "+ref+" -> open object")
 			return openObject()
 		}
 		if stack[key] {
 			// Cycle: break exactly at the recursion edge.
-			t.warn(path, "cycle at "+ref+" -> preserve-unknown")
+			t.warn(path, KindStructureLoosened, "cycle at "+ref+" -> preserve-unknown")
 			return openObject()
 		}
 		stack[key] = true
@@ -278,7 +278,7 @@ func (t *transpiler) transpile(node *schemas.Type, path string, stack map[string
 	// case: it maps exactly onto `nullable` above and loses nothing.
 	if !intOrString {
 		if dropped := droppedUnionMembers(node.Type); len(dropped) > 0 {
-			t.warn(path, fmt.Sprintf("type %v is a union this schema cannot express structurally; "+
+			t.warn(path, KindAcceptanceNarrowed, fmt.Sprintf("type %v is a union this schema cannot express structurally; "+
 				"keeping %q and dropping %v. A value of a dropped type will be refused by the "+
 				"apiserver even though the source schema accepts it",
 				[]string(node.Type), typ, dropped))
@@ -345,7 +345,7 @@ func (t *transpiler) transpile(node *schemas.Type, path string, stack map[string
 			}
 		}
 		if node.Not != nil {
-			t.warn(path, "not without a typed node -> open object (constraint dropped)")
+			t.warn(path, KindConstraintDropped, "not without a typed node -> open object (constraint dropped)")
 		}
 		return openObject()
 	}
@@ -401,7 +401,7 @@ func (t *transpiler) fillObject(out *apiextensionsv1.JSONSchemaProps, node *sche
 			// structural schemas forbid `properties` and `additionalProperties` on the same node.
 			if len(out.Properties) > 0 {
 				// Keep the typed known fields; accept (untyped) extras rather than prune them.
-				t.warn(path, "properties + additionalProperties schema -> keep properties + preserve-unknown")
+				t.warn(path, KindStructureLoosened, "properties + additionalProperties schema -> keep properties + preserve-unknown")
 				out.XPreserveUnknownFields = boolPtr(true)
 			} else {
 				// Pure map — value schema preserved (the old path collapsed this to RawExtension).
@@ -523,7 +523,7 @@ func (t *transpiler) attachUnion(out *apiextensionsv1.JSONSchemaProps, node *sch
 		// any value: emitting it would be a no-op wearing a constraint's clothes. Drop the union and
 		// say so, rather than shipping a validation that silently never fails.
 		if vacuous || len(v) < 2 {
-			t.warn(path, kind+" carried no expressible constraints after removing structure forbidden inside a junctor -> union dropped")
+			t.warn(path, KindConstraintDropped, kind+" carried no expressible constraints after removing structure forbidden inside a junctor -> union dropped")
 			return false
 		}
 
@@ -531,7 +531,7 @@ func (t *transpiler) attachUnion(out *apiextensionsv1.JSONSchemaProps, node *sch
 		return false
 	}
 
-	t.warn(path, kind+" of divergent shapes -> degraded to preserve-unknown")
+	t.warn(path, KindStructureLoosened, kind+" of divergent shapes -> degraded to preserve-unknown")
 	if out.Type == "" {
 		out.Type = "object"
 		out.XPreserveUnknownFields = boolPtr(true)
@@ -555,13 +555,23 @@ func (t *transpiler) copyEnum(out *apiextensionsv1.JSONSchemaProps, node *schema
 	if out.Type == "" && !out.XIntOrString {
 		return
 	}
+	dropped := 0
 	for _, e := range node.Enum {
 		raw, err := json.Marshal(e)
 		if err != nil {
-			t.warn(path, "undmarshalable enum value dropped")
+			dropped++
 			continue
 		}
 		out.Enum = append(out.Enum, apiextensionsv1.JSON{Raw: raw})
+	}
+	// The kind depends on what is left. Some values carried: the dropped one is now REFUSED. None
+	// carried: there is no enum at all, so anything is accepted.
+	for i := 0; i < dropped; i++ {
+		if len(out.Enum) == 0 {
+			t.warn(path, KindConstraintDropped, "undmarshalable enum value dropped")
+		} else {
+			t.warn(path, KindAcceptanceNarrowed, "undmarshalable enum value dropped")
+		}
 	}
 }
 
@@ -571,7 +581,7 @@ func (t *transpiler) copyDefault(out *apiextensionsv1.JSONSchemaProps, node *sch
 	}
 	raw, err := json.Marshal(node.Default)
 	if err != nil {
-		t.warn(path, "unmarshalable default dropped")
+		t.warn(path, KindDefaultDropped, "unmarshalable default dropped")
 		return
 	}
 	out.Default = &apiextensionsv1.JSON{Raw: raw}
@@ -762,23 +772,24 @@ func boolPtr(b bool) *bool { return &b }
 //	present, any other type  KEEP the author's field and WARN: a controller writing the object's
 //	                         int64 generation would be rejected or pruned, which looks exactly like
 //	                         the original symptom while appearing fixed
-func mergeConditionedStatus(status *apiextensionsv1.JSONSchemaProps) []string {
+func mergeConditionedStatus(status *apiextensionsv1.JSONSchemaProps) []Warning {
 	if status.Type != "object" {
 		return nil
 	}
 	if status.Properties == nil {
 		status.Properties = map[string]apiextensionsv1.JSONSchemaProps{}
 	}
-	var warnings []string
+	var warnings []Warning
 	if og, declared := status.Properties["observedGeneration"]; !declared {
 		status.Properties["observedGeneration"] = apiextensionsv1.JSONSchemaProps{
 			Type: "integer", Format: "int64",
 			Description: "ObservedGeneration is the metadata.generation the controller last reconciled.",
 		}
 	} else if og.Type != "integer" {
-		warnings = append(warnings, fmt.Sprintf("status.observedGeneration: the status schema declares it "+
-			"as type %q, not integer; it is kept as declared, so a controller writing the object's "+
-			"generation (an int64) will have that write rejected or pruned", og.Type))
+		warnings = append(warnings, Warning{Path: "status.observedGeneration", Kind: KindConventionConflict,
+			Message: fmt.Sprintf("the status schema declares it as type %q, not integer; it is kept as "+
+				"declared, so a controller writing the object's generation (an int64) will have that write "+
+				"rejected or pruned", og.Type)})
 	}
 	status.Properties["conditions"] = apiextensionsv1.JSONSchemaProps{
 		Type:        "array",

@@ -50,5 +50,22 @@ func Generate(opts Options) ([]byte, error) {
 // a human or a log should prefer this one. The warnings are advisory: generation has SUCCEEDED when
 // err is nil, whatever they say.
 func GenerateWithWarnings(opts Options) ([]byte, []string, error) {
+	crd, ws, err := generateDirect(opts)
+	if ws == nil {
+		// nil, not empty, so "no warnings collected" is never confused with "warnings were checked".
+		return crd, nil, err
+	}
+	out := make([]string, len(ws))
+	for i, w := range ws {
+		out[i] = w.String()
+	}
+	return crd, out, err
+}
+
+// GenerateWithDiagnostics is GenerateWithWarnings with each warning TYPED: its path, its Kind and its
+// message (core-provider#362). A caller that acts on warnings, rather than only displaying them,
+// should use this and branch on Kind (or Kind.LosesEnforcement()), never on message text.
+// GenerateWithWarnings returns exactly the String() of these.
+func GenerateWithDiagnostics(opts Options) ([]byte, []Warning, error) {
 	return generateDirect(opts)
 }
