@@ -89,7 +89,7 @@ func generateDirect(opts Options) ([]byte, []string, error) {
 		statusProps = openObject()
 	}
 	if opts.Managed {
-		mergeConditionedStatus(statusProps)
+		tr.warnings = append(tr.warnings, mergeConditionedStatus(statusProps)...)
 	}
 
 	crd := tr.assembleCRD(opts, specProps, statusProps)
@@ -747,13 +747,38 @@ func openObject() *apiextensionsv1.JSONSchemaProps {
 func boolPtr(b bool) *bool { return &b }
 
 // mergeConditionedStatus injects the crossplane commonv1.ConditionedStatus shape into a managed
-// resource's status (matching what the Go-struct path inlined via commonv1.ConditionedStatus).
-func mergeConditionedStatus(status *apiextensionsv1.JSONSchemaProps) {
+// resource's status (matching what the Go-struct path inlined via commonv1.ConditionedStatus), plus
+// `observedGeneration`, and returns any warning about the latter.
+//
+// OBSERVEDGENERATION (#82). It is the Kubernetes convention for "has the controller caught up with my
+// spec change?", the same class of synthetic convention field as `conditions`, and nothing declared
+// it. A controller writing it therefore had every write PRUNED by the apiserver: measured on
+// oasgen-generated kinds, baremetalnodes 0/6, nodepowers 0/6, ports 0/12. It is injected
+// TYPE-AWARE, because a status schema can be built from author-controlled names (an OpenAPI response
+// field may literally be called observedGeneration):
+//
+//	absent                   inject {type: integer, format: int64}
+//	present, type integer    leave it (core-provider declares it itself; no CRD change for it)
+//	present, any other type  KEEP the author's field and WARN: a controller writing the object's
+//	                         int64 generation would be rejected or pruned, which looks exactly like
+//	                         the original symptom while appearing fixed
+func mergeConditionedStatus(status *apiextensionsv1.JSONSchemaProps) []string {
 	if status.Type != "object" {
-		return
+		return nil
 	}
 	if status.Properties == nil {
 		status.Properties = map[string]apiextensionsv1.JSONSchemaProps{}
+	}
+	var warnings []string
+	if og, declared := status.Properties["observedGeneration"]; !declared {
+		status.Properties["observedGeneration"] = apiextensionsv1.JSONSchemaProps{
+			Type: "integer", Format: "int64",
+			Description: "ObservedGeneration is the metadata.generation the controller last reconciled.",
+		}
+	} else if og.Type != "integer" {
+		warnings = append(warnings, fmt.Sprintf("status.observedGeneration: the status schema declares it "+
+			"as type %q, not integer; it is kept as declared, so a controller writing the object's "+
+			"generation (an int64) will have that write rejected or pruned", og.Type))
 	}
 	status.Properties["conditions"] = apiextensionsv1.JSONSchemaProps{
 		Type:        "array",
@@ -772,6 +797,7 @@ func mergeConditionedStatus(status *apiextensionsv1.JSONSchemaProps) {
 			},
 		}},
 	}
+	return warnings
 }
 
 // assembleCRD builds the CustomResourceDefinition envelope directly from Options (never from Go
