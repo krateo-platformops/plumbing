@@ -2,6 +2,7 @@ package helm
 
 import (
 	"fmt"
+	"github.com/mitchellh/copystructure"
 	"strings"
 
 	"helm.sh/helm/v3/pkg/chart"
@@ -42,7 +43,31 @@ func validateValuesSchema(chrt *chart.Chart, values map[string]any) error {
 		values = map[string]any{}
 	}
 
-	coalesced, err := chartutil.CoalesceValues(chrt, values)
+	// PROCESS DEPENDENCIES FIRST, EXACTLY AS helm's INSTALL AND TEMPLATE DO, and on a COPY.
+	//
+	// helm runs chartutil.ProcessDependenciesWithMerge before rendering. That resolves conditions
+	// and tags, applies import-values, and RENAMES an aliased subchart to its alias. This check used
+	// to coalesce the raw chart, so an aliased subchart's defaults landed under its REAL name, which
+	// helm never produces. A parent schema with `additionalProperties: false` then refused a key that
+	// only this check could see. Measured on clickhouse-operator 0.1.1 (`name:
+	// clickhouse-operator-helm`, `alias: operator`): helm template exits 0, and this check refused
+	// "additional properties 'clickhouse-operator-helm' not allowed". That stuck three compositions in
+	// Creating on installer 0.3.509 (clickhouse-operator, mongodb-operator, agentgateway-controller).
+	//
+	// ON A COPY because ProcessDependenciesWithMerge MUTATES the chart: it renames subcharts, prunes
+	// disabled ones and folds import-values into Values. The real install processes the chart itself
+	// afterwards, and handing it an already-processed chart would look up the alias's original name
+	// and not find it.
+	work, err := copyChartTree(chrt)
+	if err != nil {
+		return nil // cannot copy => cannot check without risking the install; helm validates anyway
+	}
+	if err := chartutil.ProcessDependenciesWithMerge(work, values); err != nil {
+		// Not a schema violation; helm will hit the same failure during install with its own message.
+		return nil
+	}
+
+	coalesced, err := chartutil.CoalesceValues(work, values)
 	if err != nil {
 		// NOT wrapped in ErrValuesSchema. A coalesce failure is not a schema violation, and
 		// mislabelling it would tell a caller their schema is wrong when their values are
@@ -52,7 +77,7 @@ func validateValuesSchema(chrt *chart.Chart, values map[string]any) error {
 		return nil
 	}
 
-	if v := validateTree(chrt, coalesced, false); v != "" {
+	if v := validateTree(work, coalesced, false); v != "" {
 		return fmt.Errorf("%w: %s", helmconfig.ErrValuesSchema, v)
 	}
 	return nil
@@ -141,4 +166,51 @@ func describeSchemaFailure(chartName string, err error, isDependency bool) strin
 func mentionsGlobalRejection(msg string) bool {
 	l := strings.ToLower(msg)
 	return strings.Contains(l, "'global'") && strings.Contains(l, "not allowed")
+}
+
+// copyChartTree copies chrt and its whole dependency tree, deep enough that
+// chartutil.ProcessDependenciesWithMerge can run on the copy without touching the original. That
+// call mutates Metadata.Dependencies (per-dependency Enabled), Values (import-values) and the list of
+// subcharts. Templates, Files, Raw, Schema and Lock are read-only to it and are shared.
+func copyChartTree(c *chart.Chart) (*chart.Chart, error) {
+	if c == nil {
+		return nil, nil
+	}
+	cp := &chart.Chart{
+		Raw:       c.Raw,
+		Lock:      c.Lock,
+		Templates: c.Templates,
+		Schema:    c.Schema,
+		Files:     c.Files,
+	}
+	if c.Metadata != nil {
+		md := *c.Metadata
+		md.Dependencies = make([]*chart.Dependency, 0, len(c.Metadata.Dependencies))
+		for _, d := range c.Metadata.Dependencies {
+			if d == nil {
+				md.Dependencies = append(md.Dependencies, nil)
+				continue
+			}
+			dc := *d
+			md.Dependencies = append(md.Dependencies, &dc)
+		}
+		cp.Metadata = &md
+	}
+	if c.Values != nil {
+		v, err := copystructure.Copy(c.Values)
+		if err != nil {
+			return nil, fmt.Errorf("copying values of chart %s: %w", c.Name(), err)
+		}
+		cp.Values = v.(map[string]any)
+	}
+	subs := make([]*chart.Chart, 0, len(c.Dependencies()))
+	for _, d := range c.Dependencies() {
+		dc, err := copyChartTree(d)
+		if err != nil {
+			return nil, err
+		}
+		subs = append(subs, dc)
+	}
+	cp.SetDependencies(subs...)
+	return cp, nil
 }
