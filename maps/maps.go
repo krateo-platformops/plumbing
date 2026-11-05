@@ -12,7 +12,19 @@ func NestedValue(obj map[string]any, fields []string) (any, bool) {
 	for _, field := range fields {
 		switch typedCurrent := current.(type) {
 		case map[string]any:
-			current, _, _ = nestedFieldNoCopy(typedCurrent, field)
+			// THE FOUND FLAG IS PROPAGATED, NOT DISCARDED. It used to be dropped here, so a missing
+			// LAST key set current to nil and the loop returned (nil, true): "found, and it is nil".
+			// A missing intermediate key was only correct by accident (nil falls to the default
+			// case below). NestedString then turned that phantom nil into an access error, so
+			// reading status.digest from a CR whose status existed without one FAILED instead of
+			// returning "". The composition-dynamic-controller's adoption path hit exactly that and
+			// could never complete (core-provider, the #322 end-to-end test), and its
+			// staleinventory.go had already switched to unstructured.NestedString to code around it.
+			var found bool
+			current, found, _ = nestedFieldNoCopy(typedCurrent, field)
+			if !found {
+				return nil, false
+			}
 		case []any:
 			index, err := strconv.Atoi(field)
 			if err != nil || index < 0 || index >= len(typedCurrent) {
