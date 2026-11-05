@@ -61,7 +61,7 @@ func (t *transpiler) copyConst(out *apiextensionsv1.JSONSchemaProps, node *schem
 	}
 	raw, err := json.Marshal(node.Const)
 	if err != nil {
-		t.warn(path, "unmarshalable const dropped")
+		t.warn(path, KindConstraintDropped, "unmarshalable const dropped")
 		return
 	}
 	out.Enum = []apiextensionsv1.JSON{{Raw: raw}}
@@ -132,7 +132,7 @@ func (t *transpiler) emitDependentRequired(out *apiextensionsv1.JSONSchemaProps,
 		return
 	}
 	if out.Type != schemas.TypeNameObject {
-		t.warn(path, "dependentRequired on non-object -> dropped")
+		t.warn(path, KindConstraintDropped, "dependentRequired on non-object -> dropped")
 		return
 	}
 	for _, p := range sortedDepKeys(node.DependentRequired) {
@@ -142,7 +142,7 @@ func (t *transpiler) emitDependentRequired(out *apiextensionsv1.JSONSchemaProps,
 		}
 		trigger, ok := celHas(p)
 		if !ok || !fieldAllowed(out, p) {
-			t.warn(path, "dependentRequired key not a usable CEL field -> dropped: "+p)
+			t.warn(path, KindConstraintDropped, "dependentRequired key not a usable CEL field -> dropped: "+p)
 			continue
 		}
 		conds := make([]string, 0, len(deps))
@@ -156,7 +156,7 @@ func (t *transpiler) emitDependentRequired(out *apiextensionsv1.JSONSchemaProps,
 			conds = append(conds, h)
 		}
 		if !ok {
-			t.warn(path, "dependentRequired dependency not a usable CEL field -> dropped for "+p)
+			t.warn(path, KindConstraintDropped, "dependentRequired dependency not a usable CEL field -> dropped for "+p)
 			continue
 		}
 		t.addRule(out,
@@ -171,12 +171,12 @@ func (t *transpiler) emitNot(out *apiextensionsv1.JSONSchemaProps, node *schemas
 		return
 	}
 	if out.Type == "" || out.Type == schemas.TypeNameObject || out.Type == schemas.TypeNameArray {
-		t.warn(path, "not on non-scalar node unsupported -> dropped")
+		t.warn(path, KindConstraintDropped, "not on non-scalar node unsupported -> dropped")
 		return
 	}
 	n := node.Not
 	if !isScalarOnly(n) {
-		t.warn(path, "not (non-trivial subschema) unsupported -> dropped")
+		t.warn(path, KindConstraintDropped, "not (non-trivial subschema) unsupported -> dropped")
 		return
 	}
 	// NATIVE `not`, NOT CEL. A structural schema accepts `not` as a pure value validation, so a
@@ -192,14 +192,14 @@ func (t *transpiler) emitNot(out *apiextensionsv1.JSONSchemaProps, node *schemas
 		values = []any{n.Const}
 	}
 	if len(values) == 0 {
-		t.warn(path, "not (non-trivial) unsupported -> dropped")
+		t.warn(path, KindConstraintDropped, "not (non-trivial) unsupported -> dropped")
 		return
 	}
 	forbidden := make([]apiextensionsv1.JSON, 0, len(values))
 	for _, v := range values {
 		raw, err := json.Marshal(v)
 		if err != nil {
-			t.warn(path, "not: unmarshalable value -> dropped")
+			t.warn(path, KindConstraintDropped, "not: unmarshalable value -> dropped")
 			return
 		}
 		forbidden = append(forbidden, apiextensionsv1.JSON{Raw: raw})
@@ -213,26 +213,26 @@ func (t *transpiler) emitIfThenElse(out *apiextensionsv1.JSONSchemaProps, node *
 		return
 	}
 	if out.Type != schemas.TypeNameObject {
-		t.warn(path, "if/then/else on non-object -> dropped")
+		t.warn(path, KindConstraintDropped, "if/then/else on non-object -> dropped")
 		return
 	}
 	cond, ok := t.celCond(out, node.If)
 	if !ok {
-		t.warn(path, "if condition not expressible in CEL -> if/then/else dropped")
+		t.warn(path, KindConstraintDropped, "if condition not expressible in CEL -> if/then/else dropped")
 		return
 	}
 	if node.Then != nil {
 		if cons, ok := t.celCond(out, node.Then); ok {
 			t.addRule(out, fmt.Sprintf("!(%s) || (%s)", cond, cons), "conditional constraint (then)")
 		} else {
-			t.warn(path, "then not expressible in CEL -> dropped")
+			t.warn(path, KindConstraintDropped, "then not expressible in CEL -> dropped")
 		}
 	}
 	if node.Else != nil {
 		if cons, ok := t.celCond(out, node.Else); ok {
 			t.addRule(out, fmt.Sprintf("(%s) || (%s)", cond, cons), "conditional constraint (else)")
 		} else {
-			t.warn(path, "else not expressible in CEL -> dropped")
+			t.warn(path, KindConstraintDropped, "else not expressible in CEL -> dropped")
 		}
 	}
 }
@@ -305,14 +305,14 @@ func (t *transpiler) handleUnsupported(out *apiextensionsv1.JSONSchemaProps, nod
 		}
 	}
 	if len(node.PatternProperties) > 0 {
-		t.warn(path, "patternProperties unsupported -> preserve-unknown")
+		t.warn(path, KindStructureLoosened, "patternProperties unsupported -> preserve-unknown")
 		widen()
 	}
 	if len(node.DependentSchemas) > 0 {
-		t.warn(path, "dependentSchemas unsupported -> dropped")
+		t.warn(path, KindConstraintDropped, "dependentSchemas unsupported -> dropped")
 	}
 	if len(node.PrefixItems) > 0 {
-		t.warn(path, "prefixItems (tuple positional typing) not representable -> items accepted as-is")
+		t.warn(path, KindConstraintDropped, "prefixItems (tuple positional typing) not representable -> items accepted as-is")
 		if out.Type == schemas.TypeNameArray && out.Items == nil {
 			out.Items = &apiextensionsv1.JSONSchemaPropsOrArray{Schema: openObject()}
 		}
@@ -320,12 +320,12 @@ func (t *transpiler) handleUnsupported(out *apiextensionsv1.JSONSchemaProps, nod
 	if node.UnevaluatedProperties != nil {
 		closedFalse := node.UnevaluatedProperties.IsBool && !node.UnevaluatedProperties.Bool
 		if !closedFalse {
-			t.warn(path, "unevaluatedProperties (schema/true) -> preserve-unknown")
+			t.warn(path, KindStructureLoosened, "unevaluatedProperties (schema/true) -> preserve-unknown")
 			widen()
 		}
 	}
 	if node.UnevaluatedItems != nil {
-		t.warn(path, "unevaluatedItems unsupported -> ignored")
+		t.warn(path, KindConstraintDropped, "unevaluatedItems unsupported -> ignored")
 	}
 }
 
