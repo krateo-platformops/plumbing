@@ -165,7 +165,7 @@ func (t *transpiler) emitDependentRequired(out *apiextensionsv1.JSONSchemaProps,
 	}
 }
 
-// emitNot maps a `not` whose subschema is a scalar const or enum to a CEL negation.
+// emitNot maps a `not` whose subschema is a scalar const or enum to a native `not: {enum: [...]}`.
 func (t *transpiler) emitNot(out *apiextensionsv1.JSONSchemaProps, node *schemas.Type, path string) {
 	if node.Not == nil {
 		return
@@ -179,19 +179,32 @@ func (t *transpiler) emitNot(out *apiextensionsv1.JSONSchemaProps, node *schemas
 		t.warn(path, "not (non-trivial subschema) unsupported -> dropped")
 		return
 	}
+	// NATIVE `not`, NOT CEL. A structural schema accepts `not` as a pure value validation, so a
+	// forbidden const or enum is expressed exactly as authored, enforced by the apiserver with no CEL
+	// cost budget. This used to emit `!(self in [...])` as a CEL rule, and the cost estimator
+	// multiplies a rule by every enclosing unbounded array and string. A forbidden-values constraint
+	// on the items of two unbounded arrays was refused at 1.468006x over budget, and with it the WHOLE
+	// CRD: snowplow 1.12.45's chart, then installer 0.3.508's identity-lifecycle schema (a security
+	// constraint: RBAC resources must not be "*" or "secrets"). The constraint was never expensive;
+	// only its CEL translation was.
+	values := n.Enum
 	if n.Const != nil {
-		if lit, ok := celLiteral(n.Const); ok {
-			t.addRule(out, "self != "+lit, "must not equal "+lit)
+		values = []any{n.Const}
+	}
+	if len(values) == 0 {
+		t.warn(path, "not (non-trivial) unsupported -> dropped")
+		return
+	}
+	forbidden := make([]apiextensionsv1.JSON, 0, len(values))
+	for _, v := range values {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			t.warn(path, "not: unmarshalable value -> dropped")
 			return
 		}
+		forbidden = append(forbidden, apiextensionsv1.JSON{Raw: raw})
 	}
-	if len(n.Enum) > 0 {
-		if lits, ok := celLiteralList(n.Enum); ok {
-			t.addRule(out, "!(self in ["+strings.Join(lits, ", ")+"])", "must not be one of the forbidden values")
-			return
-		}
-	}
-	t.warn(path, "not (non-trivial) unsupported -> dropped")
+	out.Not = &apiextensionsv1.JSONSchemaProps{Enum: forbidden}
 }
 
 // emitIfThenElse maps a tractable if/then/else (conditions over property const/enum/required) to CEL.

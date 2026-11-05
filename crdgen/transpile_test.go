@@ -296,8 +296,9 @@ func TestDirectTranspiler_2020_12(t *testing.T) {
 	if len(p["custom"].XValidations) != 1 || p["custom"].XValidations[0].Rule != "self.a > 0" {
 		t.Errorf("passthrough x-kubernetes-validations lost; custom.validations=%v", p["custom"].XValidations)
 	}
-	if len(p["region"].XValidations) == 0 {
-		t.Errorf("not -> CEL rule missing on region")
+	// `not` on a scalar is emitted NATIVELY (no CEL): see TestNotEnumIsNativeAndEnforced.
+	if r := p["region"]; r.Not == nil || len(r.Not.Enum) != 1 || string(r.Not.Enum[0].Raw) != `"banned"` || len(r.XValidations) != 0 {
+		t.Errorf("not enum on region must be a native not:{enum:[banned]} with no CEL rule; got not=%v validations=%v", r.Not, r.XValidations)
 	}
 	// dependentRequired + if/then produce CEL rules on the spec object.
 	if len(spec.XValidations) < 2 {
