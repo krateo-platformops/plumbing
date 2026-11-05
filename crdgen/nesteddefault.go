@@ -1,6 +1,8 @@
 package crdgen
 
 import (
+	"sort"
+
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
 
@@ -29,20 +31,32 @@ import (
 //     after materialization, `default: {}` creates an object that fails its own validation — so the
 //     apiserver would reject a composition that was previously valid by omission. Those parents are
 //     left alone: a nested default is a convenience, and it must never cost validity.
-func materializeDefaultedParents(schema *apiextensionsv1.JSONSchemaProps) {
+//
+// It RETURNS every field path it stamped, in generated-CRD form (`spec.image`, `spec.list[*].opts`),
+// sorted. The stamp changes what the apiserver stores for an omitted field, and once a defaulted
+// value is persisted it cannot be told apart from an authored one (plumbing#84), so a caller needs a
+// census of where it happened rather than having to re-screen every schema by hand.
+func materializeDefaultedParents(schema *apiextensionsv1.JSONSchemaProps, path string) []string {
+	stamped := materializeAt(schema, path)
+	sort.Strings(stamped)
+	return stamped
+}
+
+func materializeAt(schema *apiextensionsv1.JSONSchemaProps, path string) []string {
 	if schema == nil {
-		return
+		return nil
 	}
+	var stamped []string
 
 	// Depth-first: an inner parent must have its own default decided before an outer one asks
 	// whether materializing it would satisfy an outer required property.
 	for name := range schema.Properties {
 		prop := schema.Properties[name]
-		materializeDefaultedParents(&prop)
+		stamped = append(stamped, materializeAt(&prop, path+"."+name)...)
 		schema.Properties[name] = prop
 	}
 	if schema.Items != nil && schema.Items.Schema != nil {
-		materializeDefaultedParents(schema.Items.Schema)
+		stamped = append(stamped, materializeAt(schema.Items.Schema, path+"[*]")...)
 	}
 
 	required := map[string]bool{}
@@ -64,7 +78,9 @@ func materializeDefaultedParents(schema *apiextensionsv1.JSONSchemaProps) {
 		}
 		prop.Default = &apiextensionsv1.JSON{Raw: []byte("{}")}
 		schema.Properties[name] = prop
+		stamped = append(stamped, path+"."+name)
 	}
+	return stamped
 }
 
 // hasDefaultedDescendant reports whether anything inside this object would actually be defaulted if

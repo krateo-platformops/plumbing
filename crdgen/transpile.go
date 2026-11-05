@@ -63,7 +63,16 @@ func generateDirect(opts Options) ([]byte, []string, error) {
 	// apiserver materializes the parent and the nested defaults actually apply. Runs on spec only:
 	// status is written by controllers, not submitted by users, so there is no omitted-parent
 	// problem to solve there.
-	materializeDefaultedParents(specProps)
+	//
+	// Every stamp is reported as a warning (plumbing#84), and Options.NoParentDefaults turns the
+	// stamping off for a consumer whose `default`s describe rather than instruct.
+	if !opts.NoParentDefaults {
+		for _, p := range materializeDefaultedParents(specProps, "spec") {
+			tr.warnings = append(tr.warnings, fmt.Sprintf("%s: given default {} so its nested defaults "+
+				"apply when it is omitted; the apiserver stores the defaulted values in every object that "+
+				"omits it (set Options.NoParentDefaults to disable)", p))
+		}
+	}
 
 	var statusProps *apiextensionsv1.JSONSchemaProps
 	if len(opts.StatusSchema) > 0 {
