@@ -11,6 +11,17 @@ type Options struct {
 	SpecSchema   []byte
 	StatusSchema []byte
 	Managed      bool
+
+	// NoParentDefaults disables the `default: {}` crdgen gives an optional object whose subtree
+	// carries a reachable default (core-provider#138), which makes the apiserver materialize the
+	// object and apply the nested defaults when a user omits it.
+	//
+	// The zero value keeps that behaviour. Set it when the schema's `default`s DESCRIBE rather than
+	// instruct, e.g. an OpenAPI document generated from a vendor API, where a default states what the
+	// server assumes. Materializing it there turns a documented assumption into a value the
+	// controller sends, and a persisted default cannot later be told apart from an authored one
+	// (plumbing#84). Every stamp is reported by GenerateWithWarnings either way.
+	NoParentDefaults bool
 }
 
 // Generate transpiles the Options' JSON Schemas into a Kubernetes CustomResourceDefinition (YAML).

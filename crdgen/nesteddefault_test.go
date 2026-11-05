@@ -47,7 +47,7 @@ func TestOptionalParentWithDefaultedChildIsMaterialized(t *testing.T) {
 		}),
 	})
 
-	materializeDefaultedParents(&spec)
+	materializeDefaultedParents(&spec, "spec")
 
 	if got := defaultOf(t, spec, "image"); got != "{}" {
 		t.Errorf("optional parent with a defaulted child must get default:{} so the apiserver "+
@@ -68,7 +68,7 @@ func TestMaterializationIsRecursive(t *testing.T) {
 		}),
 	})
 
-	materializeDefaultedParents(&spec)
+	materializeDefaultedParents(&spec, "spec")
 
 	if got := defaultOf(t, spec, "outer"); got != "{}" {
 		t.Errorf("outer parent must be materialized, got %q", got)
@@ -89,7 +89,7 @@ func TestParentWithUnsatisfiableRequiredChildIsLeftAlone(t *testing.T) {
 		}, "mandatory"),
 	})
 
-	materializeDefaultedParents(&spec)
+	materializeDefaultedParents(&spec, "spec")
 
 	if got := defaultOf(t, spec, "guarded"); got != "" {
 		t.Errorf("a parent whose required child has no default must NOT be materialized — default:{} "+
@@ -111,7 +111,7 @@ func TestParentWithDefaultedRequiredChildIsNotMaterialized(t *testing.T) {
 		}, "tag"),
 	})
 
-	materializeDefaultedParents(&spec)
+	materializeDefaultedParents(&spec, "spec")
 
 	if got := defaultOf(t, spec, "image"); got != "" {
 		t.Errorf("an object with ANY required property cannot be defaulted to {}: the apiserver "+
@@ -137,7 +137,7 @@ func TestBuilderPublishConfigurationRefIsNotMaterialized(t *testing.T) {
 		"pullRequest": obj(map[string]apiextensionsv1.JSONSchemaProps{"configurationRef": cfgRef}),
 	})
 
-	materializeDefaultedParents(&spec)
+	materializeDefaultedParents(&spec, "spec")
 
 	for _, parent := range []string{"repository", "pullRequest"} {
 		if got := defaultOf(t, spec, parent, "configurationRef"); got != "" {
@@ -161,7 +161,7 @@ func TestParentWithNoDefaultsBeneathIsLeftAlone(t *testing.T) {
 		}),
 	})
 
-	materializeDefaultedParents(&spec)
+	materializeDefaultedParents(&spec, "spec")
 
 	if got := defaultOf(t, spec, "plain"); got != "" {
 		t.Errorf("nothing beneath is defaulted, so there is nothing to materialize for; got %q", got)
@@ -174,7 +174,7 @@ func TestExplicitParentDefaultIsPreserved(t *testing.T) {
 	explicit.Default = &apiextensionsv1.JSON{Raw: []byte(`{"tag":"pinned"}`)}
 	spec := obj(map[string]apiextensionsv1.JSONSchemaProps{"image": explicit})
 
-	materializeDefaultedParents(&spec)
+	materializeDefaultedParents(&spec, "spec")
 
 	if got := defaultOf(t, spec, "image"); got != `{"tag":"pinned"}` {
 		t.Errorf("an explicit parent default must not be overwritten, got %q", got)
@@ -188,7 +188,7 @@ func TestRequiredParentIsNotMaterialized(t *testing.T) {
 		"image": obj(map[string]apiextensionsv1.JSONSchemaProps{"tag": str("latest")}),
 	}, "image")
 
-	materializeDefaultedParents(&spec)
+	materializeDefaultedParents(&spec, "spec")
 
 	if got := defaultOf(t, spec, "image"); got != "" {
 		t.Errorf("a required parent is always present; no default needed, got %q", got)
