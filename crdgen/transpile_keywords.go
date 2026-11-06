@@ -90,6 +90,11 @@ func (t *transpiler) copyExample(out *apiextensionsv1.JSONSchemaProps, node *sch
 // (int-or-string is handled earlier; embedded-resource/list-type/list-map-keys/map-type and any
 // pre-existing x-kubernetes-validations flow through here).
 func (t *transpiler) passthroughExtensions(out *apiextensionsv1.JSONSchemaProps, node *schemas.Type) {
+	// Objects only, and only true. The apiserver takes true or undefined here, and the marker has
+	// always been ignored on a scalar, so a chart carrying it there must keep generating.
+	if isPreserved(node) && out.Type == "object" {
+		out.XPreserveUnknownFields = boolPtr(true)
+	}
 	if node.XEmbeddedResource {
 		out.XEmbeddedResource = true
 	}
@@ -105,6 +110,11 @@ func (t *transpiler) passthroughExtensions(out *apiextensionsv1.JSONSchemaProps,
 	for _, r := range node.XValidations {
 		out.XValidations = append(out.XValidations, toValidationRule(r))
 	}
+}
+
+// isPreserved reports whether the author set x-kubernetes-preserve-unknown-fields: true.
+func isPreserved(node *schemas.Type) bool {
+	return node.PreserveUnknownFields != nil && *node.PreserveUnknownFields
 }
 
 func toValidationRule(r schemas.ValidationRule) apiextensionsv1.ValidationRule {
