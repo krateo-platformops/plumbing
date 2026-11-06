@@ -245,6 +245,10 @@ func (t *transpiler) transpile(node *schemas.Type, path string, stack map[string
 		if node.Description != "" && out != nil {
 			out.Description = node.Description
 		}
+		// A $ref returns before the common keywords, so a sibling marker is honoured here.
+		if isPreserved(node) && out != nil && out.Type == "object" {
+			out.XPreserveUnknownFields = boolPtr(true)
+		}
 		return out
 	}
 
