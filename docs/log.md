@@ -9,6 +9,12 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-08 — jwtutil `act`**: `UserInfo` and `CreateTokenOptions` gain an optional
+  RFC 8693 `act` claim (`Actor`, nested for a chain). It's for authn's delegated tokens
+  (AUDIT-6, installer#412): the subject stays the human, and `act` names the agent
+  acting for them. Validators read `Actor()` and `DelegationChain()`. Tokens without
+  `act` are unchanged, and a chain with an unnamed actor, or deeper than
+  `MaxActorDepth` (8), is refused on create and on validate.
 - **2026-08-07 — docs**: adopted the Krateo Documentation Standard (this bundle);
   `lint-docs` wired into CI.
 - **2026-08-05 — envtest CI**: functional cache-staleness coverage for `helm/v3`

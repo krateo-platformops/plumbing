@@ -76,5 +76,11 @@ func ValidateWithKeySource(keys KeySource, bearer string) (UserInfo, error) {
 		return UserInfo{}, ErrTokenInvalid
 	}
 
+	// A signed token whose actor chain is malformed names no one reliably:
+	// refuse it rather than attribute its requests to an empty actor.
+	if !validActor(claims.Act) {
+		return UserInfo{}, ErrTokenInvalid
+	}
+
 	return claims.UserInfo, nil
 }
