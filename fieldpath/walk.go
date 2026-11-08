@@ -49,6 +49,11 @@ import (
 // That distinction is the whole reason this signature is worth preserving: a caller that treats an error
 // as absence turns "I could not read the field" into "the field is not there", which is how
 // oasgen-provider #517 produced a controller that reported a resource missing while holding it.
+//
+// ON ERROR, found IS ALWAYS false. So test err BEFORE found, or test !found && err == nil for
+// absence. In the obvious order, `if !found { skip }` followed by `if err != nil { ... }`, the error arm
+// is unreachable: every error has already been taken as absence. A mutant that disables the error
+// arm then survives, as oasgen-provider's #510 collector found.
 func Get(obj any, segs []Segment) (any, bool, error) {
 	cur := obj
 	for i, seg := range segs {
