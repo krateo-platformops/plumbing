@@ -41,6 +41,13 @@
 //
 // Refused paths are refused with an error, never mis-parsed into something else.
 //
+// # Whitespace
+//
+// A bare name may not contain whitespace: a. b and "b " are refused, not read as the keys " b" and
+// "b ". A key with whitespace is written quoted, a['my key']; a predicate value may contain it,
+// a[?name=John Smith]. rest-dynamic-controller's parser refused every space anywhere, which also
+// refused those two legitimate forms.
+//
 // # The parser/walker boundary
 //
 // This package decides only what a path MEANS, never whether it applies to a document. A predicate
@@ -53,6 +60,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // Kind is how a segment was written, which is what decides its meaning.
@@ -97,7 +105,7 @@ func (s Segment) String() string {
 	case KindPredicate:
 		return "[?" + s.Key + "=" + s.Value + "]"
 	}
-	if strings.ContainsAny(s.Key, ".[]'\"?") || s.Key == "" {
+	if strings.ContainsAny(s.Key, ".[]'\"?") || s.Key == "" || hasSpace(s.Key) {
 		q := "'"
 		if strings.Contains(s.Key, "'") {
 			q = `"`
@@ -201,6 +209,9 @@ func parseToken(token string) ([]Segment, error) {
 		if strings.ContainsAny(token, "]'\"") {
 			return nil, fmt.Errorf("segment %q: stray bracket or quote", token)
 		}
+		if hasSpace(token) {
+			return nil, fmt.Errorf("segment %q: unquoted whitespace; quote the key, as in ['my key']", token)
+		}
 		return []Segment{{Kind: KindKey, Key: token}}, nil
 	}
 
@@ -209,6 +220,9 @@ func parseToken(token string) ([]Segment, error) {
 		name := token[:open]
 		if strings.ContainsAny(name, "]'\"") {
 			return nil, fmt.Errorf("segment %q: stray bracket or quote before '['", token)
+		}
+		if hasSpace(name) {
+			return nil, fmt.Errorf("segment %q: unquoted whitespace; quote the key, as in ['my key']", token)
 		}
 		segs = append(segs, Segment{Kind: KindKey, Key: name})
 	}
@@ -303,3 +317,9 @@ func isCanonicalDigits(s string) bool {
 	}
 	return true
 }
+
+// hasSpace reports whether s contains any whitespace. A BARE name may not: outside brackets whitespace
+// is almost always a mistake (a. b, YAML trailing space) and used to become part of the key silently,
+// so " b" was looked up instead of "b". Inside brackets it is delimited, so a quoted key or a predicate
+// value may contain it.
+func hasSpace(s string) bool { return strings.IndexFunc(s, unicode.IsSpace) >= 0 }
