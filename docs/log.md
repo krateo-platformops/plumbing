@@ -9,6 +9,12 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-08 — `endpoints.SecretName`**: the session Secret's name,
+  `<DNS-1123 username>-clientconfig`, was rebuilt by hand in `endpoints.Store`,
+  `server/use/userconfig.go` and authn. Core-provider now needs it too, to delete a
+  cdc's stale credential, where a near-miss deletes nothing and says nothing.
+  `endpoints.SecretName(username)` is its one definition, and both plumbing call sites
+  use it.
 - **2026-11-08 — jwtutil `ValidateClaimsWithKeySource`**: verifies exactly like
   `ValidateWithKeySource`, which now wraps it, and returns the full `KrateoClaims`,
   registered claims such as `ExpiresAt` included. authn's `/delegate` needs the subject

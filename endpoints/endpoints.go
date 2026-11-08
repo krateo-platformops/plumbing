@@ -95,9 +95,22 @@ func FromSecret(ctx context.Context, rc *rest.Config, name, namespace string) (E
 	return res, nil
 }
 
+// ClientConfigSuffix ends the name of every Secret holding a user's session
+// credential.
+const ClientConfigSuffix = "-clientconfig"
+
+// SecretName names the Secret holding username's session credential, as authn
+// writes it and every consumer reads it: the username made DNS-1123 compatible,
+// plus ClientConfigSuffix. It is the one definition of that name; compute it
+// here rather than rebuilding it, since a near-miss names a Secret that
+// doesn't exist.
+func SecretName(username string) string {
+	return kubeutil.MakeDNS1123Compatible(username) + ClientConfigSuffix
+}
+
 func Store(ctx context.Context, rc *rest.Config, ns string, ep Endpoint) error {
 	sec := corev1.Secret{}
-	sec.SetName(fmt.Sprintf("%s-clientconfig", kubeutil.MakeDNS1123Compatible(ep.Username)))
+	sec.SetName(SecretName(ep.Username))
 	sec.SetNamespace(ns)
 	sec.StringData = map[string]string{
 		usernameLabel:   ep.Username,
