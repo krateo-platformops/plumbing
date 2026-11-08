@@ -9,6 +9,15 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-08 — jwtutil `principal`**: `UserInfo`, `Actor` and `CreateTokenOptions`
+  gain an optional `principal` claim, one of `human`, `agent`, `controller` or
+  `service`. authn sets it from how a token was obtained, so the shared audit schema
+  (installer#716) can record what kind of principal acted. On a delegated token the
+  subject stays `human`, and each `act` link carries its actor's kind;
+  `ActorPrincipal()` returns the outermost one. `CreateToken` refuses any other value.
+  Reading is lenient: an absent, unknown or non-string kind reads as `""` and never
+  fails validation, so older tokens and newer issuers don't break validators. Tokens
+  created without it are unchanged.
 - **2026-11-08 — `endpoints.SecretName`**: the session Secret's name,
   `<DNS-1123 username>-clientconfig`, was rebuilt by hand in `endpoints.Store`,
   `server/use/userconfig.go` and authn. Core-provider now needs it too, to delete a
