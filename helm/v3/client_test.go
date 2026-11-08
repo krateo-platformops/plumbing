@@ -231,9 +231,9 @@ func TestInstallAndUninstall_OCI(t *testing.T) {
 				WithCache(),
 				WithNamespace(namespace),
 			)
-			assert.Nil(t, err)
+			require.NoError(t, err)
 
-			assert.Nil(t, err)
+			require.NoError(t, err)
 			defer cli.Close()
 
 			// 3. Define Chart Details - Using official Bitnami OCI registry
@@ -253,7 +253,7 @@ func TestInstallAndUninstall_OCI(t *testing.T) {
 					},
 				},
 			)
-			assert.Nil(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, releaseName, rel.Name)
 			assert.Equal(t, "deployed", string(rel.Status))
 
@@ -262,7 +262,7 @@ func TestInstallAndUninstall_OCI(t *testing.T) {
 			// 5. Run Uninstall
 			t.Logf("Attempting to uninstall release: %s", releaseName)
 			err = cli.Uninstall(ctx, releaseName, &helmconfig.UninstallConfig{})
-			assert.Nil(t, err)
+			require.NoError(t, err)
 
 			t.Log("Successfully uninstalled release")
 
@@ -285,7 +285,7 @@ func TestUpgrade(t *testing.T) {
 				}),
 				WithNamespace(namespace),
 			)
-			assert.Nil(t, err)
+			require.NoError(t, err)
 			defer cli.Close()
 
 			chartRef := "oci://registry-1.docker.io/bitnamicharts/nginx"
@@ -306,7 +306,7 @@ func TestUpgrade(t *testing.T) {
 					},
 				},
 			)
-			assert.Nil(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, releaseName, rel.Name)
 			assert.Equal(t, 1, rel.Revision)
 
@@ -325,13 +325,13 @@ func TestUpgrade(t *testing.T) {
 					},
 				},
 			)
-			assert.Nil(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, releaseName, rel.Name)
 			assert.Equal(t, 2, rel.Revision)
 
 			// Cleanup
 			err = cli.Uninstall(ctx, releaseName, &helmconfig.UninstallConfig{})
-			assert.Nil(t, err)
+			require.NoError(t, err)
 
 			return ctx
 		}).
@@ -349,7 +349,7 @@ func TestRollback(t *testing.T) {
 				WithCache(),
 				WithNamespace(namespace),
 			)
-			assert.Nil(t, err)
+			require.NoError(t, err)
 			defer cli.Close()
 
 			chartRef := "oci://registry-1.docker.io/bitnamicharts/nginx"
@@ -370,7 +370,7 @@ func TestRollback(t *testing.T) {
 					},
 				},
 			)
-			assert.Nil(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, 1, rel.Revision)
 
 			// Upgrade the release
@@ -388,7 +388,7 @@ func TestRollback(t *testing.T) {
 					},
 				},
 			)
-			assert.Nil(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, 2, rel.Revision)
 
 			// Rollback to revision 1
@@ -400,12 +400,12 @@ func TestRollback(t *testing.T) {
 					ReleaseVersion: 1,
 				},
 			)
-			assert.Nil(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, 3, rel.Revision) // Rollback creates a new revision
 
 			// Cleanup
 			err = cli.Uninstall(ctx, releaseName, &helmconfig.UninstallConfig{})
-			assert.Nil(t, err)
+			require.NoError(t, err)
 
 			return ctx
 		}).
@@ -423,7 +423,7 @@ func TestGetRelease(t *testing.T) {
 				WithCache(),
 				WithNamespace(namespace),
 			)
-			assert.Nil(t, err)
+			require.NoError(t, err)
 			defer cli.Close()
 
 			chartRef := "oci://registry-1.docker.io/bitnamicharts/nginx"
@@ -441,12 +441,12 @@ func TestGetRelease(t *testing.T) {
 					},
 				},
 			)
-			assert.Nil(t, err)
+			require.NoError(t, err)
 
 			// Get the release
 			t.Log("Getting release")
 			gotRel, err := cli.GetRelease(ctx, releaseName, &helmconfig.GetConfig{})
-			assert.Nil(t, err)
+			require.NoError(t, err)
 			assert.NotNil(t, gotRel)
 			assert.Equal(t, releaseName, gotRel.Name)
 			assert.Equal(t, rel.Revision, gotRel.Revision)
@@ -455,12 +455,12 @@ func TestGetRelease(t *testing.T) {
 			// Test getting non-existent release
 			t.Log("Getting non-existent release")
 			notFound, err := cli.GetRelease(ctx, "does-not-exist", &helmconfig.GetConfig{})
-			assert.Nil(t, err)
+			require.NoError(t, err)
 			assert.Nil(t, notFound)
 
 			// Cleanup
 			err = cli.Uninstall(ctx, releaseName, &helmconfig.UninstallConfig{})
-			assert.Nil(t, err)
+			require.NoError(t, err)
 
 			return ctx
 		}).
@@ -478,7 +478,7 @@ func TestListReleases(t *testing.T) {
 				WithCache(),
 				WithNamespace(namespace),
 			)
-			assert.Nil(t, err)
+			require.NoError(t, err)
 			defer cli.Close()
 
 			chartRef := "oci://registry-1.docker.io/bitnamicharts/nginx"
@@ -497,7 +497,7 @@ func TestListReleases(t *testing.T) {
 						},
 					},
 				)
-				assert.Nil(t, err)
+				require.NoError(t, err)
 			}
 
 			time.Sleep(5 * time.Second) // Wait for releases to be fully registered
@@ -508,7 +508,7 @@ func TestListReleases(t *testing.T) {
 				All:       true, // List all releases regardless of limit/offset
 				StateMask: helmconfig.ListDeployed,
 			})
-			assert.Nil(t, err)
+			require.NoError(t, err)
 			t.Logf("Found %d releases", len(list))
 			for _, rel := range list {
 				t.Logf("  - %s (namespace: %s, status: %s)", rel.Name, rel.Namespace, rel.Status)
@@ -527,7 +527,7 @@ func TestListReleases(t *testing.T) {
 			// Cleanup
 			for _, releaseName := range releases {
 				err = cli.Uninstall(ctx, releaseName, &helmconfig.UninstallConfig{})
-				assert.Nil(t, err)
+				require.NoError(t, err)
 			}
 
 			return ctx
@@ -547,7 +547,7 @@ func TestInstallAndUninstall_Repo(t *testing.T) {
 				WithCache(),
 				WithNamespace(namespace),
 			)
-			assert.Nil(t, err)
+			require.NoError(t, err)
 			defer cli.Close()
 
 			// 3. Define Chart Details - Using official Kubernetes ingress-nginx repo
@@ -571,7 +571,7 @@ func TestInstallAndUninstall_Repo(t *testing.T) {
 					},
 				},
 			)
-			assert.Nil(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, releaseName, rel.Name)
 			assert.Equal(t, "deployed", string(rel.Status))
 
@@ -580,7 +580,7 @@ func TestInstallAndUninstall_Repo(t *testing.T) {
 			// 5. Run Uninstall
 			t.Logf("Attempting to uninstall release: %s", releaseName)
 			err = cli.Uninstall(ctx, releaseName, &helmconfig.UninstallConfig{})
-			assert.Nil(t, err)
+			require.NoError(t, err)
 
 			t.Log("Successfully uninstalled release")
 
@@ -601,7 +601,7 @@ func TestInstallAndUninstall_TGZ(t *testing.T) {
 				WithCache(),
 				WithNamespace(namespace),
 			)
-			assert.Nil(t, err)
+			require.NoError(t, err)
 			defer cli.Close()
 
 			// 3. Define Chart Details - Direct .tgz URL
@@ -624,7 +624,7 @@ func TestInstallAndUninstall_TGZ(t *testing.T) {
 					},
 				},
 			)
-			assert.Nil(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, releaseName, rel.Name)
 			assert.Equal(t, "deployed", string(rel.Status))
 
@@ -633,7 +633,7 @@ func TestInstallAndUninstall_TGZ(t *testing.T) {
 			// 5. Run Uninstall
 			t.Logf("Attempting to uninstall release: %s", releaseName)
 			err = cli.Uninstall(ctx, releaseName, &helmconfig.UninstallConfig{})
-			assert.Nil(t, err)
+			require.NoError(t, err)
 
 			t.Log("Successfully uninstalled release")
 
