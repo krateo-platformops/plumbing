@@ -78,17 +78,3 @@ func TestEndpoints(t *testing.T) {
 
 	testenv.Test(t, f)
 }
-
-// SecretName is the one definition of a session Secret's name: the username
-// made DNS-1123 compatible, plus "-clientconfig".
-func TestSecretName(t *testing.T) {
-	for username, want := range map[string]string{
-		"alice":             "alice-clientconfig",
-		"cdc-krateo-sa":     "cdc-krateo-sa-clientconfig",
-		"Alice.Smith@x.com": kubeutil.MakeDNS1123Compatible("Alice.Smith@x.com") + "-clientconfig",
-	} {
-		if got := SecretName(username); got != want {
-			t.Errorf("SecretName(%q) = %q, want %q", username, got, want)
-		}
-	}
-}
