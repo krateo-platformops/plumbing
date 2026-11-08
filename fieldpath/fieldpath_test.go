@@ -98,7 +98,7 @@ func TestTheGrammar(t *testing.T) {
 			why: "a predicate value is delimited by its bracket"},
 		{in: "a[?first name=John]", want: []Segment{k("a"), p("first name", "John")}},
 		{in: ".leadingDot", want: []Segment{k("leadingDot")},
-			why: "leading dots are stripped, for the same compatibility reason as a.[?k=v]"},
+			why: "leading dots are stripped: the old parser kept them, so .id named a property called \".id\" and found nothing"},
 	} {
 		t.Run(tc.in, func(t *testing.T) {
 			got, err := Parse(tc.in)

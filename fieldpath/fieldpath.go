@@ -135,9 +135,10 @@ func Keys(segs []Segment) []string {
 
 // Parse splits path into typed segments.
 //
-// Leading dots are tolerated and ignored, for compatibility: paths of the form ".id" exist in the wild
-// because two documented dialects disagreed, and rejecting them now would break definitions that work
-// today. Do not tighten this without a migration.
+// Leading dots are stripped. This is a FIX, not compatibility: rest-dynamic-controller's parser kept the
+// dot, so ".id" named a property literally called ".id" and silently resolved to nothing. Paths of that
+// form exist because two documented dialects disagreed (one wrote ".id" for "id"); stripping gives them
+// the meaning their authors intended. Do not tighten this to an error without a migration.
 func Parse(path string) ([]Segment, error) {
 	if path == "" {
 		return nil, fmt.Errorf("malformed path: empty")
