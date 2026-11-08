@@ -9,6 +9,11 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-08 — jwtutil `ValidateClaimsWithKeySource`**: verifies exactly like
+  `ValidateWithKeySource`, which now wraps it, and returns the full `KrateoClaims`,
+  registered claims such as `ExpiresAt` included. authn's `/delegate` needs the subject
+  token's verified expiry, so a delegated token never outlives it; reading it from an
+  unverified parse was CodeQL's `go/missing-jwt-signature-check`.
 - **2026-11-08 — jwtutil `act`**: `UserInfo` and `CreateTokenOptions` gain an optional
   RFC 8693 `act` claim (`Actor`, nested for a chain). It's for authn's delegated tokens
   (AUDIT-6, installer#412): the subject stays the human, and `act` names the agent

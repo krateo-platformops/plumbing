@@ -43,8 +43,21 @@ func Validate(publicKey *rsa.PublicKey, bearer string) (UserInfo, error) {
 // (401), whereas ErrKeyUnavailable means we could not obtain the key (503) and
 // says nothing about the token.
 func ValidateWithKeySource(keys KeySource, bearer string) (UserInfo, error) {
+	claims, err := ValidateClaimsWithKeySource(keys, bearer)
+	if err != nil {
+		return UserInfo{}, err
+	}
+	return claims.UserInfo, nil
+}
+
+// ValidateClaimsWithKeySource verifies bearer exactly as ValidateWithKeySource
+// does, with the same errors, and returns all of its verified claims: the
+// identity and, unlike ValidateWithKeySource, the registered claims such as
+// ExpiresAt. Use it when a decision depends on one of those, for example a
+// token issued from this one that must not outlive it.
+func ValidateClaimsWithKeySource(keys KeySource, bearer string) (KrateoClaims, error) {
 	if keys == nil {
-		return UserInfo{}, fmt.Errorf("key source cannot be nil")
+		return KrateoClaims{}, fmt.Errorf("key source cannot be nil")
 	}
 
 	tok, err := jwt.ParseWithClaims(bearer, &KrateoClaims{},
@@ -63,24 +76,24 @@ func ValidateWithKeySource(keys KeySource, bearer string) (UserInfo, error) {
 		// flattened into ErrTokenInvalid — that would answer 401 and tell the
 		// client to re-authenticate against an authn that is simply unreachable.
 		if errors.Is(err, ErrKeyUnavailable) {
-			return UserInfo{}, err
+			return KrateoClaims{}, err
 		}
 		if !errors.Is(err, jwt.ErrTokenExpired) {
-			return UserInfo{}, ErrTokenInvalid
+			return KrateoClaims{}, ErrTokenInvalid
 		}
-		return UserInfo{}, ErrTokenExpired
+		return KrateoClaims{}, ErrTokenExpired
 	}
 
 	claims, ok := tok.Claims.(*KrateoClaims)
 	if !ok {
-		return UserInfo{}, ErrTokenInvalid
+		return KrateoClaims{}, ErrTokenInvalid
 	}
 
 	// A signed token whose actor chain is malformed names no one reliably:
 	// refuse it rather than attribute its requests to an empty actor.
 	if !validActor(claims.Act) {
-		return UserInfo{}, ErrTokenInvalid
+		return KrateoClaims{}, ErrTokenInvalid
 	}
 
-	return claims.UserInfo, nil
+	return *claims, nil
 }
