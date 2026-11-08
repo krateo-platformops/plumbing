@@ -84,6 +84,19 @@ func TestTheGrammar(t *testing.T) {
 			why: "an explicitly quoted empty key is a key; a[] is not"},
 		{in: "a['unterminated", err: "unterminated"},
 		{in: "a[0", err: "unterminated bracket"},
+		// --- whitespace: refused in a bare name, accepted where brackets delimit it ---
+		{in: "a. b", err: "unquoted whitespace",
+			why: "used to parse as the key \" b\", silently"},
+		{in: "my key.b", err: "unquoted whitespace"},
+		{in: "a.b ", err: "unquoted whitespace",
+			why: "YAML trailing whitespace used to become part of the last key"},
+		{in: "a\tb", err: "unquoted whitespace"},
+		{in: "a b[0]", err: "unquoted whitespace", why: "the bare name before a bracket group too"},
+		{in: "a['my key']", want: []Segment{k("a"), k("my key")},
+			why: "quoting is how a key with whitespace is written"},
+		{in: "a[?name=John Smith]", want: []Segment{k("a"), p("name", "John Smith")},
+			why: "a predicate value is delimited by its bracket"},
+		{in: "a[?first name=John]", want: []Segment{k("a"), p("first name", "John")}},
 		{in: ".leadingDot", want: []Segment{k("leadingDot")},
 			why: "leading dots are stripped, for the same compatibility reason as a.[?k=v]"},
 	} {
@@ -176,7 +189,7 @@ func TestKindIsNeverDecidedByContent(t *testing.T) {
 // TestQuotedKeysRoundTrip covers what TestEveryParsedPathRoundTrips did not: keys that contain a quote
 // character. String must quote with the OTHER character, or its output does not parse.
 func TestQuotedKeysRoundTrip(t *testing.T) {
-	for _, key := range []string{"it's", `say "hi"`, "a.b", "[0]", "?k=v", ""} {
+	for _, key := range []string{"it's", `say "hi"`, "a.b", "[0]", "?k=v", "", "my key", " lead", "tab\tkey"} {
 		rendered := Segment{Kind: KindKey, Key: key}.String()
 		segs, err := Parse("x" + rendered)
 		if !strings.HasPrefix(rendered, "[") {
