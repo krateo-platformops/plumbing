@@ -19,6 +19,9 @@ type UserInfo struct {
 	// names the identity acting for Username (the subject). Nil on every
 	// other token.
 	Act *Actor `json:"act,omitempty"`
+	// Principal is the kind of identity Username is. Empty on a token from
+	// an issuer that doesn't set it, and omitted from the token then.
+	Principal Principal `json:"principal,omitempty"`
 }
 
 // Actor is one link of RFC 8693's "act" claim (§4.1). Sub is the acting
@@ -27,6 +30,9 @@ type UserInfo struct {
 type Actor struct {
 	Sub string `json:"sub"`
 	Act *Actor `json:"act,omitempty"`
+	// Principal is the kind of identity Sub is, as an extra actor claim
+	// (RFC 8693 §4.1 allows them).
+	Principal Principal `json:"principal,omitempty"`
 }
 
 // MaxActorDepth bounds an "act" chain. A deeper chain is refused when
@@ -79,6 +85,9 @@ type CreateTokenOptions struct {
 	// Act makes the token a delegated one (RFC 8693): Username stays the
 	// subject, and Act names who acts for it. Nil for an ordinary token.
 	Act *Actor
+	// Principal is the kind of identity Username is. Empty leaves the claim
+	// out, as before it existed.
+	Principal Principal
 }
 
 // CreateToken generates a signed JWT token using the provided
@@ -105,13 +114,18 @@ func CreateToken(opts CreateTokenOptions) (string, error) {
 		return "", fmt.Errorf("act must name an actor at every level, at most %d deep", MaxActorDepth)
 	}
 
+	if !validPrincipals(opts.Principal, opts.Act) {
+		return "", fmt.Errorf("principal must be empty or one of human, agent, controller, service, on the token and on every actor")
+	}
+
 	now := time.Now()
 
 	claims := KrateoClaims{
 		UserInfo: UserInfo{
-			Username: opts.Username,
-			Groups:   opts.Groups,
-			Act:      opts.Act,
+			Username:  opts.Username,
+			Groups:    opts.Groups,
+			Act:       opts.Act,
+			Principal: opts.Principal,
 		},
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    defaultISS,
