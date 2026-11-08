@@ -9,6 +9,7 @@ package dynamicwatch
 import (
 	"sync"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -26,12 +27,19 @@ type Registry struct {
 	cache cache.Cache
 
 	mu      sync.Mutex
-	watched map[schema.GroupVersionKind]struct{}
+	watched map[watchKey]struct{}
+}
+
+// watchKey dedupes by GVK AND by what is watched: a Kind watched as full objects and as metadata only
+// are two different informers, and registering one must not suppress the other.
+type watchKey struct {
+	gvk          schema.GroupVersionKind
+	metadataOnly bool
 }
 
 // NewRegistry returns a Registry backed by the given cache (typically mgr.GetCache()).
 func NewRegistry(c cache.Cache) *Registry {
-	return &Registry{cache: c, watched: map[schema.GroupVersionKind]struct{}{}}
+	return &Registry{cache: c, watched: map[watchKey]struct{}{}}
 }
 
 // EnsureWatch registers a watch on gvk the first time it is seen; later calls for the same gvk are
@@ -45,28 +53,58 @@ func NewRegistry(c cache.Cache) *Registry {
 // running controller. A watch on a GVK that later stops being needed is harmless (its informer simply
 // idles) but is never released for the life of the process — an accepted tradeoff, not an oversight.
 func (r *Registry) EnsureWatch(ctrl controller.Controller, gvk schema.GroupVersionKind, mapFunc handler.MapFunc, predicates ...predicate.Predicate) error {
+	return r.ensure(ctrl, watchKey{gvk: gvk}, mapFunc, predicates...)
+}
+
+// EnsureMetadataWatch is EnsureWatch for a caller that needs only to know which instances exist, not
+// their contents: the informer behind it caches PartialObjectMetadata (names, labels, annotations,
+// owner references) instead of whole objects, so it costs a fraction of the memory on a Kind with
+// large or many instances. mapFunc receives a *metav1.PartialObjectMetadata. Dedupe is separate from
+// EnsureWatch's: the same GVK may be watched both ways.
+func (r *Registry) EnsureMetadataWatch(ctrl controller.Controller, gvk schema.GroupVersionKind, mapFunc handler.MapFunc, predicates ...predicate.Predicate) error {
+	return r.ensure(ctrl, watchKey{gvk: gvk, metadataOnly: true}, mapFunc, predicates...)
+}
+
+func (r *Registry) ensure(ctrl controller.Controller, key watchKey, mapFunc handler.MapFunc, predicates ...predicate.Predicate) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, ok := r.watched[gvk]; ok {
+	if _, ok := r.watched[key]; ok {
 		return nil
 	}
-
-	obj := &unstructured.Unstructured{}
-	obj.SetGroupVersionKind(gvk)
-	var co client.Object = obj
-
-	src := source.Kind(r.cache, co, handler.EnqueueRequestsFromMapFunc(mapFunc), predicates...)
+	src := source.Kind(r.cache, watchObject(key), handler.EnqueueRequestsFromMapFunc(mapFunc), predicates...)
 	if err := ctrl.Watch(src); err != nil {
 		return err
 	}
-	r.watched[gvk] = struct{}{}
+	r.watched[key] = struct{}{}
 	return nil
+}
+
+// watchObject is the object whose type selects the informer: Unstructured for a full watch,
+// PartialObjectMetadata for a metadata-only one. Both carry the GVK, which is how the cache knows the
+// runtime-discovered Kind.
+func watchObject(key watchKey) client.Object {
+	if key.metadataOnly {
+		m := &metav1.PartialObjectMetadata{}
+		m.SetGroupVersionKind(key.gvk)
+		return m
+	}
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(key.gvk)
+	return u
 }
 
 // Watching reports whether gvk currently has a registered watch.
 func (r *Registry) Watching(gvk schema.GroupVersionKind) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	_, ok := r.watched[gvk]
+	_, ok := r.watched[watchKey{gvk: gvk}]
+	return ok
+}
+
+// WatchingMetadata reports whether gvk currently has a registered metadata-only watch.
+func (r *Registry) WatchingMetadata(gvk schema.GroupVersionKind) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.watched[watchKey{gvk: gvk, metadataOnly: true}]
 	return ok
 }
