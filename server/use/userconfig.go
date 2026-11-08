@@ -11,7 +11,6 @@ import (
 	"github.com/krateo-platformops/plumbing/endpoints"
 	"github.com/krateo-platformops/plumbing/http/response"
 	"github.com/krateo-platformops/plumbing/jwtutil"
-	"github.com/krateo-platformops/plumbing/kubeutil"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/rest"
 )
@@ -65,8 +64,7 @@ func UserConfig(keys jwtutil.KeySource, authnNS string) func(http.Handler) http.
 			}
 
 			ep, err := endpoints.FromSecret(context.Background(), sarc,
-				fmt.Sprintf("%s-clientconfig",
-					kubeutil.MakeDNS1123Compatible(userInfo.Username)), authnNS)
+				endpoints.SecretName(userInfo.Username), authnNS)
 			if err != nil {
 				if apierrors.IsNotFound(err) {
 					response.Unauthorized(wri, err)

@@ -56,7 +56,7 @@ derived from the actual package docs and code.
 | Package | What it exports |
 |---|---|
 | `jwtutil` | RS256 Krateo JWT create/verify, against a static key or authn's JWKS, with `UserInfo` claims. A delegated token also carries RFC 8693's `act` (`Actor`), read through `UserInfo.Actor()` and `DelegationChain()`. `ValidateClaimsWithKeySource` returns all the verified claims, `exp` included. |
-| `endpoints` | The Krateo `Endpoint` (user API-server credential record) stored/loaded as a Secret. |
+| `endpoints` | The Krateo `Endpoint` (user API-server credential record) stored/loaded as a Secret. `SecretName(username)` is the one definition of that Secret's name: `<DNS-1123 username>-clientconfig`. |
 | `kubeconfig` | `Endpoint` → kubeconfig YAML (`Marshal`) and → `*rest.Config` (`NewClientConfig`). |
 | `signup` | Creates a certificate-based cluster user (CSR flow) and stores its `Endpoint`. |
 | `certs` | CertificateSigningRequest helpers: create, approve, wait, fetch the issued cert. |
