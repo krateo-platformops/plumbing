@@ -158,6 +158,17 @@ type ReconcileResult struct {
 	// IntendedDeletionsOmitted is how many identities exceeded the cap and were not listed, so a
 	// reader can tell a genuinely short list from a truncated one.
 	IntendedDeletionsOmitted int
+
+	// KeptDeletions names the intended deletions helm did NOT perform because the live object carries
+	// helm.sh/resource-policy: keep (core-provider, 2026-11-08). helm is right to leave them alive;
+	// what must still happen is that the release RECORDS the change. Each one therefore counts toward
+	// Changed, so the real Upgrade writes a revision with the new values and manifest, and the release
+	// stops claiming the object. A deletion that was intended, not kept and not performed (its delete
+	// failed) is deliberately NOT here: counting it would write a revision without the object, helm
+	// would forget it, and the delete would never be retried.
+	KeptDeletions []string
+	// KeptDeletionsOmitted is how many kept identities exceeded the cap and were not listed.
+	KeptDeletionsOmitted int
 }
 
 // Client is the interface that the rest of your app uses.

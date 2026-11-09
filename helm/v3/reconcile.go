@@ -382,7 +382,15 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 		}
 	}
 
-	changed := created > 0 || deleted > 0 || patched > 0
+	// A deletion helm skipped because the object is kept is still a change to the RELEASE: without
+	// it here, a spec change that only removes kept objects reads Changed false, no revision is ever
+	// written, and the release's recorded values and manifest stay stale forever while every status
+	// reports success (krateo-autopilot on krateo-057, 2026-11-08: four objects dropped from the
+	// render, all kept, revision 117 for good). See keptDeletions for why a FAILED deletion is not
+	// counted.
+	kept := keptDeletions(current, target, res.Deleted, getLive, maxChangedObjects)
+
+	changed := releaseChanged(created, deleted, patched, kept.total())
 
 	result := &helmconfig.ReconcileResult{
 		Changed:               changed,
@@ -398,6 +406,8 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 		// having to infer that an absent field means "nothing was intended".
 		IntendedDeletions:        intended.names,
 		IntendedDeletionsOmitted: intended.omitted,
+		KeptDeletions:            kept.names,
+		KeptDeletionsOmitted:     kept.omitted,
 	}
 
 	// A partial apply returns the diagnostics AND the error, and does not persist a revision.
@@ -833,4 +843,64 @@ func intendedDeletions(current, target kube.ResourceList, limit int) *changedObj
 		out.add(infoKey(info))
 	}
 	return out
+}
+
+// keptDeletions names the intended deletions (current minus target, as intendedDeletions) that the
+// merge did not delete and whose LIVE object carries helm.sh/resource-policy: keep, which is exactly
+// the case helm's update skips (pkg/kube/client.go, the deletion loop: Get, then the annotation
+// check, then the delete). Those are correct to leave alive and must still produce a revision.
+//
+// Everything else that was intended and not deleted is deliberately excluded, and the exclusion is
+// the point. A live object WITHOUT keep means its delete failed; a read that fails for any reason
+// other than NotFound means nothing can be said. Counting either as a change would run the real
+// Upgrade, which writes a revision whose manifest no longer lists the object: helm would forget it,
+// and the next pass would have nothing left to retry. Left out, the object stays in the release, the
+// next pass asks to delete it again, and the shortfall stays visible as intendedDeletions > deleted.
+// An object already gone (NotFound) is not kept either.
+//
+// get reads the live object; production passes getLive. It is a parameter so the decision is tested
+// without a cluster, as the package does for filterLiveJobs and classifyApply.
+func keptDeletions(current, target, deleted kube.ResourceList, get func(*resource.Info) (runtime.Object, error), limit int) *changedObjectSet {
+	out := newChangedObjectSet(limit)
+	gone := make(map[string]bool, len(deleted))
+	for _, info := range deleted {
+		gone[infoKey(info)] = true
+	}
+	for _, info := range current.Difference(target) {
+		key := infoKey(info)
+		if gone[key] {
+			continue
+		}
+		obj, err := get(info)
+		if err != nil || obj == nil {
+			continue
+		}
+		annotations, err := apimeta.NewAccessor().Annotations(obj)
+		if err != nil {
+			continue
+		}
+		if annotations[kube.ResourcePolicyAnno] == kube.KeepPolicy {
+			out.add(key)
+		}
+	}
+	return out
+}
+
+// getLive reads info's object from the server, as helm's deletion loop does before it checks the
+// keep annotation. It refreshes info.Object in place, which is what resource.Info.Get does.
+func getLive(info *resource.Info) (runtime.Object, error) {
+	if err := info.Get(); err != nil {
+		return nil, err
+	}
+	return info.Object, nil
+}
+
+// total is how many identities were seen, listed or omitted.
+func (s *changedObjectSet) total() int { return len(s.names) + s.omitted }
+
+// releaseChanged is step 6's verdict: whether the release must be re-recorded by a real Upgrade.
+// kept counts deletions helm skipped because the object is kept (keptDeletions): the cluster needs
+// nothing, the release does.
+func releaseChanged(created, deleted, patched, kept int) bool {
+	return created > 0 || deleted > 0 || patched > 0 || kept > 0
 }
