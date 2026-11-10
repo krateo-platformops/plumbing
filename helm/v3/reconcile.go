@@ -368,6 +368,8 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 	// computed below (infoKey) for the comparison that decides `patched`, so this adds no read, no
 	// decode and no comparison — only a bounded slice append.
 	changedObjects := newChangedObjectSet(maxChangedObjects)
+	changedPathsByChild := map[string][]string{}
+	changedPathsOmitted := map[string]int{}
 	for _, info := range res.Created {
 		changedObjects.add(infoKey(info))
 	}
@@ -390,6 +392,16 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 		if changedChild {
 			patched++
 			changedObjects.add(key)
+			if changedObjects.listed(key) {
+				// Which fields (plumbing#112). Computed only for the listed children, so the cost is
+				// bounded by the same cap as the identities; an error leaves the child without paths.
+				if paths, omitted, perr := changedPaths(liveObj[key], info.Object, maxChangedPaths); perr == nil && len(paths) > 0 {
+					changedPathsByChild[key] = paths
+					if omitted > 0 {
+						changedPathsOmitted[key] = omitted
+					}
+				}
+			}
 		}
 	}
 
@@ -410,6 +422,8 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 		PatchedUpdated:        patched,
 		Release:               stored,
 		ChangedObjects:        changedObjects.names,
+		ChangedPaths:          changedPathsByChild,
+		ChangedPathsOmitted:   changedPathsOmitted,
 		ChangedObjectsOmitted: changedObjects.omitted,
 		AppliedPartially:      applyErr != nil,
 
@@ -835,6 +849,16 @@ func newChangedObjectSet(limit int) *changedObjectSet {
 
 // add records an identity, or counts it as omitted once the cap is reached. A duplicate is neither
 // recorded nor counted as omitted — it is not a child the reader is missing.
+// listed reports whether key is among the identities kept under the cap.
+func (c *changedObjectSet) listed(key string) bool {
+	for _, n := range c.names {
+		if n == key {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *changedObjectSet) add(key string) {
 	if key == "" {
 		return
@@ -968,4 +992,71 @@ func (s *changedObjectSet) total() int { return len(s.names) + s.omitted }
 // nothing, the release does.
 func releaseChanged(created, deleted, patched, kept int) bool {
 	return created > 0 || deleted > 0 || patched > 0 || kept > 0
+}
+
+// maxChangedPaths caps how many changed paths a ReconcileResult names per child (plumbing#112). A
+// drift is usually one or two fields; five is enough to name it while keeping the log line bounded.
+const maxChangedPaths = 5
+
+// changedPaths returns the JSON paths whose content differs between before and after, under the
+// same stripping semanticallyChanged applies (volatile and server-owned metadata, status), sorted,
+// at most limit of them plus how many were omitted. PATHS ONLY: no value is ever returned, so a
+// Secret's data or a token cannot reach a log line through this.
+//
+// It reads the JSON merge patch from before to after: a leaf of the patch is a changed scalar, a
+// replaced array, a removed key (null) or an added subtree. A key containing "." or "/" (annotation
+// and label keys) is written in brackets so the path stays unambiguous: metadata.annotations[a/b].
+func changedPaths(before, after runtime.Object, limit int) ([]string, int, error) {
+	beforeJSON, err := strippedJSON(before)
+	if err != nil {
+		return nil, 0, fmt.Errorf("strip before: %w", err)
+	}
+	afterJSON, err := strippedJSON(after)
+	if err != nil {
+		return nil, 0, fmt.Errorf("strip after: %w", err)
+	}
+	patch, err := jsonpatch.CreateMergePatch(beforeJSON, afterJSON)
+	if err != nil {
+		return nil, 0, fmt.Errorf("compare: %w", err)
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(patch, &m); err != nil {
+		return nil, 0, fmt.Errorf("decode patch: %w", err)
+	}
+	var paths []string
+	var walk func(prefix string, v interface{})
+	walk = func(prefix string, v interface{}) {
+		sub, ok := v.(map[string]interface{})
+		if !ok || len(sub) == 0 {
+			paths = append(paths, prefix)
+			return
+		}
+		for k, child := range sub {
+			walk(joinPath(prefix, k), child)
+		}
+	}
+	for k, v := range m {
+		walk(joinPath("", k), v)
+	}
+	sort.Strings(paths)
+	if limit > 0 && len(paths) > limit {
+		return paths[:limit], len(paths) - limit, nil
+	}
+	return paths, 0, nil
+}
+
+// joinPath appends key to a dotted path, bracketing a key that contains "." or "/".
+func joinPath(prefix, key string) string {
+	seg := key
+	if strings.ContainsAny(key, "./") {
+		seg = "[" + key + "]"
+		if prefix == "" {
+			return seg
+		}
+		return prefix + seg
+	}
+	if prefix == "" {
+		return seg
+	}
+	return prefix + "." + seg
 }

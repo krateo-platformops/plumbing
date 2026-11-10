@@ -113,6 +113,16 @@ type ReconcileResult struct {
 	// ChangedObjectsOmitted is how many identities exceeded the cap and were not listed, so a
 	// reader can tell a genuinely short list from a truncated one.
 	ChangedObjectsOmitted int
+	// ChangedPaths names, for each child in ChangedObjects that the merge PATCHED (keyed by the same
+	// identity), the JSON paths whose persisted content differed, e.g. "metadata.annotations[checksum/config]"
+	// or "spec.replicas" (plumbing#112). changedObjects says WHICH child drifted; this says which field,
+	// which is what a drift investigation needs and what a managedFields snapshot taken after the heal
+	// cannot give (the heal takes ownership). PATHS ONLY, never values: a value may be Secret data or a
+	// token. Capped at a few paths per child (ChangedPathsOmitted counts the rest). Created and deleted
+	// children have no entry: the whole object is the change.
+	ChangedPaths map[string][]string
+	// ChangedPathsOmitted is, per child, how many changed paths exceeded the cap.
+	ChangedPathsOmitted map[string]int
 	// AppliedPartially reports that the self-heal apply converged SOME children and failed on
 	// others (core-provider#276). When it is true, Reconcile returns BOTH this result and a
 	// non-nil error, and the error names the children that failed.
