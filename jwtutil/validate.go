@@ -14,6 +14,34 @@ var (
 	ErrTokenInvalid = errors.New("token is invalid")
 )
 
+// validationLeeway absorbs clock skew between authn and the validator, for
+// expiry and for telling a retired key from a new one.
+const validationLeeway = 5 * time.Second
+
+// notPublished turns a kid absent from a successfully fetched key set into
+// ErrKeyNotPublished when the token was issued before that set was fetched (by
+// more than the leeway). authn publishes a key from the moment it signs with
+// it, so that key was retired. A token issued later, or without an issue time,
+// may carry a key the set predates: it stays ErrKeyUnavailable, and the next
+// refetch finds the key. The issue time is read before the signature is
+// checked, which is safe: the token fails either way, and it only picks 401 or
+// 503. Every other error passes through unchanged.
+func notPublished(err error, token *jwt.Token) error {
+	var absent errKidAbsent
+	if !errors.As(err, &absent) {
+		return err
+	}
+	claims, ok := token.Claims.(*KrateoClaims)
+	if !ok || claims.IssuedAt == nil {
+		return err
+	}
+	if !claims.IssuedAt.Add(validationLeeway).Before(absent.asOf) {
+		return err
+	}
+	return fmt.Errorf("%w: %s; the token was issued at %s",
+		ErrKeyNotPublished, absent.Error(), claims.IssuedAt.UTC().Format(time.RFC3339))
+}
+
 // Validate parses and verifies the given bearer token against the supplied
 // RSA public key. Only the RS256 asymmetric algorithm is accepted; tokens
 // signed with any other method (in particular symmetric HMAC) are rejected to
@@ -41,7 +69,9 @@ func Validate(publicKey *rsa.PublicKey, bearer string) (UserInfo, error) {
 // Errors are separated by fault so callers can answer with the right status:
 // ErrTokenExpired and ErrTokenInvalid mean the caller's token is at fault
 // (401), whereas ErrKeyUnavailable means we could not obtain the key (503) and
-// says nothing about the token.
+// says nothing about the token. A token whose kid is absent from a key set
+// fetched after the token was issued is ErrTokenInvalid and ErrKeyNotPublished:
+// its key was retired, so it will never verify again.
 func ValidateWithKeySource(keys KeySource, bearer string) (UserInfo, error) {
 	claims, err := ValidateClaimsWithKeySource(keys, bearer)
 	if err != nil {
@@ -68,8 +98,12 @@ func ValidateClaimsWithKeySource(keys KeySource, bearer string) (KrateoClaims, e
 			// A non-string or absent kid becomes "", which a single-key set
 			// still resolves; see JWKSKeySource.PublicKey.
 			kid, _ := token.Header["kid"].(string)
-			return keys.PublicKey(kid)
-		}, jwt.WithLeeway(5*time.Second))
+			key, err := keys.PublicKey(kid)
+			if err != nil {
+				return nil, notPublished(err, token)
+			}
+			return key, nil
+		}, jwt.WithLeeway(validationLeeway))
 	if err != nil {
 		// Key-resolution failures surface through the keyfunc wrapped in the
 		// parse error. They are OUR fault, not the token's, so they must not be
@@ -77,6 +111,11 @@ func ValidateClaimsWithKeySource(keys KeySource, bearer string) (KrateoClaims, e
 		// client to re-authenticate against an authn that is simply unreachable.
 		if errors.Is(err, ErrKeyUnavailable) {
 			return KrateoClaims{}, err
+		}
+		// A retired key is the token's fault: keep the detail and match
+		// ErrTokenInvalid, so callers answer 401 and the client signs in again.
+		if errors.Is(err, ErrKeyNotPublished) {
+			return KrateoClaims{}, fmt.Errorf("%w: %w", ErrTokenInvalid, err)
 		}
 		if !errors.Is(err, jwt.ErrTokenExpired) {
 			return KrateoClaims{}, ErrTokenInvalid
