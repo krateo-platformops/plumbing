@@ -72,10 +72,12 @@ func TestChangedPaths(t *testing.T) {
 
 // A Secret's changed key is named; its value never appears in the output.
 func TestChangedPathsNeverCarriesAValue(t *testing.T) {
-	const secretValue = "c3VwZXItc2VjcmV0LXRva2Vu"
+	// A readable marker, deliberately low-entropy: the test needs a value it can search the output
+	// for, not one that looks like a credential (gitleaks rightly flags those, even in tests).
+	const secretValue = "VALUE-THAT-MUST-NOT-APPEAR-IN-A-PATH"
 	before := uobj(map[string]interface{}{"apiVersion": "v1", "kind": "Secret",
 		"metadata": map[string]interface{}{"name": "s", "namespace": "ns"},
-		"data":     map[string]interface{}{"token": "b2xk"}})
+		"data":     map[string]interface{}{"token": "OLD-VALUE-MARKER"}})
 	after := uobj(map[string]interface{}{"apiVersion": "v1", "kind": "Secret",
 		"metadata": map[string]interface{}{"name": "s", "namespace": "ns"},
 		"data":     map[string]interface{}{"token": secretValue}})
@@ -87,7 +89,7 @@ func TestChangedPathsNeverCarriesAValue(t *testing.T) {
 		t.Errorf("paths=%v, want data.token", paths)
 	}
 	for _, p := range paths {
-		if strings.Contains(p, secretValue) || strings.Contains(p, "b2xk") {
+		if strings.Contains(p, secretValue) || strings.Contains(p, "OLD-VALUE-MARKER") {
 			t.Fatalf("a path carries a value: %q", p)
 		}
 	}
