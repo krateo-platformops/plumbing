@@ -2,10 +2,12 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: probe-plain-job
+  namespace: {{ .Release.Namespace }}
 spec:
   template:
     spec:
       restartPolicy: Never
+      {{- include "probe.podSecurity" . | nindent 6 }}
       containers:
         - name: c
           image: busybox:1.36
@@ -13,3 +15,4 @@ spec:
             - sh
             - -c
             - echo {{ .Values.jobMessage }}
+          {{- include "probe.containerSecurity" . | nindent 10 }}
