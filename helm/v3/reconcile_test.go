@@ -6,6 +6,7 @@ package helm
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	helmconfig "github.com/krateo-platformops/plumbing/helm"
@@ -154,6 +155,14 @@ func TestControllerReconcile(t *testing.T) {
 			require.NoError(t, err)
 			assert.True(t, res.Changed, "reconcile must detect+heal the field drift")
 			assert.GreaterOrEqual(t, res.PatchedUpdated, 1, "the drifted ConfigMap must be patched")
+			// plumbing#112: the heal names the FIELD that drifted, for that child, and no value.
+			var cmPaths []string
+			for k, ps := range res.ChangedPaths {
+				if strings.HasSuffix(k, "/ConfigMap/"+namespace+"/"+cmName) {
+					cmPaths = ps
+				}
+			}
+			assert.Equal(t, []string{"data.color"}, cmPaths, "the heal must name data.color for the drifted ConfigMap; got %v", res.ChangedPaths)
 			healedColor := liveColor(t, cs, namespace, cmName)
 			revAfterHeal := helmRevisionCount(t, cs, namespace, releaseName)
 			hooksAfterHeal := hookFireCount(t, cs, namespace)
