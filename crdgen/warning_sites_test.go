@@ -21,7 +21,9 @@ func TestWarningSites_EveryReachableSiteHasItsKind(t *testing.T) {
 		{"dependentRequired on non-object", `{"type":"object","properties":{"s":{"type":"string","dependentRequired":{"a":["b"]}}}}`, KindConstraintDropped},
 		{"not on non-scalar node", `{"type":"object","properties":{"o":{"type":"object","not":{"required":["a"]}}}}`, KindConstraintDropped},
 		{"not (non-trivial subschema)", `{"type":"object","properties":{"s":{"type":"string","not":{"properties":{"a":{"type":"string"}}}}}}`, KindConstraintDropped},
-		{"not (non-trivial) unsupported", `{"type":"object","properties":{"s":{"type":"string","not":{"minLength":3}}}}`, KindConstraintDropped},
+		// plumbing#102: minLength inside not is native now; exclusiveMinimum is emitted nowhere, so a not
+		// carrying only it is still dropped rather than becoming not:{} (which would reject everything).
+		{"not (non-trivial) unsupported", `{"type":"object","properties":{"n":{"type":"number","not":{"exclusiveMinimum":3}}}}`, KindConstraintDropped},
 		{"if/then/else on non-object", `{"type":"object","properties":{"s":{"type":"string","if":{"minLength":1},"then":{"maxLength":3}}}}`, KindConstraintDropped},
 		{"patternProperties unsupported", `{"type":"object","properties":{"o":{"type":"object","patternProperties":{"^x":{"type":"string"}}}}}`, KindStructureLoosened},
 		{"dependentSchemas unsupported", `{"type":"object","properties":{"o":{"type":"object","dependentSchemas":{"a":{"required":["b"]}}}}}`, KindConstraintDropped},
