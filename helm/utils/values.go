@@ -66,9 +66,28 @@ func (v Values) InjectGlobalValues(mg *unstructured.Unstructured, pluralizer plu
 		"krateoNamespace":             krateoNamespace,
 	}
 
-	err = maps.SetNestedField(v, gv, "global")
-	if err != nil {
-		return fmt.Errorf("failed to set global values: %w", err)
+	// MERGED INTO the composition's own spec.global, never assigned over it (#115). Assigning the
+	// map replaced every user key, so a composition setting global.imageRegistry (a property several
+	// generated CRDs expose) rendered against the chart's default registry while its spec said
+	// otherwise, and nothing reported it. On krateo-057, 4 of 85 compositions set it. All four set
+	// it to "", which is why the loss was invisible, and an air-gapped mirror would not have been.
+	//
+	// The injected keys WIN over a user key of the same name: they are the controller's facts about
+	// the object, and a spec that set global.compositionName must not make a chart believe it is
+	// another composition. A fresh map, so the caller's nested spec.global is never mutated.
+	merged := map[string]any{}
+	switch user := v["global"].(type) {
+	case nil:
+	case map[string]any:
+		for k, val := range user {
+			merged[k] = val
+		}
+	default:
+		return fmt.Errorf("spec.global is a %T, not an object, so the Krateo global values cannot be merged into it", user)
 	}
+	for k, val := range gv {
+		merged[k] = val
+	}
+	v["global"] = merged
 	return nil
 }
