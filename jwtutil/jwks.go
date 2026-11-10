@@ -4,6 +4,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/krateo-platformops/plumbing/dialguard"
 	"io"
@@ -37,6 +38,38 @@ const (
 // be perfectly valid and the fault ours, so callers should answer 503 rather
 // than 401 and let the client retry.
 var ErrKeyUnavailable = errKeyUnavailable{}
+
+// ErrKeyNotPublished reports that a token's kid is absent from a key set
+// fetched successfully after the token was issued. authn publishes its signing
+// key from the moment it signs with it, so that key has since been retired (for
+// example to revoke the tokens it signed) or was never authn's: no retry will
+// make the token verify. ValidateWithKeySource reports it together with
+// ErrTokenInvalid, so callers answer 401 and the client signs in again. It never
+// matches ErrKeyUnavailable.
+var ErrKeyNotPublished = errors.New("token signing key is not published")
+
+// errKidAbsent is what JWKSKeySource returns when a kid is absent from the key
+// set its latest attempt fetched successfully, at asOf. On its own it is ErrKeyUnavailable:
+// only the token's issue time can tell a retired key (issued before asOf) from
+// a new key the cached set predates (issued after it). ValidateWithKeySource
+// makes that call; see notPublished.
+type errKidAbsent struct {
+	url  string
+	kid  string
+	asOf time.Time
+}
+
+func (e errKidAbsent) Error() string {
+	return fmt.Sprintf("JWKS at %s, fetched at %s, holds no key for kid %q",
+		e.url, e.asOf.UTC().Format(time.RFC3339), e.kid)
+}
+
+// Is makes errKidAbsent match ErrKeyUnavailable, so a caller of PublicKey that
+// cannot weigh the token's issue time answers 503, as before.
+func (e errKidAbsent) Is(target error) bool {
+	_, ok := target.(errKeyUnavailable)
+	return ok
+}
 
 // errKeyUnavailable carries the underlying cause while still matching
 // errors.Is(err, ErrKeyUnavailable), so logs keep the detail ("connection
@@ -106,6 +139,12 @@ func (s *StaticKeySource) PublicKey(string) (*rsa.PublicKey, error) {
 //   - If a refetch fails but the cache still holds the requested kid, the
 //     stale-but-known key is served. A brief authn outage does not invalidate
 //     tokens that were already verifiable.
+//   - A kid absent from the set of a successful latest attempt is reported
+//     with that set's fetch time, so ValidateWithKeySource can tell a retired
+//     key (ErrKeyNotPublished, 401) from one the set predates
+//     (ErrKeyUnavailable, 503). While the latest attempt has failed, an absent
+//     kid is ErrKeyUnavailable. A retired kid still in a set younger than TTL keeps verifying until
+//     the set is refreshed, so a revocation takes effect within TTL.
 type JWKSKeySource struct {
 	url                string
 	httpClient         *http.Client
@@ -122,6 +161,9 @@ type JWKSKeySource struct {
 	keys        map[string]*rsa.PublicKey
 	fetchedAt   time.Time
 	lastAttempt time.Time
+	// lastFailed is set while the latest fetch attempt has failed. An absent
+	// kid then says nothing about the key: authn may be down mid-rotation.
+	lastFailed bool
 }
 
 // JWKSOption customises a JWKSKeySource.
@@ -245,7 +287,10 @@ func (s *JWKSKeySource) PublicKey(kid string) (*rsa.PublicKey, error) {
 		return nil, keyUnavailable("JWKS at %s holds %d usable keys; token has no kid to select one",
 			s.url, len(s.keys))
 	}
-	return nil, keyUnavailable("JWKS at %s holds no key for kid %q", s.url, kid)
+	if s.fetchedAt.IsZero() || s.lastFailed {
+		return nil, keyUnavailable("JWKS at %s holds no key for kid %q", s.url, kid)
+	}
+	return nil, errKidAbsent{url: s.url, kid: kid, asOf: s.fetchedAt}
 }
 
 // lookupLocked resolves kid against the cache. Callers must hold s.mu.
@@ -272,11 +317,13 @@ func (s *JWKSKeySource) refreshLocked() error {
 
 	keys, err := s.fetch()
 	if err != nil {
+		s.lastFailed = true
 		return err
 	}
 
 	s.keys = keys
 	s.fetchedAt = s.now()
+	s.lastFailed = false
 	return nil
 }
 

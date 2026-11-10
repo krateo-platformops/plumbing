@@ -9,6 +9,21 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-10 — a retired signing key is a 401, not a 503** (#63): a token signed with
+  a key authn no longer publishes got `ErrKeyUnavailable`, the same as an unreachable
+  JWKS, so validators answered 503 (retry) and the portal, which offers sign-in only on
+  401, left users on an error page until the token expired. Revoking leaked tokens by
+  retiring their key had no clean way out. `JWKSKeySource` now reports a `kid` missing
+  from the set its latest attempt fetched successfully, with that set's fetch time.
+  When the token was issued before that fetch (beyond the 5s leeway),
+  `ValidateWithKeySource` returns `ErrTokenInvalid` and `ErrKeyNotPublished`, because
+  authn publishes a key from the moment it signs with it. Everything else stays
+  `ErrKeyUnavailable`: a token issued after the cached set, such as one signed with a
+  new key at the rotation moment while the refresh floor blocks a refetch; a token
+  without `iat`; a latest attempt that failed; and a set with no usable key. A retired
+  `kid` still in a cache younger than the TTL keeps verifying until the refresh, so a
+  revocation lands within the TTL (5m by default). Callers that call `PublicKey`
+  directly see `ErrKeyUnavailable` as before.
 - **2026-11-08 — jwtutil `principal`**: `UserInfo`, `Actor` and `CreateTokenOptions`
   gain an optional `principal` claim, one of `human`, `agent`, `controller` or
   `service`. authn sets it from how a token was obtained, so the shared audit schema
