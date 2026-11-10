@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -288,10 +290,19 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 	// Removed from BOTH lists deliberately. Dropping it from target alone would make helm consider
 	// it deleted; dropping it from current alone reaches the no-original branch that the adoption
 	// loop above exists to avoid.
-	current, target, skipped := filterLiveJobs(current, target)
-	if len(skipped) > 0 && c.debugLog != nil {
+	//
+	// core-provider#403: skipping is right only when the stored release and this render AGREE on the
+	// Job's template (an orphan, or a run-once Job whose live state drifted). When the CHART changed
+	// the template of a Job that is live, the release cannot be applied, and skipping it made
+	// Reconcile report convergence on a release that was never applied (no revision, err=nil). Such a
+	// Job is still kept out of the merge, so every other child converges as #276 intended, and its
+	// name is returned below as ErrJobTemplateChanged. A changed Job that is NOT live stays in the
+	// merge, which simply creates it.
+	jobs := classifyStoredJobs(current, target, liveObj)
+	current, target = withoutKeys(current, jobs.skip), withoutKeys(target, jobs.skip)
+	if len(jobs.skip) > 0 && c.debugLog != nil {
 		c.debugLog("reconcile: self-heal is not patching %d already-live Job(s), whose pod template is immutable: %s",
-			len(skipped), strings.Join(skipped, ", "))
+			len(jobs.skip), strings.Join(jobs.skip, ", "))
 	}
 
 	// 5c. Record what the merge is ASKED to delete, before it runs (#304).
@@ -408,6 +419,18 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 		IntendedDeletionsOmitted: intended.omitted,
 		KeptDeletions:            kept.names,
 		KeptDeletionsOmitted:     kept.omitted,
+		ChangedJobTemplates:      jobs.templateChanged,
+	}
+
+	// core-provider#403: a chart-changed template on a live Job is reported, never skipped silently.
+	// Returned before step 7, whose real upgrade would fail on the same Job. The rest of the result
+	// (what DID converge) is kept, as for a partial apply.
+	if len(jobs.templateChanged) > 0 {
+		jerr := fmt.Errorf("reconcile: %w: %s", helmconfig.ErrJobTemplateChanged, strings.Join(jobs.templateChanged, ", "))
+		if applyErr != nil {
+			jerr = errors.Join(jerr, applyErr)
+		}
+		return result, jerr
 	}
 
 	// A partial apply returns the diagnostics AND the error, and does not persist a revision.
@@ -423,16 +446,26 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 		return result, applyErr
 	}
 
-	if !changed {
+	// core-provider#403: a stored latest revision that FAILED is not a converged state. Its manifest
+	// is what the merge just compared against, so when nothing differs from it the merge reads
+	// changed=false, and the failed release was reported as converged on every reconcile after the
+	// one that failed. Retry the real upgrade instead: it either succeeds (a deployed revision) or
+	// returns its error again, so the failure stays visible for as long as it lasts.
+	retryFailed := stored.Status == helmconfig.StatusFailed
+	if !changed && !retryFailed {
 		// Steady state: the merge only touched server-owned fields the apiserver reverted. No
 		// revision, no hooks.
 		return result, nil
 	}
+	result.RetriedFailedRelease = retryFailed
 
 	// 7. A real change happened. Run ONE real Upgrade to persist a revision and run hooks with
 	// correct ordering + delete-policy. Step 5 already converged the cluster, so this is a near-no-op.
 	rel, err := c.Upgrade(ctx, releaseName, chartRef, cfg)
 	if err != nil {
+		if retryFailed && !changed {
+			return result, fmt.Errorf("reconcile: retrying the upgrade of a release whose latest revision (%d) failed: %w", stored.Revision, err)
+		}
 		return result, fmt.Errorf("reconcile: real upgrade after detected change: %w", err)
 	}
 	result.Release = rel
@@ -682,47 +715,79 @@ func normalizeSecretStringData(obj runtime.Object) {
 	unstructured.RemoveNestedField(u.Object, "stringData")
 }
 
-// skipLiveJobs returns the infoKeys of batch Jobs that appear in BOTH current (live) and target
-// (rendered). Those are the ones a three-way merge would try to patch, and a Job's pod template
-// is immutable, so the patch fails whenever the templates differ (#276).
+// storedJobs is how classifyStoredJobs sorted the batch Jobs present in both the stored release
+// (current) and this render (target).
+type storedJobs struct {
+	// skip is every such Job kept OUT of the self-heal merge (from both lists): a Job's pod template
+	// is immutable, so patching a live one with a different template can only fail (#276). These are
+	// infoKeys.
+	skip []string
+	// templateChanged is the subset of skip whose template the CHART changed (stored != target) and
+	// that is live, as namespace/name (core-provider#403). Reconcile reports them as an error.
+	templateChanged []string
+}
+
+// classifyStoredJobs sorts the batch Jobs that appear in BOTH current (built from the stored
+// release's manifest) and target (this render). live holds the target objects found on the cluster,
+// keyed by infoKey.
+//
+//   - template unchanged (stored == target): skipped. A run-once Job has no meaningful drift, and an
+//     orphan from an earlier release would only fail the patch (#276).
+//   - template changed AND live: skipped too (the patch cannot succeed), and reported in
+//     templateChanged so Reconcile returns ErrJobTemplateChanged rather than reporting convergence
+//     on a release that was never applied (core-provider#403).
+//   - template changed and NOT live: left in the merge, which creates it with the new template.
 //
 // Keyed on group+kind rather than on a string match of the apiVersion, so batch/v1 and any future
-// batch version are both covered.
-func skipLiveJobs(current, target kube.ResourceList) []string {
-	live := map[string]bool{}
+// batch version are both covered. One function deciding for both lists, so a test exercises the same
+// pairing production does: with the filtering split across two expressions, a mutant that dropped
+// the Job from target ALONE survived every test.
+func classifyStoredJobs(current, target kube.ResourceList, live map[string]runtime.Object) storedJobs {
+	stored := map[string]*resource.Info{}
 	for _, info := range current {
-		live[infoKey(info)] = true
+		stored[infoKey(info)] = info
 	}
-	var keys []string
+	var out storedJobs
 	for _, tinfo := range target {
 		gvk := tinfo.Object.GetObjectKind().GroupVersionKind()
 		if gvk.Group != "batch" || gvk.Kind != "Job" {
 			continue
 		}
-		if k := infoKey(tinfo); live[k] {
-			keys = append(keys, k)
+		k := infoKey(tinfo)
+		sinfo, ok := stored[k]
+		if !ok {
+			continue
+		}
+		if sameJobTemplate(sinfo.Object, tinfo.Object) {
+			out.skip = append(out.skip, k)
+			continue
+		}
+		if _, isLive := live[k]; isLive {
+			out.skip = append(out.skip, k)
+			out.templateChanged = append(out.templateChanged, tinfo.Namespace+"/"+tinfo.Name)
 		}
 	}
-	sort.Strings(keys)
-	return keys
+	sort.Strings(out.skip)
+	sort.Strings(out.templateChanged)
+	return out
 }
 
-// filterLiveJobs removes already-live batch Jobs from BOTH lists and returns what it removed.
-//
-// One function rather than two statements at the call site, so a test exercises the same pairing
-// production does. With the filtering split across two expressions, a mutant that dropped the Job
-// from target ALONE survived every test — because the test had to reconstruct the pairing itself
-// and therefore verified its own code rather than the caller's.
-//
-// Both sides matter and in different ways: dropping from target alone makes helm consider the Job
-// deleted, and dropping from current alone reaches the no-original branch that the adoption loop
-// above exists to avoid.
-func filterLiveJobs(current, target kube.ResourceList) (kube.ResourceList, kube.ResourceList, []string) {
-	skipped := skipLiveJobs(current, target)
-	if len(skipped) == 0 {
-		return current, target, nil
+// sameJobTemplate reports whether two rendered Jobs declare the same spec.template. Both come from
+// helm renders of the same post-renderer (which labels the object's own metadata, never the pod
+// template), so a plain structural comparison is exact. A Job that cannot be converted is treated as
+// changed: claiming "same" would skip it silently, which is the defect.
+func sameJobTemplate(a, b runtime.Object) bool {
+	ua, err := runtime.DefaultUnstructuredConverter.ToUnstructured(a)
+	if err != nil {
+		return false
 	}
-	return withoutKeys(current, skipped), withoutKeys(target, skipped), skipped
+	ub, err := runtime.DefaultUnstructuredConverter.ToUnstructured(b)
+	if err != nil {
+		return false
+	}
+	ta, _, _ := unstructured.NestedFieldNoCopy(ua, "spec", "template")
+	tb, _, _ := unstructured.NestedFieldNoCopy(ub, "spec", "template")
+	return reflect.DeepEqual(ta, tb)
 }
 
 // withoutKeys returns the list minus the entries whose infoKey is in keys.
