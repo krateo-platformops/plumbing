@@ -1,0 +1,3 @@
+jobMessage: v1
+replicas: 1
+deployEnv: ""

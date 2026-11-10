@@ -169,7 +169,21 @@ type ReconcileResult struct {
 	KeptDeletions []string
 	// KeptDeletionsOmitted is how many kept identities exceeded the cap and were not listed.
 	KeptDeletionsOmitted int
+	// ChangedJobTemplates names the live Jobs (namespace/name) whose pod template the CHART changed
+	// between the stored release and this render (core-provider#403). A Job's spec.template is
+	// immutable, so such a release cannot be applied; Reconcile returns ErrJobTemplateChanged
+	// alongside this list. Empty when no such Job exists.
+	ChangedJobTemplates []string
+	// RetriedFailedRelease is true when the stored latest revision was "failed" and this reconcile
+	// therefore ran the real upgrade again rather than treating that revision's manifest as
+	// converged (core-provider#403).
+	RetriedFailedRelease bool
 }
+
+// ErrJobTemplateChanged is returned (wrapped) by Reconcile when the chart changed the pod template of
+// a Job that is live. The template is immutable, so the release cannot converge until the chart stops
+// changing it (a hook with before-hook-creation, or a versioned Job name) or the Job is removed.
+var ErrJobTemplateChanged = errors.New("the chart changed the pod template of a live Job, which is immutable")
 
 // Client is the interface that the rest of your app uses.
 // It returns your custom *Release, not the Helm SDK struct.

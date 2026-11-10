@@ -1,0 +1,5 @@
+apiVersion: v2
+name: probe-immutable-job
+description: core-provider#403 probe, a plain Job whose pod template changes between renders
+type: application
+version: 0.0.1
