@@ -175,7 +175,9 @@ func (t *transpiler) emitDependentRequired(out *apiextensionsv1.JSONSchemaProps,
 	}
 }
 
-// emitNot maps a `not` whose subschema is a scalar const or enum to a native `not: {enum: [...]}`.
+// emitNot maps a `not` whose subschema is scalar-only to a NATIVE `not`, carrying the subschema's
+// value validations as authored: forbidden values (const/enum), pattern, format, length, numeric
+// bounds and multipleOf (plumbing#102).
 func (t *transpiler) emitNot(out *apiextensionsv1.JSONSchemaProps, node *schemas.Type, path string) {
 	if node.Not == nil {
 		return
@@ -189,32 +191,43 @@ func (t *transpiler) emitNot(out *apiextensionsv1.JSONSchemaProps, node *schemas
 		t.warn(path, KindConstraintDropped, "not (non-trivial subschema) unsupported -> dropped")
 		return
 	}
-	// NATIVE `not`, NOT CEL. A structural schema accepts `not` as a pure value validation, so a
-	// forbidden const or enum is expressed exactly as authored, enforced by the apiserver with no CEL
-	// cost budget. This used to emit `!(self in [...])` as a CEL rule, and the cost estimator
-	// multiplies a rule by every enclosing unbounded array and string. A forbidden-values constraint
-	// on the items of two unbounded arrays was refused at 1.468006x over budget, and with it the WHOLE
-	// CRD: snowplow 1.12.45's chart, then installer 0.3.508's identity-lifecycle schema (a security
-	// constraint: RBAC resources must not be "*" or "secrets"). The constraint was never expensive;
-	// only its CEL translation was.
+	// NATIVE `not`, NOT CEL. A structural schema accepts any VALUE VALIDATION inside a junctor, `not`
+	// included (apiextensions validateNestedValueValidation), so the constraint is expressed exactly as
+	// authored and enforced by the apiserver with no CEL cost budget. This used to emit
+	// `!(self in [...])` as a CEL rule, and the cost estimator multiplies a rule by every enclosing
+	// unbounded array and string. A forbidden-values constraint on the items of two unbounded arrays
+	// was refused at 1.468006x over budget, and with it the WHOLE CRD: snowplow 1.12.45's chart, then
+	// installer 0.3.508's identity-lifecycle schema (a security constraint: RBAC resources must not be
+	// "*" or "secrets"). The constraint was never expensive; only its CEL translation was.
+	//
+	// plumbing#102: only const/enum were carried, and every other scalar `not` was DROPPED, e.g.
+	// agentgateway-policies 0.2.20's `not: {pattern: ...}` on four sampling fields, unenforced on 057.
+	// The subschema is built from value validations only (junctorMemberSchema, the same mapping the
+	// main path uses for scalars, plus format), so it holds nothing a junctor forbids and needs no
+	// sanitizing: a mutant that removed a sanitizeJunctorMember call here changed no output.
+	sub := junctorMemberSchema(n)
+	sub.Description = ""
+	sub.Format = n.Format
 	values := n.Enum
 	if n.Const != nil {
 		values = []any{n.Const}
 	}
-	if len(values) == 0 {
-		t.warn(path, KindConstraintDropped, "not (non-trivial) unsupported -> dropped")
-		return
-	}
-	forbidden := make([]apiextensionsv1.JSON, 0, len(values))
 	for _, v := range values {
 		raw, err := json.Marshal(v)
 		if err != nil {
 			t.warn(path, KindConstraintDropped, "not: unmarshalable value -> dropped")
 			return
 		}
-		forbidden = append(forbidden, apiextensionsv1.JSON{Raw: raw})
+		sub.Enum = append(sub.Enum, apiextensionsv1.JSON{Raw: raw})
 	}
-	out.Not = &apiextensionsv1.JSONSchemaProps{Enum: forbidden}
+	// A subschema that carries nothing the CRD can express (e.g. only exclusiveMinimum, which this
+	// transpiler does not emit anywhere) would become `not: {}`, which matches everything and so
+	// REJECTS every value. Drop it instead, loudly.
+	if isVacuousJunctorMember(*sub) {
+		t.warn(path, KindConstraintDropped, "not (non-trivial) unsupported -> dropped")
+		return
+	}
+	out.Not = sub
 }
 
 // emitIfThenElse maps a tractable if/then/else (conditions over property const/enum/required) to CEL.
