@@ -22,8 +22,12 @@ import (
 // "controller", not "helm", which is what attributed them to the self-heal rather than to a helm
 // install.
 
-func jobInfo(name, ns string) *resource.Info {
+func jobInfo(name, ns string) *resource.Info { return jobInfoCmd(name, ns, "echo v1") }
+
+// jobInfoCmd is a Job whose pod template runs cmd, so two renders can differ in the template alone.
+func jobInfoCmd(name, ns, cmd string) *resource.Info {
 	j := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
+	j.Spec.Template.Spec.Containers = []corev1.Container{{Name: "c", Image: "busybox:1.36", Command: []string{"sh", "-c", cmd}}}
 	j.GetObjectKind().SetGroupVersionKind(schema.GroupVersionKind{Group: "batch", Version: "v1", Kind: "Job"})
 	return &resource.Info{Name: name, Namespace: ns, Object: j}
 }
@@ -50,47 +54,70 @@ func (u *unstructuredLike) DeepCopyObject() runtime.Object                  { c 
 func (u *unstructuredLike) SetGroupVersionKind(gvk schema.GroupVersionKind) { u.gvk = gvk }
 func (u *unstructuredLike) GroupVersionKind() schema.GroupVersionKind       { return u.gvk }
 
-func TestSkipLiveJobs(t *testing.T) {
-	t.Run("a Job present in BOTH live and target is skipped", func(t *testing.T) {
+// liveOf marks every entry of list as present on the cluster, keyed as Reconcile keys liveObj.
+func liveOf(list ...*resource.Info) map[string]runtime.Object {
+	m := map[string]runtime.Object{}
+	for _, i := range list {
+		m[infoKey(i)] = i.Object
+	}
+	return m
+}
+
+func TestClassifyStoredJobs(t *testing.T) {
+	t.Run("a Job in BOTH stored and target with the same template is skipped", func(t *testing.T) {
 		current := kube.ResourceList{jobInfo("keystone-bootstrap", "openstack"), cmInfo("cfg", "openstack")}
 		target := kube.ResourceList{jobInfo("keystone-bootstrap", "openstack"), cmInfo("cfg", "openstack")}
 
-		skipped := skipLiveJobs(current, target)
-		if len(skipped) != 1 {
-			t.Fatalf("skipped = %v, want exactly the live Job. This is the case that wedged a0", skipped)
+		got := classifyStoredJobs(current, target, liveOf(target...))
+		if len(got.skip) != 1 || len(got.templateChanged) != 0 {
+			t.Fatalf("skip=%v templateChanged=%v, want the Job skipped and nothing reported", got.skip, got.templateChanged)
 		}
-
-		// Removed from BOTH sides, asserted through the PRODUCTION pairing. Calling withoutKeys
-		// twice here is what let a mutant that filtered only target survive: the test was
-		// verifying its own reconstruction instead of the caller's code.
-		c2, t2, s2 := filterLiveJobs(current, target)
-		if len(s2) != 1 {
-			t.Fatalf("filterLiveJobs skipped %v, want one", s2)
-		}
+		// Removed from BOTH sides through the same withoutKeys call Reconcile makes with got.skip.
+		c2, t2 := withoutKeys(current, got.skip), withoutKeys(target, got.skip)
 		if len(c2) != 1 || len(t2) != 1 {
 			t.Errorf("after filtering: current=%d target=%d, want 1 and 1", len(c2), len(t2))
 		}
-		for _, l := range []kube.ResourceList{c2, t2} {
-			for _, i := range l {
-				if i.Object.GetObjectKind().GroupVersionKind().Kind == "Job" {
-					t.Error("a Job survived the filter on one side; the merge will still patch it")
-				}
-			}
+	})
+
+	// core-provider#403, arm A: the CHART changed a live Job's template. Skipping it silently made
+	// Reconcile report convergence on a release that was never applied. It is still kept out of the
+	// merge (the patch cannot succeed) AND reported.
+	t.Run("a live Job whose template the chart changed is skipped AND reported", func(t *testing.T) {
+		current := kube.ResourceList{jobInfoCmd("probe-plain-job", "ns", "echo v1")}
+		target := kube.ResourceList{jobInfoCmd("probe-plain-job", "ns", "echo v2")}
+		got := classifyStoredJobs(current, target, liveOf(target...))
+		if len(got.skip) != 1 {
+			t.Errorf("skip=%v, want the Job kept out of the merge: patching it can only fail", got.skip)
+		}
+		if len(got.templateChanged) != 1 || got.templateChanged[0] != "ns/probe-plain-job" {
+			t.Errorf("templateChanged=%v, want [ns/probe-plain-job]", got.templateChanged)
 		}
 	})
 
-	// CONTROL 1. A Job that is rendered but NOT live must NOT be skipped — it has to be created,
-	// and skipping it would silently stop the self-heal ever applying a new Job.
-	t.Run("a Job in target but not live is NOT skipped", func(t *testing.T) {
-		skipped := skipLiveJobs(kube.ResourceList{}, kube.ResourceList{jobInfo("fresh", "ns")})
-		if len(skipped) != 0 {
-			t.Errorf("skipped = %v; a Job that does not exist yet must still be created", skipped)
+	// The inverse: a changed Job that is NOT live (deleted by ttlSecondsAfterFinished, or by hand)
+	// stays in the merge, which creates it with the new template. Reporting it would be a false
+	// Synced=False for a release that can be applied.
+	t.Run("a changed Job that is not live stays in the merge", func(t *testing.T) {
+		current := kube.ResourceList{jobInfoCmd("j", "ns", "echo v1")}
+		target := kube.ResourceList{jobInfoCmd("j", "ns", "echo v2")}
+		got := classifyStoredJobs(current, target, liveOf())
+		if len(got.skip) != 0 || len(got.templateChanged) != 0 {
+			t.Errorf("skip=%v templateChanged=%v, want neither: it can simply be created", got.skip, got.templateChanged)
 		}
 	})
 
-	// THE ARM MUTANT A DEMANDED. Matching on Kind alone — ignoring the group — survived every
-	// other arm, because nothing here was a "Job" outside batch. A CRD may legitimately define a
-	// kind named Job, and skipping it would silently stop the self-heal healing it.
+	// CONTROL 1. A Job rendered but absent from the stored release is never skipped: it has to be
+	// created, and skipping it would silently stop the self-heal ever applying a new Job.
+	t.Run("a Job in target but not in the stored release is NOT skipped", func(t *testing.T) {
+		target := kube.ResourceList{jobInfo("fresh", "ns")}
+		got := classifyStoredJobs(kube.ResourceList{}, target, liveOf(target...))
+		if len(got.skip) != 0 || len(got.templateChanged) != 0 {
+			t.Errorf("skip=%v templateChanged=%v; a Job new to this release must still be applied", got.skip, got.templateChanged)
+		}
+	})
+
+	// Matching on Kind alone, ignoring the group, survived every other arm once. A CRD may
+	// legitimately define a kind named Job, and skipping it would stop the self-heal healing it.
 	t.Run("a Job kind OUTSIDE the batch group is not skipped", func(t *testing.T) {
 		foreign := func(name, ns string) *resource.Info {
 			return &resource.Info{Name: name, Namespace: ns, Object: &unstructuredLike{
@@ -99,25 +126,21 @@ func TestSkipLiveJobs(t *testing.T) {
 		}
 		current := kube.ResourceList{foreign("build", "ns")}
 		target := kube.ResourceList{foreign("build", "ns")}
-		if skipped := skipLiveJobs(current, target); len(skipped) != 0 {
-			t.Errorf("skipped = %v; only batch/Job has the immutable pod template this guards "+
-				"against, and a CRD kind named Job must keep healing", skipped)
+		if got := classifyStoredJobs(current, target, liveOf(target...)); len(got.skip) != 0 || len(got.templateChanged) != 0 {
+			t.Errorf("skip=%v templateChanged=%v; only batch/Job has the immutable pod template", got.skip, got.templateChanged)
 		}
 	})
 
-	// CONTROL 2. Nothing else is skipped, or this fix quietly disables the self-heal for
-	// everything — which would be a far worse defect than the one it fixes.
+	// CONTROL 2. Nothing else is skipped, or this quietly disables the self-heal for everything.
 	t.Run("non-Job kinds are never skipped", func(t *testing.T) {
 		current := kube.ResourceList{cmInfo("a", "ns"), cronInfo("sched", "ns")}
 		target := kube.ResourceList{cmInfo("a", "ns"), cronInfo("sched", "ns")}
-		if skipped := skipLiveJobs(current, target); len(skipped) != 0 {
-			t.Errorf("skipped = %v; only batch/Job is immutable in the way this guards against. "+
-				"A CronJob shares the batch group and is NOT run-once, so it must keep healing", skipped)
+		if got := classifyStoredJobs(current, target, liveOf(target...)); len(got.skip) != 0 {
+			t.Errorf("skip=%v; a CronJob shares the batch group and is NOT run-once, so it must keep healing", got.skip)
 		}
 	})
 
-	// CONTROL 3. withoutKeys with nothing to drop must return the list untouched, or every
-	// reconcile silently rebuilds its inputs.
+	// CONTROL 3. withoutKeys with nothing to drop returns the list untouched.
 	t.Run("withoutKeys is a no-op for an empty key set", func(t *testing.T) {
 		in := kube.ResourceList{cmInfo("a", "ns"), jobInfo("b", "ns")}
 		if out := withoutKeys(in, nil); len(out) != len(in) {
@@ -126,12 +149,10 @@ func TestSkipLiveJobs(t *testing.T) {
 	})
 
 	t.Run("namespace is part of the identity", func(t *testing.T) {
-		// Same name, different namespace: not the same object, must not be skipped.
 		current := kube.ResourceList{jobInfo("bootstrap", "ns-a")}
-		target := kube.ResourceList{jobInfo("bootstrap", "ns-b")}
-		if skipped := skipLiveJobs(current, target); len(skipped) != 0 {
-			t.Errorf("skipped = %v; a Job of the same name in another namespace is a different "+
-				"object and its target must still be applied", skipped)
+		target := kube.ResourceList{jobInfoCmd("bootstrap", "ns-b", "echo v2")}
+		if got := classifyStoredJobs(current, target, liveOf(target...)); len(got.skip) != 0 || len(got.templateChanged) != 0 {
+			t.Errorf("skip=%v templateChanged=%v; a Job of the same name in another namespace is a different object", got.skip, got.templateChanged)
 		}
 	})
 }
