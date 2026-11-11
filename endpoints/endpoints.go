@@ -117,7 +117,8 @@ type Written struct {
 	Namespace string
 	Name      string
 	// UID and ResourceVersion are the stored Secret's; empty when nothing was
-	// stored.
+	// stored, or when the apiserver's answer to a successful write couldn't be
+	// decoded.
 	UID             string
 	ResourceVersion string
 	// Verb is "create" or "update": the request that stored the Secret, or the

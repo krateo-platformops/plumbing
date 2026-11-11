@@ -91,6 +91,11 @@ func updateSecret(ctx context.Context, cli *rest.RESTClient, in *corev1.Secret) 
 		Do(ctx))
 }
 
+// storedSecret reads res. The write succeeded when res carries no error, and
+// then the error is nil whatever happens next: a response body that can't be
+// decoded only leaves the stored Secret unknown (nil), so Store keeps
+// succeeding whenever the write did, and an audit record never calls a done
+// write failed.
 func storedSecret(res rest.Result) (*corev1.Secret, int, error) {
 	var code int
 	res.StatusCode(&code)
@@ -99,7 +104,7 @@ func storedSecret(res rest.Result) (*corev1.Secret, int, error) {
 	}
 	out := &corev1.Secret{}
 	if err := res.Into(out); err != nil {
-		return nil, code, err
+		return nil, code, nil
 	}
 	return out, code, nil
 }

@@ -69,6 +69,20 @@ func TestStoreWrittenReportsTheWrite(t *testing.T) {
 		})
 	}
 
+	t.Run("a done write whose answer can't be decoded is still a done write", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(w, `{not json`)
+		}))
+		t.Cleanup(srv.Close)
+		got, err := StoreWritten(context.Background(), &rest.Config{Host: srv.URL}, "ns", ep)
+		require.NoError(t, err, "Store succeeds whenever the write did")
+		assert.Equal(t, Written{Namespace: "ns", Name: "authn-clientconfig", Verb: "create", StatusCode: 201}, got,
+			"verb and status known, uid unknown")
+		require.NoError(t, Store(context.Background(), &rest.Config{Host: srv.URL}, "ns", ep))
+	})
+
 	t.Run("a failed write names the Secret, its verb and status, no uid", func(t *testing.T) {
 		srv, _ := fakeSecrets(t, false, http.StatusForbidden)
 		got, err := StoreWritten(context.Background(), &rest.Config{Host: srv.URL}, "ns", ep)
