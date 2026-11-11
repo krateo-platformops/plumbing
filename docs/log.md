@@ -9,6 +9,25 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-11 — Reconcile reports every changed child** (#106): to write one
+  controller audit record per child (AUDIT-4), core-provider's cdc must know each
+  child the self-heal merge changed, what it sent, and whether the content changed.
+  `ChangedObjects` stopped at 10 and couldn't tell a content change from a
+  metadata-only one. `ReconcileResult.Objects` is a separate, uncapped list of
+  `ObjectVerdict`s: the resource, name and uid, the verb sent, and one of
+  `created`, `deleted`, `specChanged`, `metadataOnly`, `compareFailed`, `kept`,
+  `deleteNotDone` or `deleteUnknown` (an intended deletion whose live state couldn't
+  be read). It says what happened and leaves what counts to the caller, and
+  `ObjectsComplete` says when the list may be missing a child. Checking helm's
+  update loop showed that it lists a child under `Created` before the create runs and
+  under `Updated` whatever the patch's outcome. So a failed write was counted as a
+  change, in the existing counts too. A write now counts only when helm refreshed
+  the object from the server (it has a resourceVersion). Failed writes are
+  `createFailed` and `updateFailed` verdicts, and `ObjectsNotAttempted` counts the
+  children helm never reached after a failed create. Content compares as snowplow ruled: RBAC rules and subjects as
+  sets, Secrets by effective data and type. The capped diagnostic lists and their
+  log lines are unchanged. Kept and not-done deletions now come from one read per
+  object (`pendingDeletions`), shared by the verdicts and the `Changed` decision.
 - **2026-11-10 — a retired signing key is a 401, not a 503** (#63): a token signed with
   a key authn no longer publishes got `ErrKeyUnavailable`, the same as an unreachable
   JWKS, so validators answered 503 (retry) and the portal, which offers sign-in only on

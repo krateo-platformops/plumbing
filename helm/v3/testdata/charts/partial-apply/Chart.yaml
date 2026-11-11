@@ -1,0 +1,6 @@
+apiVersion: v2
+name: partial-apply
+description: Three ConfigMaps, one immutable, so a value change patches two and fails on the third (plumbing#106).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

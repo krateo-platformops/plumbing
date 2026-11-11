@@ -61,6 +61,48 @@ self-healing reconcile built ONLY on Helm's exported API. Per cycle:
 7. Only if changed: run ONE real `Upgrade` to write the revision and run hooks with
    correct ordering. Otherwise return `Changed:false` — no revision, no hooks.
 
+What the merge did to each child is in `ReconcileResult.Objects` (plumbing#106): one
+uncapped `ObjectVerdict` per child it created, deleted, changed, kept
+(`helm.sh/resource-policy: keep`) or failed to delete. Each verdict carries the
+group, version, resource, kind, namespace, name, uid when known, the verb sent
+(`create`, `patch`, `update` under `Force`, `delete`) and the `Change`:
+
+| Change | Meaning |
+|---|---|
+| `created` | absent, now created |
+| `deleted` | pruned: left the render and deleted |
+| `specChanged` | content changed: the fields other than apiVersion, kind, metadata, status |
+| `metadataOnly` | only labels, annotations or other metadata changed |
+| `compareFailed` | applied, but before/after couldn't be compared (Reconcile counts it as a change, fail safe) |
+| `kept` | left the render; helm declined the delete (keep) |
+| `deleteNotDone` | left the render, still live, not kept: the delete failed or never ran |
+| `createFailed` | its create was sent and failed (helm then stops; later children are not attempted) |
+| `updateFailed` | its patch (or replace) failed; also, the one known over-report, an empty patch whose read-back failed |
+| `deleteUnknown` | left the render, not reported deleted, and its live state couldn't be read |
+
+helm's own result can't tell a failed write from a done one: it lists a child under
+`Created` before sending the create, and under `Updated` whatever the patch's outcome.
+A write counts as done only when helm refreshed the object from the server, so it
+carries a resourceVersion (`writeConfirmed`). The counts (`Created`,
+`PatchedUpdated`, `ChangedObjects`, `Changed`) and the verdicts both use it, so they
+agree on a partial apply too. `ObjectsNotAttempted` counts the children helm never
+reached after an abort. The integration test `TestReconcilePartialApplyVerdicts`
+pins this helm behaviour, and a helm bump must keep it green.
+
+The verdict states what happened. Whether it counts (for an audit, a revision, a metric)
+is the caller's policy.
+
+Content compares canonically: RBAC rules, aggregation selectors and binding subjects
+are sets, and a Secret compares by its effective `data` (after `stringData` folds in)
+and `type`. Created, deleted and patched in the counts equal the number of
+`created`, `deleted` and other surviving-child verdicts. A child the merge left
+unchanged is absent, and so is a Job kept out of the merge. The list holds names
+only, never values, and it is uncapped for one audit record per entry (AUDIT-4).
+So log the capped `ChangedObjects`, never `Objects`. `ObjectsComplete` is false on the
+install fallback in step 1, which reports no per-object outcome (derive creates from the
+installed release's manifest), and when an intended deletion can't be resolved to its
+object.
+
 The steady-state guarantee is "no cluster mutation → no Helm revision, no hooks",
 which is what stopped the platform's per-60s revision churn. It is only as no-churn
 as the charts are idempotent (e.g. `lookup`-guarded random passwords).

@@ -21,6 +21,9 @@ require (
 	github.com/stretchr/testify v1.11.1
 	go.yaml.in/yaml/v3 v3.0.4
 	golang.org/x/time v0.12.0
+	// A helm bump must keep TestObjectVerdicts and the integration test
+	// TestReconcilePartialApplyVerdicts green: helm/v3/verdicts.go reads a failed write from
+	// helm refreshing an object only after its request succeeded (pkg/kube/client.go, update).
 	helm.sh/helm/v3 v3.20.2
 	k8s.io/api v0.35.3
 	k8s.io/apiextensions-apiserver v0.35.1

@@ -15,6 +15,7 @@ import (
 	"helm.sh/helm/v3/pkg/kube"
 	"helm.sh/helm/v3/pkg/release"
 	"helm.sh/helm/v3/pkg/releaseutil"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -360,7 +361,15 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 	// patch-type mismatch) and immunizes against ANY server-owned/defaulted field. It also subsumes
 	// the per-field neutralizations (traceparent copy in 4.5, stringData fold in 4.6) — those keep
 	// the before/after identical for their children. created/deleted come from the merge result.
-	created := len(res.Created)
+	// A child counts only when helm confirmed its write (writeConfirmed): helm appends to Created
+	// before the create runs and to Updated whatever the patch's outcome, so its lists alone
+	// over-count a partial apply (plumbing#106).
+	created := 0
+	for _, info := range res.Created {
+		if writeConfirmed(info) {
+			created++
+		}
+	}
 	deleted := len(res.Deleted)
 	patched := 0
 
@@ -371,7 +380,9 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 	changedPathsByChild := map[string][]string{}
 	changedPathsOmitted := map[string]int{}
 	for _, info := range res.Created {
-		changedObjects.add(infoKey(info))
+		if writeConfirmed(info) {
+			changedObjects.add(infoKey(info))
+		}
 	}
 	for _, info := range res.Deleted {
 		changedObjects.add(infoKey(info))
@@ -381,6 +392,9 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 		key := infoKey(info)
 		if absent[key] {
 			continue // counted under res.Created
+		}
+		if !writeConfirmed(info) {
+			continue // a failed or never-attempted write changed nothing; its verdict says which
 		}
 		changedChild, cerr := semanticallyChanged(liveObj[key], info.Object)
 		if cerr != nil {
@@ -411,7 +425,8 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 	// reports success (krateo-autopilot on krateo-057, 2026-11-08: four objects dropped from the
 	// render, all kept, revision 117 for good). See keptDeletions for why a FAILED deletion is not
 	// counted.
-	kept := keptDeletions(current, target, res.Deleted, getLive, maxChangedObjects)
+	keptKeys, notDoneKeys, unknownKeys := pendingDeletions(current, target, res.Deleted, getLive)
+	kept := cappedSet(keptKeys, maxChangedObjects)
 
 	changed := releaseChanged(created, deleted, patched, kept.total())
 
@@ -435,6 +450,13 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 		KeptDeletionsOmitted:     kept.omitted,
 		ChangedJobTemplates:      jobs.templateChanged,
 	}
+	// Uncapped, one entry per child the merge changed (plumbing#106). Built from the same
+	// before/after objects and the same deletion reads as the counts above.
+	result.Objects, result.ObjectsComplete, result.ObjectsNotAttempted = objectVerdicts(verdictInputs{
+		target: target, created: res.Created, updated: res.Updated, deleted: res.Deleted, current: current,
+		live: liveObj, absent: absent, kept: keptKeys, notDone: notDoneKeys, unknown: unknownKeys,
+		force: cfg.Force,
+	})
 
 	// core-provider#403: a chart-changed template on a live Job is reported, never skipped silently.
 	// Returned before step 7, whose real upgrade would fail on the same Job. The rest of the result
@@ -653,6 +675,11 @@ func selectCurrentForBuild(last *release.Release, deployed func() (*release.Rele
 	}
 	return last
 }
+
+// writeConfirmed reports whether helm confirmed info's write: it refreshes the object from the
+// server (Refresh after a create or patch, Get after an empty patch) only when that succeeded, and a
+// rendered object never carries a resourceVersion. See verdictInputs.
+func writeConfirmed(info *resource.Info) bool { return resourceVersionOf(info.Object) != "" }
 
 // resourceVersionOf extracts metadata.resourceVersion from a runtime.Object
 // (typed or unstructured) via apimachinery's meta accessor. Returns "" when it
@@ -950,7 +977,20 @@ func intendedDeletions(current, target kube.ResourceList, limit int) *changedObj
 // get reads the live object; production passes getLive. It is a parameter so the decision is tested
 // without a cluster, as the package does for filterLiveJobs and classifyApply.
 func keptDeletions(current, target, deleted kube.ResourceList, get func(*resource.Info) (runtime.Object, error), limit int) *changedObjectSet {
-	out := newChangedObjectSet(limit)
+	kept, _, _ := pendingDeletions(current, target, deleted, get)
+	return cappedSet(kept, limit)
+}
+
+// pendingDeletions sorts the intended deletions helm did not perform, uncapped (plumbing#106):
+// kept is what keptDeletions names; notDone is the rest whose live object was read and is not
+// kept, so its delete failed or never ran; unknown is those whose read failed with anything but
+// NotFound, so nothing can be said about them. One read per object, shared by all three, so the
+// audit verdicts and the Changed decision see the same answer. An object already gone (NotFound)
+// is in none. Only kept counts toward Changed, for the reasons keptDeletions gives.
+//
+// get refreshes info.Object to the live object (getLive does), so a caller reading current
+// afterwards sees the live uid.
+func pendingDeletions(current, target, deleted kube.ResourceList, get func(*resource.Info) (runtime.Object, error)) (kept, notDone, unknown []string) {
 	gone := make(map[string]bool, len(deleted))
 	for _, info := range deleted {
 		gone[infoKey(info)] = true
@@ -961,16 +1001,32 @@ func keptDeletions(current, target, deleted kube.ResourceList, get func(*resourc
 			continue
 		}
 		obj, err := get(info)
+		if apierrors.IsNotFound(err) {
+			continue
+		}
 		if err != nil || obj == nil {
+			unknown = append(unknown, key)
 			continue
 		}
 		annotations, err := apimeta.NewAccessor().Annotations(obj)
 		if err != nil {
+			unknown = append(unknown, key)
 			continue
 		}
 		if annotations[kube.ResourcePolicyAnno] == kube.KeepPolicy {
-			out.add(key)
+			kept = append(kept, key)
+		} else {
+			notDone = append(notDone, key)
 		}
+	}
+	return kept, notDone, unknown
+}
+
+// cappedSet is the capped, deduplicated diagnostic list of keys.
+func cappedSet(keys []string, limit int) *changedObjectSet {
+	out := newChangedObjectSet(limit)
+	for _, k := range keys {
+		out.add(k)
 	}
 	return out
 }

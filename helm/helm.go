@@ -188,7 +188,104 @@ type ReconcileResult struct {
 	// therefore ran the real upgrade again rather than treating that revision's manifest as
 	// converged (core-provider#403).
 	RetriedFailedRelease bool
+
+	// Objects is the per-child verdict of the self-heal merge (plumbing#106), one entry per child
+	// it created, deleted, changed, kept or failed to delete, sorted by identity. It is UNCAPPED,
+	// unlike ChangedObjects and the other diagnostic lists, because a caller writes one audit record
+	// per entry (AUDIT-4) and a dropped entry would be a missing record. Keep the capped lists for
+	// log lines; never log this one whole.
+	//
+	// A child the merge left as it was is absent, including one where helm sent a patch that the
+	// apiserver accepted as a no-op: the cluster keeps no trace of it, so there is no change to
+	// record. Jobs the self-heal keeps out of the merge (#276, #403) are absent too, since nothing
+	// was sent for them.
+	//
+	// Names and the resource only: no manifest, no field values, no Secret data.
+	//
+	// May be partial when ObjectsComplete is false.
+	Objects []ObjectVerdict
+	// ObjectsComplete is false when Objects may not name every child the merge changed:
+	//
+	//   - the release did not exist yet and Reconcile installed it through Upgrade, which reports
+	//     no per-object outcome. Objects is empty, and a caller that records creates must derive
+	//     them from the installed release's manifest.
+	//   - an intended deletion could not be resolved to the object it names. Objects lists the
+	//     rest.
+	//
+	// On every other path (a clean or partial apply, an ErrJobTemplateChanged return) Objects is
+	// complete for what the merge did. A child whose state could not be read is listed as
+	// ChangeDeleteUnknown, not left out.
+	ObjectsComplete bool
+	// ObjectsNotAttempted counts the children of the render the merge never reached: helm stops
+	// applying at the first failed create (or failed read of a child), so the children after it get
+	// no request, no verdict and no audit record. The count makes their absence visible, for a
+	// reconcile-level failure record to state in a closed-set field. Zero on a clean apply.
+	ObjectsNotAttempted int
 }
+
+// ObjectVerdict is one child's outcome in a Reconcile (plumbing#106).
+type ObjectVerdict struct {
+	Group     string
+	Version   string
+	Resource  string // the plural resource name, e.g. "deployments"
+	Kind      string
+	Namespace string // empty for a cluster-scoped child
+	Name      string
+	// UID is the child's uid when the merge saw it: the created or patched object, or the live
+	// object of a kept deletion. Empty when unknown.
+	UID string
+	// A failed write (ChangeCreateFailed, ChangeUpdateFailed) carries the verb it sent; its error
+	// stays out of the verdict, since only helm's joined error text describes it.
+	//
+	// Verb is what was sent to the apiserver: "create", "patch" (or "update" under Force, which
+	// replaces), or "delete". A kept deletion and a deletion that was not done carry "delete", the
+	// verb the release asked for, although helm sent nothing for a kept one.
+	Verb   string
+	Change ObjectChange
+}
+
+// ObjectChange is how a child changed. It states what happened; whether a change counts (for an
+// audit, a revision, a metric) is the caller's policy, so no helper decides it here.
+type ObjectChange string
+
+const (
+	// ChangeCreated: the child did not exist and the merge created it.
+	ChangeCreated ObjectChange = "created"
+	// ChangeDeleted: the child left the render and the merge deleted it (helm pruned it).
+	ChangeDeleted ObjectChange = "deleted"
+	// ChangeSpec: the merge changed the child's content, its fields other than apiVersion, kind,
+	// metadata and status. That is .spec where there is one, and data/type for a Secret or a
+	// ConfigMap. RBAC rules and subjects compare as sets and a Secret by its effective data, so
+	// reordering a list or writing the same value through stringData is not a change.
+	ChangeSpec ObjectChange = "specChanged"
+	// ChangeMetadataOnly: the merge changed the child, but only its metadata (labels,
+	// annotations, finalizers, owner references).
+	ChangeMetadataOnly ObjectChange = "metadataOnly"
+	// ChangeCompareFailed: the merge was applied to the child but the comparison of its before and
+	// after state failed, so nothing can be said about what changed. Reconcile counts it as a
+	// change (fail safe); a caller must not read it as a content change.
+	ChangeCompareFailed ObjectChange = "compareFailed"
+	// ChangeKept: the child left the render, and helm declined to delete it because the live
+	// object carries helm.sh/resource-policy: keep.
+	ChangeKept ObjectChange = "kept"
+	// ChangeDeleteNotDone: the child left the render, is still live, and is not kept: its deletion
+	// failed, or helm never reached its deletion loop. The next reconcile asks again.
+	ChangeDeleteNotDone ObjectChange = "deleteNotDone"
+	// ChangeCreateFailed: the child did not exist, the merge sent its create, and the create
+	// failed. helm stops applying at a failed create, so later children are not attempted and get no
+	// verdict.
+	ChangeCreateFailed ObjectChange = "createFailed"
+	// ChangeUpdateFailed: the merge applied the child and helm reported an error for it: the
+	// patch (or, under Force, the replace) failed. One known over-report: for a child whose patch
+	// was empty, a failed read-back comes through helm's same error path, so it too is
+	// updateFailed although no write was sent. That is the only case, and it errs toward reporting
+	// a failure, never toward hiding one.
+	ChangeUpdateFailed ObjectChange = "updateFailed"
+	// ChangeDeleteUnknown: the child left the render and helm did not report deleting it, but its
+	// live state could not be read (an error other than NotFound), so nobody can say whether it was
+	// kept, deleted or left. A child already gone (NotFound) is not listed.
+	ChangeDeleteUnknown ObjectChange = "deleteUnknown"
+)
 
 // ErrJobTemplateChanged is returned (wrapped) by Reconcile when the chart changed the pod template of
 // a Job that is live. The template is immutable, so the release cannot converge until the chart stops
