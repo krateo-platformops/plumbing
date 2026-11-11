@@ -18,7 +18,17 @@ package conditions
 //	                                              oasgen-provider "suspended by spec"
 //	ControllerActive  False  ReasonScaledToZero   nothing is reconciling this kind right now
 //
-// and, while a controller replica runs, ControllerActive=True.
+// and, while a controller replica runs:
+//
+//	ControllerActive  True   ReasonRunning        a stable message, NO counts (Diego, 2026-11-11):
+//	                                              core-provider "controller running; scales to zero after <holdDown> without instances"
+//	                                              oasgen-provider "controller running"
+//
+// WHY NO COUNTS. A condition is rewritten whenever its message changes, so an instance or Kind count
+// in the message would rewrite the definition's status on every create and delete: the per-reconcile
+// churn core-provider removed in #298/#439. The True arm exists so a reader can tell "running" from
+// "never set"; the count is not needed for that, and it would make the condition change without the
+// state changing.
 //
 // WHY READY STAYS TRUE. The zero is a declared intent (core-provider: spec.controller.scaleToZero;
 // oasgen-provider: a mutable RestDefinition field), so it is a stable state, not a failure. False or
@@ -36,4 +46,8 @@ const (
 	// ReasonScaledToZero is the reason on BOTH Ready=True and ControllerActive=False for a
 	// definition whose controller is deliberately at zero replicas.
 	ReasonScaledToZero = "ScaledToZero"
+
+	// ReasonRunning is the reason on ControllerActive=True: the definition's controller has a
+	// running replica. Not "Active", which would repeat the type without saying why.
+	ReasonRunning = "Running"
 )
