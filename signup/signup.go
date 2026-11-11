@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	stderrors "errors"
 	"github.com/krateo-platformops/plumbing/certs"
 	"github.com/krateo-platformops/plumbing/endpoints"
 	"github.com/krateo-platformops/plumbing/kubeutil"
@@ -159,12 +160,20 @@ func generateClientCertAndKey(client kubernetes.Interface, o generateClientCertA
 	// collection. A stale one left by an earlier version is reconciled by the
 	// AlreadyExists path above. On success a failed delete is the result, so
 	// the caller retries and the CSR doesn't linger unnoticed; after a failure
-	// the delete is best effort and the original error is kept.
+	// the original error is kept, joined with the delete's when that fails too.
 	defer func() {
 		derr := certs.DeleteCertificateSigningRequest(client, csr.Name)
-		if derr != nil && !errors.IsNotFound(derr) && err == nil {
-			crtOut, keyOut, err = "", "", fmt.Errorf("deleting the used CSR %s: %w", csr.Name, derr)
+		if derr == nil || errors.IsNotFound(derr) {
+			return
 		}
+		derr = fmt.Errorf("deleting the used CSR %s: %w", csr.Name, derr)
+		if err == nil {
+			crtOut, keyOut, err = "", "", derr
+			return
+		}
+		// Both failed: the step's error first, and the CSR left behind is not
+		// hidden.
+		err = stderrors.Join(err, derr)
 	}()
 
 	err = certs.ApproveCertificateSigningRequest(client, csr, "authn")
