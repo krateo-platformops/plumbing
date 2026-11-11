@@ -50,11 +50,19 @@
 //     pass's FIRST create, update or delete; every other act step, and every act in NoParent or
 //     Link mode, is StartStep (or StartActStep with an invalid upstream). d.Remote is valid in
 //     Link mode too, so passing it unconditionally re-joins the upstream on every acting pass.
-//     The act step is the caller's step that APPLIES changes: Create/Update/Delete in
-//     provider-runtime, whose Observe is a pure read; Observe in the composition-dynamic-
-//     controller, whose Observe applies the release's children (plumbing helm Reconcile). The
-//     marker is written before that step, so for the cdc a conflict delays the first Observe of a
-//     new value by one requeue.
+//     The act step is the call that APPLIES changes, and only the code making it knows whether
+//     it does. provider-runtime's act steps are Create/Update/Delete, its Observe being a pure
+//     read. unstructured-runtime opens one around Create/Update/Delete too, and a handler whose
+//     Observe applies changes declares its act there with controller.StartAct, right before
+//     the mutating call: the composition-dynamic-controller's Observe applies the release's
+//     children (plumbing helm Reconcile) only when the release exists, so treating every
+//     Observe as the act would join a new object's upstream at an Observe that applied nothing
+//     and leave the install that follows linked, not joined. A handler-declared act follows the
+//     same rules as the runtime's: the marker is written BEFORE the mutating call, with the
+//     outcomes above (success or NotFound: marked; a conflict: requeue before acting, so it
+//     delays the act by one requeue; any other error: failed, and the act goes on). The handler
+//     declares it only on the path that actually mutates, once per pass; a later call in the
+//     same pass opens nothing.
 //
 // provider-runtime's pkg/reconciler/traces.go is the reference implementation of that contract.
 //
