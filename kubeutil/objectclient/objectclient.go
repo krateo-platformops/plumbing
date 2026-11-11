@@ -39,6 +39,14 @@ type ApplyOptions struct {
 	// FieldValidation controls how the server reacts to unknown/duplicate fields ("Ignore" | "Warn" |
 	// "Strict").
 	FieldValidation string
+	// FromCurrent, when set, is called on the UPDATE path of every attempt, after the existing object
+	// is read and before it is replaced, with that object and a fresh copy of the desired one. It lets
+	// a caller keep a field that another writer owns, copied from the very version being replaced: a
+	// 409 from a concurrent write re-reads the object and calls FromCurrent again, so the copied value
+	// can never be older than the object the Update replaces. Not called on create (there is nothing
+	// to copy from). An error from it ends Apply without retrying: it is the caller's verdict, not a
+	// transient failure.
+	FromCurrent func(current, desired *unstructured.Unstructured) error
 }
 
 // UninstallOptions mirrors metav1.DeleteOptions.
@@ -83,8 +91,17 @@ func Apply(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersionRe
 			return err
 		}
 
-		obj.SetResourceVersion(current.GetResourceVersion())
-		updated, err := res.Update(ctx, obj, metav1.UpdateOptions{
+		desired := obj
+		if opts.FromCurrent != nil {
+			// A fresh copy per attempt: a retried attempt must start from what the caller asked
+			// for, not from the previous attempt's copy of an older object.
+			desired = obj.DeepCopy()
+			if err := opts.FromCurrent(current, desired); err != nil {
+				return permanent{err}
+			}
+		}
+		desired.SetResourceVersion(current.GetResourceVersion())
+		updated, err := res.Update(ctx, desired, metav1.UpdateOptions{
 			DryRun:          opts.DryRun,
 			FieldManager:    opts.FieldManager,
 			FieldValidation: opts.FieldValidation,
@@ -138,12 +155,22 @@ func namespacedOrCluster(dyn dynamic.Interface, gvr schema.GroupVersionResource,
 
 // retry runs op up to retryAttempts times, waiting retryInitialDelay (capped at retryMaximumDelay)
 // between attempts, stopping early on success or context cancellation.
+// permanent marks an error that retrying cannot change (a FromCurrent verdict).
+type permanent struct{ err error }
+
+func (p permanent) Error() string { return p.err.Error() }
+func (p permanent) Unwrap() error { return p.err }
+
 func retry(ctx context.Context, op func(context.Context) error) error {
 	var err error
 	for attempt := 1; attempt <= retryAttempts; attempt++ {
 		err = op(ctx)
 		if err == nil {
 			return nil
+		}
+		var p permanent
+		if errors.As(err, &p) {
+			return p.err
 		}
 		if errors.Is(err, context.Canceled) || attempt == retryAttempts {
 			return err
