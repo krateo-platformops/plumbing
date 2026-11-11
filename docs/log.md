@@ -9,6 +9,14 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-11 — `usernames`: one definition of the rules for authn's usernames**: demo's
+  access-request form (identity-lifecycle) has to refuse the names authn's name guard would
+  refuse, at request time. The reserved names and prefixes moved here verbatim from authn's
+  guard, with `Check` for a requested username: non-empty, at most 63 characters, already
+  in the DNS-1123 form authn issues, and not reserved. Whether a name is claimed or bound
+  is decided in-cluster only, never on a public form, so nobody can enumerate who exists.
+  The prefix `krateo:` is reserved too: platform identities a component impersonates
+  (snowplow's `krateo:public`) must never be issued to a person.
 - **2026-11-11 — `endpoints.StoreWritten` and `signup.DoWritten` report the write**
   (authn#119): authn records its own certificate renewal as an audit record (AUDIT-4), which
   must name the Secret written, the verb sent and the apiserver's answer. `Store` sends a

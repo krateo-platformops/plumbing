@@ -20,6 +20,7 @@ derived from the actual package docs and code.
 | Package | What it exports |
 |---|---|
 | `helm` | The provider-agnostic `Client` interface (Install/Upgrade/**Reconcile**/Uninstall/Rollback/GetRelease/ListReleases) plus config, `Release`/`ReconcileResult` and `PostRenderer` types. |
+| `usernames` | The static rules for the usernames authn issues: `Reserved`, `ReservedNames`/`ReservedPrefixes`, `Normalize`, `MaxLength`, and `Check` (empty, too long, not in the form authn issues, reserved). No cluster state, so a public form can use it; claimed and bound checks stay in-cluster. |
 | `helm/v3` | The Helm-v3-SDK implementation: cached action configs, CRD-informer discovery invalidation (`NewCRDInformer`), duplicate-resource post-render validation, and the fork-free apply-if-changed `Reconcile` (see [overview](./overview.md)). |
 | `helm/v3/tracer` | An `http.RoundTripper` that logs each Kubernetes request a Helm operation makes and collects the touched `Resource`s. |
 | `helm/getter` | Chart fetching (`Get`, `NewOCIGetter`) with credentials, TLS, timeout, repo and disk-cache options. |
