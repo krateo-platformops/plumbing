@@ -100,6 +100,19 @@ records passes the schema's list, `audit.AuthorizationAnnotations()`, so the ver
 counts the same annotations as the record's `content_sha256`. Left empty, no annotation
 is content.
 
+A null member counts as absent at any depth, as audit's form c1 reads it. A null list element
+is still a value, and a map left empty is not an absent one. So for most writes a verdict
+and the record's `content_sha256` agree on whether content changed. They differ on purpose
+in three places, and a test pins each one (`TestContentAnnotationsAgreeWithTheAuditHash`):
+
+| Write | Verdict | `content_sha256` |
+|---|---|---|
+| A ConfigMap field other than `data`/`binaryData` changes (`immutable`) | content | unchanged: the hash keeps only the data |
+| RBAC rules or subjects reordered | not content: compared as sets | changed: hashed as written |
+| A top-level list goes from empty to absent | not content | changed: the hash keeps an empty list |
+
+Secrets aren't compared: the hash refuses credential targets.
+
 Content compares canonically: RBAC rules, aggregation selectors and binding subjects
 are sets, and a Secret compares by its effective `data` (after `stringData` folds in)
 and `type`. Created, deleted and patched in the counts equal the number of

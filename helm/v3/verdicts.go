@@ -205,6 +205,9 @@ func contentDiffers(before, after runtime.Object, contentAnnotations []string) (
 //     apiGroups, resources, resourceNames and nonResourceURLs. A ClusterRole's
 //     aggregationRule.clusterRoleSelectors compare as a set too. roleRef compares as it is.
 //
+//   - an object member whose value is null left out, at every depth, as audit's c1 form does (a
+//     null list element is kept, and a map left empty stays an empty map).
+//
 //   - the annotations listed in contentAnnotations (UpgradeConfig.ContentAnnotations: the audit
 //     schema's content_annotations, which authorization reads), under metadata.annotations, as
 //     audit.ContentSHA256 keeps them: each one present with a non-null value, the rest dropped.
@@ -229,6 +232,10 @@ func canonicalContent(obj runtime.Object, contentAnnotations []string) (map[stri
 	if len(kept) > 0 {
 		u["metadata"] = map[string]interface{}{"annotations": kept}
 	}
+	// A null member says what an absent one does, at every depth, as audit's c1 form reads it:
+	// otherwise a verdict would call a write changed whose content_sha256 is the same. Before the
+	// RBAC sets, so set elements compare without them.
+	dropNullMembers(u)
 	if gvk.Group == "rbac.authorization.k8s.io" {
 		switch gvk.Kind {
 		case "Role", "ClusterRole":
@@ -337,4 +344,23 @@ func keptAnnotations(u map[string]interface{}, keys []string) map[string]interfa
 		}
 	}
 	return out
+}
+
+// dropNullMembers removes every object member whose value is null from v, at every depth, as
+// audit's canonical form c1 leaves them out. A null list element is kept, as c1 writes it.
+func dropNullMembers(v interface{}) {
+	switch x := v.(type) {
+	case map[string]interface{}:
+		for k, e := range x {
+			if e == nil {
+				delete(x, k)
+				continue
+			}
+			dropNullMembers(e)
+		}
+	case []interface{}:
+		for _, e := range x {
+			dropNullMembers(e)
+		}
+	}
 }
