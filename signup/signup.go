@@ -120,7 +120,7 @@ type generateClientCertAndKeyOpts struct {
 	groups   []string
 }
 
-func generateClientCertAndKey(client kubernetes.Interface, o generateClientCertAndKeyOpts) (string, string, error) {
+func generateClientCertAndKey(client kubernetes.Interface, o generateClientCertAndKeyOpts) (crtOut, keyOut string, err error) {
 	key, err := certs.NewPrivateKey()
 	if err != nil {
 		return "", "", err
@@ -152,6 +152,20 @@ func generateClientCertAndKey(client kubernetes.Interface, o generateClientCertA
 			return "", "", fmt.Errorf("creating CSR kubernetes object: %w", err)
 		}
 	}
+
+	// The CSR is single-use, and an approved one is an attack surface: delete
+	// it once the certificate is read, and on every way out after its create,
+	// rather than leave it under its fixed name until the apiserver's garbage
+	// collection. A stale one left by an earlier version is reconciled by the
+	// AlreadyExists path above. On success a failed delete is the result, so
+	// the caller retries and the CSR doesn't linger unnoticed; after a failure
+	// the delete is best effort and the original error is kept.
+	defer func() {
+		derr := certs.DeleteCertificateSigningRequest(client, csr.Name)
+		if derr != nil && !errors.IsNotFound(derr) && err == nil {
+			crtOut, keyOut, err = "", "", fmt.Errorf("deleting the used CSR %s: %w", csr.Name, derr)
+		}
+	}()
 
 	err = certs.ApproveCertificateSigningRequest(client, csr, "authn")
 	if err != nil {
