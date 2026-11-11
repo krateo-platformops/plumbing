@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	stderrors "errors"
 	"github.com/krateo-platformops/plumbing/certs"
 	"github.com/krateo-platformops/plumbing/endpoints"
 	"github.com/krateo-platformops/plumbing/kubeutil"
@@ -120,7 +121,7 @@ type generateClientCertAndKeyOpts struct {
 	groups   []string
 }
 
-func generateClientCertAndKey(client kubernetes.Interface, o generateClientCertAndKeyOpts) (string, string, error) {
+func generateClientCertAndKey(client kubernetes.Interface, o generateClientCertAndKeyOpts) (crtOut, keyOut string, err error) {
 	key, err := certs.NewPrivateKey()
 	if err != nil {
 		return "", "", err
@@ -152,6 +153,28 @@ func generateClientCertAndKey(client kubernetes.Interface, o generateClientCertA
 			return "", "", fmt.Errorf("creating CSR kubernetes object: %w", err)
 		}
 	}
+
+	// The CSR is single-use, and an approved one is an attack surface: delete
+	// it once the certificate is read, and on every way out after its create,
+	// rather than leave it under its fixed name until the apiserver's garbage
+	// collection. A stale one left by an earlier version is reconciled by the
+	// AlreadyExists path above. On success a failed delete is the result, so
+	// the caller retries and the CSR doesn't linger unnoticed; after a failure
+	// the original error is kept, joined with the delete's when that fails too.
+	defer func() {
+		derr := certs.DeleteCertificateSigningRequest(client, csr.Name)
+		if derr == nil || errors.IsNotFound(derr) {
+			return
+		}
+		derr = fmt.Errorf("deleting the used CSR %s: %w", csr.Name, derr)
+		if err == nil {
+			crtOut, keyOut, err = "", "", derr
+			return
+		}
+		// Both failed: the step's error first, and the CSR left behind is not
+		// hidden.
+		err = stderrors.Join(err, derr)
+	}()
 
 	err = certs.ApproveCertificateSigningRequest(client, csr, "authn")
 	if err != nil {

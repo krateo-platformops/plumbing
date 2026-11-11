@@ -9,6 +9,14 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-11 — signup deletes its CSR** (authn#119 review): `signup.Do`/`DoWritten`
+  created a CertificateSigningRequest under the fixed name of the identity (authn's own,
+  `authn`), approved it, read the certificate and never deleted it. An approved CSR left
+  under a well-known name is an attack surface, and it lingered until the apiserver's
+  garbage collection. It is now deleted on every way out after its create. On success, a
+  failed delete fails the signup so the caller retries; after any other failure the original
+  error is kept, joined with the delete's when that fails too. A stale CSR from an earlier version is
+  replaced by the existing AlreadyExists path, then deleted.
 - **2026-11-11 — `usernames`: one definition of the rules for authn's usernames**: demo's
   access-request form (identity-lifecycle) has to refuse the names authn's name guard would
   refuse, at request time. The reserved names and prefixes moved here verbatim from authn's
