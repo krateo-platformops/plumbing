@@ -160,7 +160,9 @@ func newHTTPClient(opts GetOptions) *http.Client {
 	}
 
 	return &http.Client{
-		Transport: transport,
+		// On js/wasm, fetch would follow a redirect without CheckRedirect's credential strip
+		// below; RoundTripper refuses it there (dialguard).
+		Transport: dialguard.RoundTripper(transport),
 		Timeout:   opts.Timeout,
 	}
 }
