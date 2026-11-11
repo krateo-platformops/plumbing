@@ -50,6 +50,11 @@
 //     pass's FIRST create, update or delete; every other act step, and every act in NoParent or
 //     Link mode, is StartStep (or StartActStep with an invalid upstream). d.Remote is valid in
 //     Link mode too, so passing it unconditionally re-joins the upstream on every acting pass.
+//     The act step is the caller's step that APPLIES changes: Create/Update/Delete in
+//     provider-runtime, whose Observe is a pure read; Observe in the composition-dynamic-
+//     controller, whose Observe applies the release's children (plumbing helm Reconcile). The
+//     marker is written before that step, so for the cdc a conflict delays the first Observe of a
+//     new value by one requeue.
 //
 // provider-runtime's pkg/reconciler/traces.go is the reference implementation of that contract.
 //
