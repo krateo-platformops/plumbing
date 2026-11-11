@@ -6,6 +6,7 @@ package endpoints
 import (
 	"context"
 	"fmt"
+	"github.com/krateo-platformops/plumbing/e2e/kubepin"
 	"os"
 	"testing"
 
@@ -31,10 +32,16 @@ const (
 )
 
 func TestMain(m *testing.M) {
+	// First, before any cluster exists: kind must never touch the developer's
+	// kubeconfig, and this suite destroys its cluster at the end.
+	restore := kubepin.Pin("endpoints")
 	xenv.SetTestMode(true)
 
 	namespace = "demo-system"
-	clusterName = "krateo"
+	// A name only this suite uses: it destroys the cluster at the end, so a
+	// common name (it was "krateo") deletes whatever cluster a developer has
+	// by that name.
+	clusterName = "plumbing-endpoints-test"
 	testenv = env.New()
 
 	testenv.Setup(
@@ -45,7 +52,9 @@ func TestMain(m *testing.M) {
 		envfuncs.DestroyCluster(clusterName),
 	)
 
-	os.Exit(testenv.Run(m))
+	code := testenv.Run(m)
+	restore() // not deferred: os.Exit does not run defers
+	os.Exit(code)
 }
 
 func TestEndpoints(t *testing.T) {

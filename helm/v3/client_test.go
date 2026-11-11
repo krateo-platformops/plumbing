@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/krateo-platformops/plumbing/e2e/kubepin"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -45,6 +46,9 @@ var (
 const duplicateResourcesChartDir = "testdata/charts/duplicate-resources"
 
 func TestMain(m *testing.M) {
+	// First, before any cluster exists: kind must never touch the developer's
+	// kubeconfig.
+	restore := kubepin.Pin("helm-v3")
 	xenv.SetTestMode(true)
 
 	// A FRESH namespace per run, because the Finish hooks below are deliberately disabled so a
@@ -76,7 +80,9 @@ func TestMain(m *testing.M) {
 	// envfuncs.DestroyCluster(clusterName),
 	)
 
-	os.Exit(testenv.Run(m))
+	code := testenv.Run(m)
+	restore() // not deferred: os.Exit does not run defers
+	os.Exit(code)
 }
 
 func cloneChartFixture(t *testing.T, srcDir string, mutate func(relPath string, data []byte) []byte) string {

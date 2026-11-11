@@ -61,7 +61,7 @@ test-integration: ## Run the integration tests (real kind cluster) — helm reco
 	# ephemeral CI runner, but a local run leaves a `helm-test` cluster behind.
 	#
 	# -p 1 is REQUIRED, not tuning. The two integration packages each create their OWN kind cluster
-	# — helm/v3 makes "helm-test", endpoints makes "krateo" — and `go test` runs package binaries in
+	# — helm/v3 makes "helm-test", endpoints makes "plumbing-endpoints-test" — and `go test` runs package binaries in
 	# PARALLEL by default, so both clusters get built at once. On an 8-CPU/16GB machine that is
 	# enough to fail cluster creation outright: measured, a full `./...` run failed in endpoints
 	# while endpoints run alone passed in 229s.
@@ -71,10 +71,12 @@ test-integration: ## Run the integration tests (real kind cluster) — helm reco
 	# the wrong reason would send the next reader looking for cross-test contamination that cannot
 	# happen.)
 	#
-	# Neither package destroys its cluster at teardown, so both are resident for the rest of the
-	# run and on the machine afterwards. That is two clusters' worth of CPU and memory, which is
-	# the real resource floor for this target — see test-integration-clean when a machine is
-	# already carrying clusters from other work.
+	# helm/v3 leaves its cluster running at teardown; endpoints destroys its own, which is why its
+	# name must be one no developer uses (it was "krateo", and its teardown deleted any local
+	# cluster of that name). Both suites pin KUBECONFIG to a scratch file (e2e/kubepin) before
+	# creating anything. While both run, that is two clusters' worth of CPU and memory, the real
+	# resource floor for this target — see test-integration-clean when a machine is already
+	# carrying clusters from other work.
 	#
 	@mkdir -p $(LOCALBIN)
 	KUBECONFIG=$(INTEGRATION_KUBECONFIG) go test -tags integration ./... -count=1 -p 1 -timeout 45m
@@ -90,7 +92,7 @@ test-integration-clean: ## test-integration, but delete the suites' kind cluster
 	# test-integration; reach for this one when you see `failed to create cluster`.
 	@mkdir -p $(LOCALBIN)
 	-KUBECONFIG=$(INTEGRATION_KUBECONFIG) kind delete cluster --name helm-test
-	-KUBECONFIG=$(INTEGRATION_KUBECONFIG) kind delete cluster --name krateo
+	-KUBECONFIG=$(INTEGRATION_KUBECONFIG) kind delete cluster --name plumbing-endpoints-test
 	$(MAKE) test-integration
 
 .PHONY: help
