@@ -1,0 +1,18 @@
+{{- range $name := list "a" "b" }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $.Release.Name }}-{{ $name }}
+data:
+  color: {{ $.Values.color | quote }}
+{{- end }}
+---
+# immutable: any data change is refused by the apiserver, so this child's patch fails.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-frozen
+immutable: true
+data:
+  color: {{ .Values.color | quote }}

@@ -216,6 +216,11 @@ type ReconcileResult struct {
 	// complete for what the merge did. A child whose state could not be read is listed as
 	// ChangeDeleteUnknown, not left out.
 	ObjectsComplete bool
+	// ObjectsNotAttempted counts the children of the render the merge never reached: helm stops
+	// applying at the first failed create (or failed read of a child), so the children after it get
+	// no request, no verdict and no audit record. The count makes their absence visible, for a
+	// reconcile-level failure record to state in a closed-set field. Zero on a clean apply.
+	ObjectsNotAttempted int
 }
 
 // ObjectVerdict is one child's outcome in a Reconcile (plumbing#106).
@@ -229,6 +234,9 @@ type ObjectVerdict struct {
 	// UID is the child's uid when the merge saw it: the created or patched object, or the live
 	// object of a kept deletion. Empty when unknown.
 	UID string
+	// A failed write (ChangeCreateFailed, ChangeUpdateFailed) carries the verb it sent; its error
+	// stays out of the verdict, since only helm's joined error text describes it.
+	//
 	// Verb is what was sent to the apiserver: "create", "patch" (or "update" under Force, which
 	// replaces), or "delete". A kept deletion and a deletion that was not done carry "delete", the
 	// verb the release asked for, although helm sent nothing for a kept one.
@@ -263,6 +271,16 @@ const (
 	// ChangeDeleteNotDone: the child left the render, is still live, and is not kept: its deletion
 	// failed, or helm never reached its deletion loop. The next reconcile asks again.
 	ChangeDeleteNotDone ObjectChange = "deleteNotDone"
+	// ChangeCreateFailed: the child did not exist, the merge sent its create, and the create
+	// failed. helm stops applying at a failed create, so later children are not attempted and get no
+	// verdict.
+	ChangeCreateFailed ObjectChange = "createFailed"
+	// ChangeUpdateFailed: the merge applied the child and helm reported an error for it: the
+	// patch (or, under Force, the replace) failed. One known over-report: for a child whose patch
+	// was empty, a failed read-back comes through helm's same error path, so it too is
+	// updateFailed although no write was sent. That is the only case, and it errs toward reporting
+	// a failure, never toward hiding one.
+	ChangeUpdateFailed ObjectChange = "updateFailed"
 	// ChangeDeleteUnknown: the child left the render and helm did not report deleting it, but its
 	// live state could not be read (an error other than NotFound), so nobody can say whether it was
 	// kept, deleted or left. A child already gone (NotFound) is not listed.

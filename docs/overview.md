@@ -76,7 +76,18 @@ group, version, resource, kind, namespace, name, uid when known, the verb sent
 | `compareFailed` | applied, but before/after couldn't be compared (Reconcile counts it as a change, fail safe) |
 | `kept` | left the render; helm declined the delete (keep) |
 | `deleteNotDone` | left the render, still live, not kept: the delete failed or never ran |
+| `createFailed` | its create was sent and failed (helm then stops; later children are not attempted) |
+| `updateFailed` | its patch (or replace) failed; also, the one known over-report, an empty patch whose read-back failed |
 | `deleteUnknown` | left the render, not reported deleted, and its live state couldn't be read |
+
+helm's own result can't tell a failed write from a done one: it lists a child under
+`Created` before sending the create, and under `Updated` whatever the patch's outcome.
+A write counts as done only when helm refreshed the object from the server, so it
+carries a resourceVersion (`writeConfirmed`). The counts (`Created`,
+`PatchedUpdated`, `ChangedObjects`, `Changed`) and the verdicts both use it, so they
+agree on a partial apply too. `ObjectsNotAttempted` counts the children helm never
+reached after an abort. The integration test `TestReconcilePartialApplyVerdicts`
+pins this helm behaviour, and a helm bump must keep it green.
 
 The verdict states what happened. Whether it counts (for an audit, a revision, a metric)
 is the caller's policy.

@@ -204,6 +204,13 @@ func cm(name, color string) *unstructured.Unstructured {
 	return vobj("v1", "ConfigMap", "ns", name, map[string]interface{}{"data": map[string]interface{}{"color": color}})
 }
 
+// stored marks u as helm leaves an object whose write the server confirmed: refreshed, so it
+// carries a resourceVersion. A rendered object, or one whose write failed, has none.
+func stored(u *unstructured.Unstructured) *unstructured.Unstructured {
+	u.SetResourceVersion("101")
+	return u
+}
+
 // The verdict list is uncapped, names each child once with the verb sent and how it changed, and
 // agrees with the counts Reconcile reports.
 func TestObjectVerdicts(t *testing.T) {
@@ -213,11 +220,11 @@ func TestObjectVerdicts(t *testing.T) {
 		const n = 25
 		for i := 0; i < n; i++ {
 			name := fmt.Sprintf("c%02d", i)
-			info := vinfo(withUID(cm(name, "red"), "uid-"+name), "configmaps")
+			info := vinfo(stored(withUID(cm(name, "red"), "uid-"+name)), "configmaps")
 			live[infoKey(info)] = cm(name, "blue")
 			target = append(target, info)
 		}
-		got, complete := objectVerdicts(verdictInputs{target: target, live: live, absent: map[string]bool{}})
+		got, complete, _ := objectVerdicts(verdictInputs{target: target, updated: target, live: live, absent: map[string]bool{}})
 		if !complete {
 			t.Fatal("complete = false with every key resolvable")
 		}
@@ -232,11 +239,11 @@ func TestObjectVerdicts(t *testing.T) {
 	})
 
 	t.Run("each change kind", func(t *testing.T) {
-		created := vinfo(withUID(cm("new", "blue"), "uid-new"), "configmaps")
+		created := vinfo(stored(withUID(cm("new", "blue"), "uid-new")), "configmaps")
 		deleted := vinfo(cm("gone", "blue"), "configmaps")
-		spec := vinfo(cm("spec", "red"), "configmaps")
-		meta := vinfo(withLabels(cm("meta", "blue"), map[string]string{"team": "a"}), "configmaps")
-		same := vinfo(cm("same", "blue"), "configmaps")
+		spec := vinfo(stored(cm("spec", "red")), "configmaps")
+		meta := vinfo(stored(withLabels(cm("meta", "blue"), map[string]string{"team": "a"})), "configmaps")
+		same := vinfo(stored(cm("same", "blue")), "configmaps")
 		keptInfo := vinfo(withUID(cm("kept", "blue"), "uid-kept"), "configmaps")
 		notDoneInfo := vinfo(cm("stuck", "blue"), "configmaps")
 		unknownInfo := vinfo(cm("unread", "blue"), "configmaps")
@@ -246,9 +253,10 @@ func TestObjectVerdicts(t *testing.T) {
 			infoKey(meta): cm("meta", "blue"),
 			infoKey(same): cm("same", "blue"),
 		}
-		got, complete := objectVerdicts(verdictInputs{
+		got, complete, _ := objectVerdicts(verdictInputs{
 			target:  kube.ResourceList{created, spec, meta, same},
 			created: kube.ResourceList{created},
+			updated: kube.ResourceList{spec, meta, same},
 			deleted: kube.ResourceList{deleted},
 			current: kube.ResourceList{spec, meta, same, keptInfo, notDoneInfo, unknownInfo},
 			live:    live,
@@ -292,9 +300,9 @@ func TestObjectVerdicts(t *testing.T) {
 	})
 
 	t.Run("force replaces: verb update", func(t *testing.T) {
-		info := vinfo(cm("x", "red"), "configmaps")
-		got, _ := objectVerdicts(verdictInputs{
-			target: kube.ResourceList{info}, live: map[string]runtime.Object{infoKey(info): cm("x", "blue")},
+		info := vinfo(stored(cm("x", "red")), "configmaps")
+		got, _, _ := objectVerdicts(verdictInputs{
+			target: kube.ResourceList{info}, updated: kube.ResourceList{info}, live: map[string]runtime.Object{infoKey(info): cm("x", "blue")},
 			absent: map[string]bool{}, force: true,
 		})
 		if len(got) != 1 || got[0].Verb != "update" {
@@ -303,11 +311,58 @@ func TestObjectVerdicts(t *testing.T) {
 	})
 
 	t.Run("a failed comparison is its own verdict", func(t *testing.T) {
-		info := vinfo(cm("x", "red"), "configmaps")
+		info := vinfo(stored(cm("x", "red")), "configmaps")
 		// No before state: the comparison cannot run, as when the live read returned nothing usable.
-		got, _ := objectVerdicts(verdictInputs{target: kube.ResourceList{info}, live: map[string]runtime.Object{}, absent: map[string]bool{}})
+		got, _, _ := objectVerdicts(verdictInputs{target: kube.ResourceList{info}, updated: kube.ResourceList{info}, live: map[string]runtime.Object{}, absent: map[string]bool{}})
 		if len(got) != 1 || got[0].Change != helmconfig.ChangeCompareFailed {
 			t.Fatalf("got %+v, want one compareFailed verdict", got)
+		}
+	})
+
+	// helm appends to Created before sending the create and to Updated whatever the patch's outcome,
+	// so its lists can't tell a failed write from a done one; the refreshed object can.
+	t.Run("failed and unattempted writes", func(t *testing.T) {
+		createOK := vinfo(stored(withUID(cm("made", "blue"), "uid-made")), "configmaps")
+		createBad := vinfo(cm("unmade", "blue"), "configmaps") // as rendered: the create failed
+		patchOK := vinfo(stored(cm("patched", "red")), "configmaps")
+		patchBad := vinfo(cm("refused", "red"), "configmaps")  // as rendered: the patch failed
+		skipped := vinfo(cm("unreached", "red"), "configmaps") // helm stopped before it
+		skippedNew := vinfo(cm("unreachednew", "red"), "configmaps")
+		live := map[string]runtime.Object{
+			infoKey(patchOK):  cm("patched", "blue"),
+			infoKey(patchBad): withUID(cm("refused", "blue"), "uid-refused"),
+			infoKey(skipped):  cm("unreached", "blue"),
+		}
+		got, complete, notAttempted := objectVerdicts(verdictInputs{
+			target:  kube.ResourceList{createOK, createBad, patchOK, patchBad, skipped, skippedNew},
+			created: kube.ResourceList{createOK, createBad},
+			updated: kube.ResourceList{patchOK, patchBad},
+			live:    live,
+			absent:  map[string]bool{infoKey(createOK): true, infoKey(createBad): true, infoKey(skippedNew): true},
+		})
+		if !complete {
+			t.Fatal("complete = false")
+		}
+		if notAttempted != 2 {
+			t.Errorf("notAttempted = %d, want 2 (unreached and unreachednew)", notAttempted)
+		}
+		want := map[string]helmconfig.ObjectChange{
+			"made": helmconfig.ChangeCreated, "unmade": helmconfig.ChangeCreateFailed,
+			"patched": helmconfig.ChangeSpec, "refused": helmconfig.ChangeUpdateFailed,
+		}
+		if len(got) != len(want) {
+			t.Fatalf("got %+v, want %d verdicts (the unattempted children have none)", got, len(want))
+		}
+		for _, v := range got {
+			if v.Change != want[v.Name] {
+				t.Errorf("%s: %q, want %q", v.Name, v.Change, want[v.Name])
+			}
+			if v.Name == "refused" && (v.UID != "uid-refused" || v.Verb != "patch") {
+				t.Errorf("failed patch %+v: want the live uid and verb patch", v)
+			}
+			if v.Name == "unmade" && v.Verb != "create" {
+				t.Errorf("failed create %+v: want verb create", v)
+			}
 		}
 	})
 
@@ -318,7 +373,7 @@ func TestObjectVerdicts(t *testing.T) {
 			"notDone": {current: kube.ResourceList{known}, notDone: []string{"v1/ConfigMap/ns/missing"}},
 			"unknown": {current: kube.ResourceList{known}, unknown: []string{"v1/ConfigMap/ns/missing"}},
 		} {
-			got, complete := objectVerdicts(in)
+			got, complete, _ := objectVerdicts(in)
 			if complete {
 				t.Errorf("%s: complete = true although a key resolved to nothing (%+v)", name, got)
 			}

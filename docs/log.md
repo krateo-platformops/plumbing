@@ -18,7 +18,13 @@ timestamp: 2026-08-07T00:00:00Z
   `created`, `deleted`, `specChanged`, `metadataOnly`, `compareFailed`, `kept`,
   `deleteNotDone` or `deleteUnknown` (an intended deletion whose live state couldn't
   be read). It says what happened and leaves what counts to the caller, and
-  `ObjectsComplete` says when the list may be missing a child. Content compares as snowplow ruled: RBAC rules and subjects as
+  `ObjectsComplete` says when the list may be missing a child. Checking helm's
+  update loop showed that it lists a child under `Created` before the create runs and
+  under `Updated` whatever the patch's outcome. So a failed write was counted as a
+  change, in the existing counts too. A write now counts only when helm refreshed
+  the object from the server (it has a resourceVersion). Failed writes are
+  `createFailed` and `updateFailed` verdicts, and `ObjectsNotAttempted` counts the
+  children helm never reached after a failed create. Content compares as snowplow ruled: RBAC rules and subjects as
   sets, Secrets by effective data and type. The capped diagnostic lists and their
   log lines are unchanged. Kept and not-done deletions now come from one read per
   object (`pendingDeletions`), shared by the verdicts and the `Changed` decision.

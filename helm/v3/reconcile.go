@@ -361,7 +361,15 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 	// patch-type mismatch) and immunizes against ANY server-owned/defaulted field. It also subsumes
 	// the per-field neutralizations (traceparent copy in 4.5, stringData fold in 4.6) — those keep
 	// the before/after identical for their children. created/deleted come from the merge result.
-	created := len(res.Created)
+	// A child counts only when helm confirmed its write (writeConfirmed): helm appends to Created
+	// before the create runs and to Updated whatever the patch's outcome, so its lists alone
+	// over-count a partial apply (plumbing#106).
+	created := 0
+	for _, info := range res.Created {
+		if writeConfirmed(info) {
+			created++
+		}
+	}
 	deleted := len(res.Deleted)
 	patched := 0
 
@@ -372,7 +380,9 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 	changedPathsByChild := map[string][]string{}
 	changedPathsOmitted := map[string]int{}
 	for _, info := range res.Created {
-		changedObjects.add(infoKey(info))
+		if writeConfirmed(info) {
+			changedObjects.add(infoKey(info))
+		}
 	}
 	for _, info := range res.Deleted {
 		changedObjects.add(infoKey(info))
@@ -382,6 +392,9 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 		key := infoKey(info)
 		if absent[key] {
 			continue // counted under res.Created
+		}
+		if !writeConfirmed(info) {
+			continue // a failed or never-attempted write changed nothing; its verdict says which
 		}
 		changedChild, cerr := semanticallyChanged(liveObj[key], info.Object)
 		if cerr != nil {
@@ -439,8 +452,8 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 	}
 	// Uncapped, one entry per child the merge changed (plumbing#106). Built from the same
 	// before/after objects and the same deletion reads as the counts above.
-	result.Objects, result.ObjectsComplete = objectVerdicts(verdictInputs{
-		target: target, created: res.Created, deleted: res.Deleted, current: current,
+	result.Objects, result.ObjectsComplete, result.ObjectsNotAttempted = objectVerdicts(verdictInputs{
+		target: target, created: res.Created, updated: res.Updated, deleted: res.Deleted, current: current,
 		live: liveObj, absent: absent, kept: keptKeys, notDone: notDoneKeys, unknown: unknownKeys,
 		force: cfg.Force,
 	})
@@ -662,6 +675,11 @@ func selectCurrentForBuild(last *release.Release, deployed func() (*release.Rele
 	}
 	return last
 }
+
+// writeConfirmed reports whether helm confirmed info's write: it refreshes the object from the
+// server (Refresh after a create or patch, Get after an empty patch) only when that succeeded, and a
+// rendered object never carries a resourceVersion. See verdictInputs.
+func writeConfirmed(info *resource.Info) bool { return resourceVersionOf(info.Object) != "" }
 
 // resourceVersionOf extracts metadata.resourceVersion from a runtime.Object
 // (typed or unstructured) via apimachinery's meta accessor. Returns "" when it
