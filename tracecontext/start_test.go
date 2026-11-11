@@ -168,6 +168,11 @@ func TestStartActStep(t *testing.T) {
 	if j.Parent().SpanID() != d.Remote.SpanID() || j.SpanContext().TraceID() != d.Remote.TraceID() {
 		t.Errorf("joined act: parent %s in trace %s, want the upstream", j.Parent().SpanID(), j.SpanContext().TraceID())
 	}
+	// The upstream is ANOTHER process's span, so the joined act's parent must be marked remote. A
+	// ContextWithSpanContext in place of ContextWithRemoteSpanContext would pass every check above.
+	if !j.Parent().IsRemote() {
+		t.Error("the joined act's parent must be remote")
+	}
 	if l := j.Links(); len(l) != 1 || l[0].SpanContext.SpanID() != root.SpanContext().SpanID() {
 		t.Errorf("joined act links = %v, want one to the root", l)
 	}

@@ -77,3 +77,71 @@ func TestInbound(t *testing.T) {
 		t.Error("the inbound span context became the active span")
 	}
 }
+
+// dropRoots drops the reconcile root and samples everything else.
+type dropRoots struct{}
+
+func (dropRoots) ShouldSample(p sdktrace.SamplingParameters) sdktrace.SamplingResult {
+	if p.Name == SpanReconcile {
+		return sdktrace.SamplingResult{Decision: sdktrace.Drop}
+	}
+	return sdktrace.SamplingResult{Decision: sdktrace.RecordAndSample}
+}
+func (dropRoots) Description() string { return "dropRoots" }
+
+// PINS v1.14.1 AS IT IS, not as it should be: the act links to its root even when the root is
+// unsampled, so an exported act can point at a root that was never exported. The provider-runtime
+// session flagged the asymmetry (the root links to the act only when the act is sampled) and is
+// deciding it there. This test makes a change to it deliberate: update it with that decision.
+func TestStartActStepLinksToAnUnsampledRootAsInV1141(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec), sdktrace.WithSampler(dropRoots{}))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+
+	d := Decide(ann(AnnotationKeyTraceparent, tpA), "", time.Time{}, time.Now(), time.Minute)
+	ctx, root := StartReconcile(context.Background(), tp.Tracer(testScope), obj, d, time.Now())
+	if root.SpanContext().IsSampled() {
+		t.Fatal("premise: the root must be unsampled")
+	}
+	_, act := StartActStep(ctx, tp.Tracer(testScope), obj, SpanUpdate, d.Remote)
+	act.End()
+	root.End()
+	var got sdktrace.ReadOnlySpan
+	for _, s := range rec.Ended() {
+		if s.Name() == SpanUpdate {
+			got = s
+		}
+	}
+	if got == nil {
+		t.Fatal("the act was not recorded")
+	}
+	if l := got.Links(); len(l) != 1 || l[0].SpanContext.SpanID() != root.SpanContext().SpanID() {
+		t.Errorf("act links = %v; v1.14.1 links the act to its root even when the root is unsampled", l)
+	}
+}
+
+// StartActStep marks the upstream as the REMOTE parent itself, whatever the caller hands it. Every
+// upstream Decide produces is already remote (the W3C propagator's Extract sets the flag), so for
+// those inputs ContextWithSpanContext and ContextWithRemoteSpanContext are indistinguishable. This
+// arm passes a locally built, non-remote span context, which is the only input that tells them
+// apart.
+func TestStartActStepMarksTheUpstreamRemote(t *testing.T) {
+	tp, rec := recorder(t)
+	local := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    trace.TraceID{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+		SpanID:     trace.SpanID{1, 2, 3, 4, 5, 6, 7, 8},
+		TraceFlags: trace.FlagsSampled,
+	})
+	if local.IsRemote() {
+		t.Fatal("premise: the constructed upstream must not already be remote")
+	}
+	ctx, root := StartReconcile(context.Background(), tp.Tracer(testScope), obj, Decision{}, time.Now())
+	_, act := StartActStep(ctx, tp.Tracer(testScope), obj, SpanUpdate, local)
+	act.End()
+	root.End()
+	for _, s := range rec.Ended() {
+		if s.Name() == SpanUpdate && !s.Parent().IsRemote() {
+			t.Error("StartActStep must make the upstream a REMOTE parent, even when the caller's span context is not marked remote")
+		}
+	}
+}

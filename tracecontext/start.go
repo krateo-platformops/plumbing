@@ -85,6 +85,9 @@ func StartReconcile(ctx context.Context, tracer trace.Tracer, obj Object, d Deci
 // the provider's call, for obj. With upstream valid, it is the first act for a
 // new krateo.io/traceparent value (D8):
 //
+// The caller passes upstream = d.Remote only when d.Mode is Parent and this is the pass's first
+// act step; StartActStep doesn't check the mode.
+//
 //   - its parent is upstream, so the act and the calls it makes join the
 //     upstream trace;
 //   - it carries one link back to the reconcile root in ctx;

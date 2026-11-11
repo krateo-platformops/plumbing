@@ -10,14 +10,14 @@ const (
 	AnnotationKeyTraceparent = "krateo.io/traceparent"
 	// AnnotationKeyTracestate carries the matching W3C tracestate.
 	AnnotationKeyTracestate = "krateo.io/tracestate"
-	// AnnotationKeyTraceparentContinued records the traceparent value whose act step a reconciler
-	// has already joined, so later passes link to it instead of joining it again. It belongs to the
-	// object it is written on: never copy it onto another object.
+	// AnnotationKeyTraceparentContinued records the traceparent value this object's reconciler has
+	// continued, so later passes link to it instead of joining it. It belongs to the object it is
+	// written on: never copy it onto another object.
 	AnnotationKeyTraceparentContinued = "krateo.io/traceparent-continued"
 )
 
 // DefaultContinueWindow is how long a new traceparent value keeps making Parent passes that don't
-// act before Decide turns them into Link passes (provider-runtime's default, docs/design-tracing.md).
+// act before Decide turns them into Link passes (provider-runtime's default; its docs/design-tracing.md).
 const DefaultContinueWindow = 10 * time.Minute
 
 // The span names this package starts. SpanReconcile is the root; act and step names are the
