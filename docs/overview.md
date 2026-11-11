@@ -61,6 +61,31 @@ self-healing reconcile built ONLY on Helm's exported API. Per cycle:
 7. Only if changed: run ONE real `Upgrade` to write the revision and run hooks with
    correct ordering. Otherwise return `Changed:false` — no revision, no hooks.
 
+What the merge did to each child is in `ReconcileResult.Objects` (plumbing#106): one
+uncapped `ObjectVerdict` per child it created, deleted, changed, kept
+(`helm.sh/resource-policy: keep`) or failed to delete. Each verdict carries the
+group, version, resource, kind, namespace, name, uid when known, the verb sent
+(`create`, `patch`, `update` under `Force`, `delete`) and the `Change`:
+
+| Change | Meaning | `SpecChanged()` |
+|---|---|---|
+| `created` | absent, now created | true |
+| `deleted` | pruned: left the render and deleted | true |
+| `specChanged` | content changed: the fields other than apiVersion, kind, metadata, status | true |
+| `metadataOnly` | only labels, annotations or other metadata changed | false |
+| `compareFailed` | applied, but before/after couldn't be compared (Reconcile counts it as a change, fail safe) | false |
+| `kept` | left the render; helm declined the delete (keep) | false |
+| `deleteNotDone` | left the render, still live, not kept: the delete failed or never ran | false |
+
+Content compares canonically: RBAC rules, aggregation selectors and binding subjects
+are sets, and a Secret compares by its effective `data` (after `stringData` folds in)
+and `type`. Created, deleted and patched in the counts equal the number of
+`created`, `deleted` and other surviving-child verdicts. A child the merge left
+unchanged is absent, and so is a Job kept out of the merge. The list holds names
+only, never values, and it is uncapped for one audit record per entry (AUDIT-4).
+So log the capped `ChangedObjects`, never `Objects`. `ObjectsComplete` is false only
+on the install fallback in step 1, which reports no per-object outcome.
+
 The steady-state guarantee is "no cluster mutation → no Helm revision, no hooks",
 which is what stopped the platform's per-60s revision churn. It is only as no-churn
 as the charts are idempotent (e.g. `lookup`-guarded random passwords).

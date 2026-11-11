@@ -129,6 +129,9 @@ func TestControllerReconcile(t *testing.T) {
 			res, err := cli.Reconcile(ctx, releaseName, chartURL, upCfg())
 			require.NoError(t, err)
 			assert.False(t, res.Changed, "steady-state reconcile must not report a change")
+			// plumbing#106: a steady state has nothing to record.
+			assert.True(t, res.ObjectsComplete, "a reconcile of an existing release reports complete verdicts")
+			assert.Empty(t, res.Objects, "a steady-state reconcile must report no object verdicts")
 			revSteady := helmRevisionCount(t, cs, namespace, releaseName)
 			hooksSteady := hookFireCount(t, cs, namespace)
 			t.Logf("[steady] Changed=%v revisions=%d (was %d) hookFires=%d (was %d)",
@@ -163,6 +166,20 @@ func TestControllerReconcile(t *testing.T) {
 				}
 			}
 			assert.Equal(t, []string{"data.color"}, cmPaths, "the heal must name data.color for the drifted ConfigMap; got %v", res.ChangedPaths)
+			// plumbing#106: the heal is one verdict for that ConfigMap: patched, content changed,
+			// with its live uid, and nothing else listed.
+			require.True(t, res.ObjectsComplete)
+			require.Len(t, res.Objects, res.Created+res.Deleted+res.PatchedUpdated, "verdicts must agree with the counts: %+v", res.Objects)
+			var cmVerdict *helmconfig.ObjectVerdict
+			for i, v := range res.Objects {
+				if v.Resource == "configmaps" && v.Namespace == namespace && v.Name == cmName {
+					cmVerdict = &res.Objects[i]
+				}
+			}
+			require.NotNil(t, cmVerdict, "the healed ConfigMap must have a verdict: %+v", res.Objects)
+			assert.Equal(t, "patch", cmVerdict.Verb)
+			assert.Equal(t, helmconfig.ChangeSpec, cmVerdict.Change)
+			assert.Equal(t, string(cm.UID), cmVerdict.UID)
 			healedColor := liveColor(t, cs, namespace, cmName)
 			revAfterHeal := helmRevisionCount(t, cs, namespace, releaseName)
 			hooksAfterHeal := hookFireCount(t, cs, namespace)

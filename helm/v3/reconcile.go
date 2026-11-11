@@ -411,7 +411,8 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 	// reports success (krateo-autopilot on krateo-057, 2026-11-08: four objects dropped from the
 	// render, all kept, revision 117 for good). See keptDeletions for why a FAILED deletion is not
 	// counted.
-	kept := keptDeletions(current, target, res.Deleted, getLive, maxChangedObjects)
+	keptKeys, notDoneKeys := pendingDeletions(current, target, res.Deleted, getLive)
+	kept := cappedSet(keptKeys, maxChangedObjects)
 
 	changed := releaseChanged(created, deleted, patched, kept.total())
 
@@ -434,6 +435,14 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 		KeptDeletions:            kept.names,
 		KeptDeletionsOmitted:     kept.omitted,
 		ChangedJobTemplates:      jobs.templateChanged,
+
+		// Uncapped, one entry per child the merge changed (plumbing#106). Built from the same
+		// before/after objects and the same deletion reads as the counts above.
+		Objects: objectVerdicts(verdictInputs{
+			target: target, created: res.Created, deleted: res.Deleted, current: current,
+			live: liveObj, absent: absent, kept: keptKeys, notDone: notDoneKeys, force: cfg.Force,
+		}),
+		ObjectsComplete: true,
 	}
 
 	// core-provider#403: a chart-changed template on a live Job is reported, never skipped silently.
@@ -950,7 +959,19 @@ func intendedDeletions(current, target kube.ResourceList, limit int) *changedObj
 // get reads the live object; production passes getLive. It is a parameter so the decision is tested
 // without a cluster, as the package does for filterLiveJobs and classifyApply.
 func keptDeletions(current, target, deleted kube.ResourceList, get func(*resource.Info) (runtime.Object, error), limit int) *changedObjectSet {
-	out := newChangedObjectSet(limit)
+	kept, _ := pendingDeletions(current, target, deleted, get)
+	return cappedSet(kept, limit)
+}
+
+// pendingDeletions sorts the intended deletions helm did not perform, uncapped (plumbing#106):
+// kept is what keptDeletions names, and notDone is the rest whose live object was read and is not
+// kept, so its delete failed or never ran. One read per object, shared by both, so the audit
+// verdicts and the Changed decision see the same answer. An object that is gone (NotFound) or
+// unreadable is in neither, for the reasons keptDeletions gives.
+//
+// get refreshes info.Object to the live object (getLive does), so a caller reading current
+// afterwards sees the live uid.
+func pendingDeletions(current, target, deleted kube.ResourceList, get func(*resource.Info) (runtime.Object, error)) (kept, notDone []string) {
 	gone := make(map[string]bool, len(deleted))
 	for _, info := range deleted {
 		gone[infoKey(info)] = true
@@ -969,8 +990,19 @@ func keptDeletions(current, target, deleted kube.ResourceList, get func(*resourc
 			continue
 		}
 		if annotations[kube.ResourcePolicyAnno] == kube.KeepPolicy {
-			out.add(key)
+			kept = append(kept, key)
+		} else {
+			notDone = append(notDone, key)
 		}
+	}
+	return kept, notDone
+}
+
+// cappedSet is the capped, deduplicated diagnostic list of keys.
+func cappedSet(keys []string, limit int) *changedObjectSet {
+	out := newChangedObjectSet(limit)
+	for _, k := range keys {
+		out.add(k)
 	}
 	return out
 }

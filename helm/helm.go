@@ -188,6 +188,80 @@ type ReconcileResult struct {
 	// therefore ran the real upgrade again rather than treating that revision's manifest as
 	// converged (core-provider#403).
 	RetriedFailedRelease bool
+
+	// Objects is the per-child verdict of the self-heal merge (plumbing#106), one entry per child
+	// it created, deleted, changed, kept or failed to delete, sorted by identity. It is UNCAPPED,
+	// unlike ChangedObjects and the other diagnostic lists, because a caller writes one audit record
+	// per entry (AUDIT-4) and a dropped entry would be a missing record. Keep the capped lists for
+	// log lines; never log this one whole.
+	//
+	// A child the merge left as it was is absent, including one where helm sent a patch that the
+	// apiserver accepted as a no-op: the cluster keeps no trace of it, so there is no change to
+	// record. Jobs the self-heal keeps out of the merge (#276, #403) are absent too, since nothing
+	// was sent for them.
+	//
+	// Names and the resource only: no manifest, no field values, no Secret data.
+	//
+	// Empty when ObjectsComplete is false.
+	Objects []ObjectVerdict
+	// ObjectsComplete is false when Reconcile could not say which children changed: the release
+	// did not exist yet and Reconcile installed it through Upgrade, which reports no per-object
+	// outcome. On every other path (a clean or partial apply, an ErrJobTemplateChanged return)
+	// Objects is complete for what the merge did.
+	ObjectsComplete bool
+}
+
+// ObjectVerdict is one child's outcome in a Reconcile (plumbing#106).
+type ObjectVerdict struct {
+	Group     string
+	Version   string
+	Resource  string // the plural resource name, e.g. "deployments"
+	Kind      string
+	Namespace string // empty for a cluster-scoped child
+	Name      string
+	// UID is the child's uid when the merge saw it: the created or patched object, or the live
+	// object of a kept deletion. Empty when unknown.
+	UID string
+	// Verb is what was sent to the apiserver: "create", "patch" (or "update" under Force, which
+	// replaces), or "delete". A kept deletion and a deletion that was not done carry "delete", the
+	// verb the release asked for, although helm sent nothing for a kept one.
+	Verb   string
+	Change ObjectChange
+}
+
+// ObjectChange is how a child changed. See SpecChanged for how each counts.
+type ObjectChange string
+
+const (
+	// ChangeCreated: the child did not exist and the merge created it.
+	ChangeCreated ObjectChange = "created"
+	// ChangeDeleted: the child left the render and the merge deleted it (helm pruned it).
+	ChangeDeleted ObjectChange = "deleted"
+	// ChangeSpec: the merge changed the child's content, its fields other than apiVersion, kind,
+	// metadata and status. That is .spec where there is one, and data/type for a Secret or a
+	// ConfigMap. RBAC rules and subjects compare as sets and a Secret by its effective data, so
+	// reordering a list or writing the same value through stringData is not a change.
+	ChangeSpec ObjectChange = "specChanged"
+	// ChangeMetadataOnly: the merge changed the child, but only its metadata (labels,
+	// annotations, finalizers, owner references).
+	ChangeMetadataOnly ObjectChange = "metadataOnly"
+	// ChangeCompareFailed: the merge was applied to the child but the comparison of its before and
+	// after state failed, so nothing can be said about what changed. Reconcile counts it as a
+	// change (fail safe); a caller must not read it as a content change.
+	ChangeCompareFailed ObjectChange = "compareFailed"
+	// ChangeKept: the child left the render, and helm declined to delete it because the live
+	// object carries helm.sh/resource-policy: keep.
+	ChangeKept ObjectChange = "kept"
+	// ChangeDeleteNotDone: the child left the render, is still live, and is not kept: its deletion
+	// failed, or helm never reached its deletion loop. The next reconcile asks again.
+	ChangeDeleteNotDone ObjectChange = "deleteNotDone"
+)
+
+// SpecChanged reports whether the change counts as a content change: a create or a delete
+// (absent to present, present to absent) or a content change. A metadata-only change, a failed
+// comparison, a kept deletion and a deletion not done do not.
+func (c ObjectChange) SpecChanged() bool {
+	return c == ChangeCreated || c == ChangeDeleted || c == ChangeSpec
 }
 
 // ErrJobTemplateChanged is returned (wrapped) by Reconcile when the chart changed the pod template of

@@ -1,0 +1,271 @@
+package helm
+
+import (
+	"encoding/base64"
+	"fmt"
+	"testing"
+
+	helmconfig "github.com/krateo-platformops/plumbing/helm"
+	"helm.sh/helm/v3/pkg/kube"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/cli-runtime/pkg/resource"
+)
+
+// vobj builds an unstructured object: apiVersion, kind, namespace/name, top-level content.
+func vobj(apiVersion, kind, ns, name string, content map[string]interface{}) *unstructured.Unstructured {
+	u := &unstructured.Unstructured{Object: map[string]interface{}{}}
+	for k, v := range content {
+		u.Object[k] = runtime.DeepCopyJSONValue(v)
+	}
+	u.SetAPIVersion(apiVersion)
+	u.SetKind(kind)
+	u.SetNamespace(ns)
+	u.SetName(name)
+	return u
+}
+
+// vinfo wraps obj in a resource.Info with the REST mapping helm would have used.
+func vinfo(obj *unstructured.Unstructured, plural string) *resource.Info {
+	gvk := obj.GroupVersionKind()
+	return &resource.Info{
+		Name: obj.GetName(), Namespace: obj.GetNamespace(), Object: obj,
+		Mapping: &apimeta.RESTMapping{
+			Resource:         schema.GroupVersionResource{Group: gvk.Group, Version: gvk.Version, Resource: plural},
+			GroupVersionKind: gvk,
+		},
+	}
+}
+
+func withUID(u *unstructured.Unstructured, uid string) *unstructured.Unstructured {
+	u.SetUID(types.UID(uid))
+	return u
+}
+
+func withLabels(u *unstructured.Unstructured, l map[string]string) *unstructured.Unstructured {
+	u.SetLabels(l)
+	return u
+}
+
+func b64(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+
+// The canonical comparison the AUDIT-4 ruling asks for (snowplow, 2026-11-11): what is compared is
+// what the object grants or holds, not how the list happens to be written.
+func TestContentDiffers(t *testing.T) {
+	rule := func(verbs ...interface{}) map[string]interface{} {
+		return map[string]interface{}{"apiGroups": []interface{}{""}, "resources": []interface{}{"pods"}, "verbs": verbs}
+	}
+	subj := func(name string) map[string]interface{} {
+		return map[string]interface{}{"kind": "User", "apiGroup": "rbac.authorization.k8s.io", "name": name}
+	}
+	role := func(rules ...interface{}) *unstructured.Unstructured {
+		return vobj("rbac.authorization.k8s.io/v1", "ClusterRole", "", "r", map[string]interface{}{"rules": rules})
+	}
+	binding := func(subjects ...interface{}) *unstructured.Unstructured {
+		return vobj("rbac.authorization.k8s.io/v1", "RoleBinding", "ns", "b", map[string]interface{}{
+			"roleRef":  map[string]interface{}{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "view"},
+			"subjects": subjects,
+		})
+	}
+	secret := func(content map[string]interface{}) *unstructured.Unstructured {
+		return vobj("v1", "Secret", "ns", "s", content)
+	}
+
+	for _, tc := range []struct {
+		name          string
+		before, after runtime.Object
+		want          bool
+	}{
+		{"rbac: rules reordered", role(rule("get"), rule("list")), role(rule("list"), rule("get")), false},
+		{"rbac: duplicate rule", role(rule("get")), role(rule("get"), rule("get")), false},
+		{"rbac: verbs reordered and duplicated", role(rule("get", "list")), role(rule("list", "get", "get")), false},
+		{"rbac: verb added", role(rule("get")), role(rule("get", "delete")), true},
+		{"rbac: subjects reordered", binding(subj("a"), subj("b")), binding(subj("b"), subj("a")), false},
+		{"rbac: duplicate subject", binding(subj("a")), binding(subj("a"), subj("a")), false},
+		{"rbac: subject added", binding(subj("a")), binding(subj("a"), subj("c")), true},
+		{"rbac: labels only", role(rule("get")), withLabels(role(rule("get")), map[string]string{"x": "y"}), false},
+		{"rbac: all rules removed", role(rule("get")), role(), true},
+		{
+			"secret: stringData renders to the same data",
+			secret(map[string]interface{}{"type": "Opaque", "data": map[string]interface{}{"k": b64("v")}}),
+			secret(map[string]interface{}{"type": "Opaque", "stringData": map[string]interface{}{"k": "v"}}),
+			false,
+		},
+		{
+			"secret: data value changed",
+			secret(map[string]interface{}{"type": "Opaque", "data": map[string]interface{}{"k": b64("v")}}),
+			secret(map[string]interface{}{"type": "Opaque", "data": map[string]interface{}{"k": b64("w")}}),
+			true,
+		},
+		{
+			"secret: type changed",
+			secret(map[string]interface{}{"type": "Opaque", "data": map[string]interface{}{"k": b64("v")}}),
+			secret(map[string]interface{}{"type": "kubernetes.io/tls", "data": map[string]interface{}{"k": b64("v")}}),
+			true,
+		},
+		{
+			"secret: labels only",
+			secret(map[string]interface{}{"type": "Opaque", "data": map[string]interface{}{"k": b64("v")}}),
+			withLabels(secret(map[string]interface{}{"type": "Opaque", "data": map[string]interface{}{"k": b64("v")}}), map[string]string{"a": "b"}),
+			false,
+		},
+		{
+			"configmap: data changed",
+			vobj("v1", "ConfigMap", "ns", "c", map[string]interface{}{"data": map[string]interface{}{"color": "blue"}}),
+			vobj("v1", "ConfigMap", "ns", "c", map[string]interface{}{"data": map[string]interface{}{"color": "red"}}),
+			true,
+		},
+		{
+			"deployment: status only",
+			vobj("apps/v1", "Deployment", "ns", "d", map[string]interface{}{"spec": map[string]interface{}{"replicas": int64(1)}, "status": map[string]interface{}{"replicas": int64(0)}}),
+			vobj("apps/v1", "Deployment", "ns", "d", map[string]interface{}{"spec": map[string]interface{}{"replicas": int64(1)}, "status": map[string]interface{}{"replicas": int64(1)}}),
+			false,
+		},
+		{
+			// Order matters outside RBAC: a container list is ordered.
+			"deployment: list order outside rbac is a change",
+			vobj("apps/v1", "Deployment", "ns", "d", map[string]interface{}{"spec": map[string]interface{}{"args": []interface{}{"a", "b"}}}),
+			vobj("apps/v1", "Deployment", "ns", "d", map[string]interface{}{"spec": map[string]interface{}{"args": []interface{}{"b", "a"}}}),
+			true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := contentDiffers(tc.before, tc.after)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("contentDiffers = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func cm(name, color string) *unstructured.Unstructured {
+	return vobj("v1", "ConfigMap", "ns", name, map[string]interface{}{"data": map[string]interface{}{"color": color}})
+}
+
+// The verdict list is uncapped, names each child once with the verb sent and how it changed, and
+// agrees with the counts Reconcile reports.
+func TestObjectVerdicts(t *testing.T) {
+	t.Run("more than ten changed children are all listed", func(t *testing.T) {
+		var target kube.ResourceList
+		live := map[string]runtime.Object{}
+		const n = 25
+		for i := 0; i < n; i++ {
+			name := fmt.Sprintf("c%02d", i)
+			info := vinfo(withUID(cm(name, "red"), "uid-"+name), "configmaps")
+			live[infoKey(info)] = cm(name, "blue")
+			target = append(target, info)
+		}
+		got := objectVerdicts(verdictInputs{target: target, live: live, absent: map[string]bool{}})
+		if len(got) != n {
+			t.Fatalf("got %d verdicts, want %d (maxChangedObjects is %d and must not apply)", len(got), n, maxChangedObjects)
+		}
+		for _, v := range got {
+			if v.Change != helmconfig.ChangeSpec || v.Verb != "patch" || v.Resource != "configmaps" || v.UID == "" {
+				t.Fatalf("verdict %+v, want specChanged patch configmaps with a uid", v)
+			}
+		}
+	})
+
+	t.Run("each change kind", func(t *testing.T) {
+		created := vinfo(withUID(cm("new", "blue"), "uid-new"), "configmaps")
+		deleted := vinfo(cm("gone", "blue"), "configmaps")
+		spec := vinfo(cm("spec", "red"), "configmaps")
+		meta := vinfo(withLabels(cm("meta", "blue"), map[string]string{"team": "a"}), "configmaps")
+		same := vinfo(cm("same", "blue"), "configmaps")
+		keptInfo := vinfo(withUID(cm("kept", "blue"), "uid-kept"), "configmaps")
+		notDoneInfo := vinfo(cm("stuck", "blue"), "configmaps")
+
+		live := map[string]runtime.Object{
+			infoKey(spec): cm("spec", "blue"),
+			infoKey(meta): cm("meta", "blue"),
+			infoKey(same): cm("same", "blue"),
+		}
+		got := objectVerdicts(verdictInputs{
+			target:  kube.ResourceList{created, spec, meta, same},
+			created: kube.ResourceList{created},
+			deleted: kube.ResourceList{deleted},
+			current: kube.ResourceList{spec, meta, same, keptInfo, notDoneInfo},
+			live:    live,
+			absent:  map[string]bool{infoKey(created): true},
+			kept:    []string{infoKey(keptInfo)},
+			notDone: []string{infoKey(notDoneInfo)},
+		})
+		want := map[string]struct {
+			verb   string
+			change helmconfig.ObjectChange
+			spec   bool
+		}{
+			"new":   {"create", helmconfig.ChangeCreated, true},
+			"gone":  {"delete", helmconfig.ChangeDeleted, true},
+			"spec":  {"patch", helmconfig.ChangeSpec, true},
+			"meta":  {"patch", helmconfig.ChangeMetadataOnly, false},
+			"kept":  {"delete", helmconfig.ChangeKept, false},
+			"stuck": {"delete", helmconfig.ChangeDeleteNotDone, false},
+		}
+		if len(got) != len(want) {
+			t.Fatalf("got %d verdicts %+v, want %d (the unchanged child must be absent)", len(got), got, len(want))
+		}
+		for _, v := range got {
+			w, ok := want[v.Name]
+			if !ok {
+				t.Fatalf("unexpected verdict %+v", v)
+			}
+			if v.Verb != w.verb || v.Change != w.change || v.Change.SpecChanged() != w.spec {
+				t.Errorf("%s: verb %q change %q specChanged %v, want %q %q %v", v.Name, v.Verb, v.Change, v.Change.SpecChanged(), w.verb, w.change, w.spec)
+			}
+		}
+		for _, v := range got {
+			if v.Name == "kept" && v.UID != "uid-kept" {
+				t.Errorf("kept deletion lost the live uid: %+v", v)
+			}
+		}
+	})
+
+	t.Run("force replaces: verb update", func(t *testing.T) {
+		info := vinfo(cm("x", "red"), "configmaps")
+		got := objectVerdicts(verdictInputs{
+			target: kube.ResourceList{info}, live: map[string]runtime.Object{infoKey(info): cm("x", "blue")},
+			absent: map[string]bool{}, force: true,
+		})
+		if len(got) != 1 || got[0].Verb != "update" {
+			t.Fatalf("got %+v, want one verdict with verb update", got)
+		}
+	})
+
+	t.Run("a failed comparison is its own verdict", func(t *testing.T) {
+		info := vinfo(cm("x", "red"), "configmaps")
+		// No before state: the comparison cannot run, as when the live read returned nothing usable.
+		got := objectVerdicts(verdictInputs{target: kube.ResourceList{info}, live: map[string]runtime.Object{}, absent: map[string]bool{}})
+		if len(got) != 1 || got[0].Change != helmconfig.ChangeCompareFailed || got[0].Change.SpecChanged() {
+			t.Fatalf("got %+v, want one compareFailed verdict that is not a spec change", got)
+		}
+	})
+}
+
+// pendingDeletions splits what helm did not delete into kept and not done, from one read each.
+func TestPendingDeletions(t *testing.T) {
+	keep := map[string]string{kube.ResourcePolicyAnno: kube.KeepPolicy}
+	a, b, c := vinfo(cm("a", "x"), "configmaps"), vinfo(cm("b", "x"), "configmaps"), vinfo(cm("c", "x"), "configmaps")
+	reads := 0
+	get := func(info *resource.Info) (runtime.Object, error) {
+		reads++
+		u := cm(info.Name, "x")
+		if info.Name == "b" {
+			u.SetAnnotations(keep)
+		}
+		return u, nil
+	}
+	kept, notDone := pendingDeletions(kube.ResourceList{a, b, c}, kube.ResourceList{a}, nil, get)
+	if fmt.Sprint(kept) != fmt.Sprint([]string{infoKey(b)}) || fmt.Sprint(notDone) != fmt.Sprint([]string{infoKey(c)}) {
+		t.Fatalf("kept %v notDone %v, want [b] and [c]", kept, notDone)
+	}
+	if reads != 2 {
+		t.Fatalf("%d reads, want 2: one per object not deleted", reads)
+	}
+}
