@@ -70,6 +70,8 @@ type client struct {
 	debugLog          action.DebugLog
 	cachedClients     *CachedClients
 	crdInformerCancel context.CancelFunc
+	// mappingRetryObserver is WithMappingRetryObserver's fn; nil observes nothing.
+	mappingRetryObserver func(ctx context.Context, r MappingRetry)
 }
 
 type ClientOption func(*client) error
@@ -257,7 +259,7 @@ func (c *client) Install(ctx context.Context, releaseName string, chartRef strin
 	}
 
 	var rel *helmconfig.Release
-	err := c.retryOnStaleMapping(ctx, namespace, restCfg, cfg.ActionConfig,
+	err := c.retryOnStaleMapping(ctx, "install", namespace, restCfg, cfg.ActionConfig,
 		func(ac *action.Configuration) error {
 			var e error
 			rel, e = c.install(ctx, namespace, releaseName, chartRef, cfg, ac)
@@ -291,6 +293,7 @@ func (c *client) Install(ctx context.Context, releaseName string, chartRef strin
 // mapping miss describes the actual problem and the rebuild failure is incidental to recovering.
 func (c *client) retryOnStaleMapping(
 	ctx context.Context,
+	operation string,
 	namespace string,
 	restCfg *rest.Config,
 	actionCfg *helmconfig.ActionConfig,
@@ -305,11 +308,17 @@ func (c *client) retryOnStaleMapping(
 		return err
 	}
 	c.cachedClients.mapper.Reset()
+	r := newMappingRetry(operation, err)
 	ac2, rebuildErr := c.newActionConfig(ctx, namespace, restCfg, actionCfg)
 	if rebuildErr != nil {
+		r.Outcome = MappingRetryRebuildFailed
+		c.reportMappingRetry(ctx, r)
 		return err
 	}
-	return op(ac2)
+	retryErr := op(ac2)
+	r.Outcome = retryOutcome(retryErr)
+	c.reportMappingRetry(ctx, r)
+	return retryErr
 }
 
 func (c *client) Upgrade(ctx context.Context, releaseName, chartRef string, cfg *helmconfig.UpgradeConfig) (*helmconfig.Release, error) {
@@ -345,7 +354,7 @@ func (c *client) Upgrade(ctx context.Context, releaseName, chartRef string, cfg 
 	}
 
 	var rel *release.Release
-	err = c.retryOnStaleMapping(ctx, c.namespace, c.restConfig, cfg.ActionConfig,
+	err = c.retryOnStaleMapping(ctx, "upgrade", c.namespace, c.restConfig, cfg.ActionConfig,
 		func(ac *action.Configuration) error {
 			// The upgrade client AND the post-renderer are rebuilt per attempt, deliberately. The
 			// post-renderer closes over ac.KubeClient, which carries the RESTMapper — so reusing a
@@ -373,7 +382,7 @@ func (c *client) Upgrade(ctx context.Context, releaseName, chartRef string, cfg 
 
 func (c *client) Uninstall(ctx context.Context, releaseName string, cfg *helmconfig.UninstallConfig) error {
 	// Uninstall resolves kinds to delete the release's resources, so it can hit a stale mapper too.
-	return c.retryOnStaleMapping(ctx, c.namespace, c.restConfig, nil,
+	return c.retryOnStaleMapping(ctx, "uninstall", c.namespace, c.restConfig, nil,
 		func(ac *action.Configuration) error {
 			cmd := action.NewUninstall(ac)
 			applyUninstallConfig(cmd, cfg)
@@ -388,7 +397,7 @@ func (c *client) Rollback(ctx context.Context, releaseName string, cfg *helmconf
 	// Rollback re-applies a previous revision's manifest, so it resolves kinds and can hit a stale
 	// mapper. A rollback failing on a mapping miss is the worst place for it: it is what someone
 	// reaches for when an upgrade has already gone wrong.
-	err := c.retryOnStaleMapping(ctx, c.namespace, c.restConfig, nil,
+	err := c.retryOnStaleMapping(ctx, "rollback", c.namespace, c.restConfig, nil,
 		func(ac *action.Configuration) error {
 			rollbackClient := action.NewRollback(ac)
 			applyRollbackConfig(rollbackClient, cfg)
