@@ -57,8 +57,12 @@
 //     the mutating call: the composition-dynamic-controller's Observe applies the release's
 //     children (plumbing helm Reconcile) only when the release exists, so treating every
 //     Observe as the act would join a new object's upstream at an Observe that applied nothing
-//     and leave the install that follows linked, not joined. The marker is written before the
-//     act, so a conflict delays that act by one requeue.
+//     and leave the install that follows linked, not joined. A handler-declared act follows the
+//     same rules as the runtime's: the marker is written BEFORE the mutating call, with the
+//     outcomes above (success or NotFound: marked; a conflict: requeue before acting, so it
+//     delays the act by one requeue; any other error: failed, and the act goes on). The handler
+//     declares it only on the path that actually mutates, once per pass; a later call in the
+//     same pass opens nothing.
 //
 // provider-runtime's pkg/reconciler/traces.go is the reference implementation of that contract.
 //
