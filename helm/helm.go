@@ -292,11 +292,40 @@ const (
 // changing it (a hook with before-hook-creation, or a versioned Job name) or the Job is removed.
 var ErrJobTemplateChanged = errors.New("the chart changed the pod template of a live Job, which is immutable")
 
+// OperationResult is what an Install, Upgrade or Uninstall DID: the release it left, and one
+// verdict per child it created, changed, deleted, kept or failed on (plumbing#135). It has
+// ReconcileResult's shape, so a caller that writes one audit record per child reads every write
+// site the same way (core-provider#423, AUDIT-4).
+//
+// The verdicts come from what helm SENT, observed at the action configuration's KubeClient, never
+// re-derived from manifests in the caller: the lists each Create, Update and Delete received and
+// what each returned. Hook objects (helm.sh/hook) are not release children; they are left out of
+// Objects and counted in HooksExcluded.
+type OperationResult struct {
+	// Release is the release the operation left: the installed or upgraded revision, or the
+	// uninstalled release's last revision. nil when the operation failed before helm returned one.
+	Release *Release
+	// Objects is the per-child verdict, sorted by identity, uncapped, as ReconcileResult.Objects.
+	// On an Uninstall, a child the release named that helm did not delete because it carries
+	// helm.sh/resource-policy: keep is ChangeKept.
+	Objects []ObjectVerdict
+	// ObjectsComplete is false when Objects may not name every child the operation wrote: a write
+	// went through a KubeClient this package could not observe, or a kept child could not be
+	// resolved to the object it names.
+	ObjectsComplete bool
+	// ObjectsNotAttempted counts the children the operation never reached (no request sent).
+	ObjectsNotAttempted int
+	// HooksExcluded counts the hook WRITES the operation sent, one per object per call, which
+	// Objects leaves out. A hook helm deletes and recreates (its default delete policy,
+	// before-hook-creation) counts twice: the delete and the create are both writes.
+	HooksExcluded int
+}
+
 // Client is the interface that the rest of your app uses.
 // It returns your custom *Release, not the Helm SDK struct.
 type Client interface {
-	Install(ctx context.Context, releaseName string, chartRef string, config *InstallConfig) (*Release, error)
-	Upgrade(ctx context.Context, releaseName string, chartRef string, config *UpgradeConfig) (*Release, error)
+	Install(ctx context.Context, releaseName string, chartRef string, config *InstallConfig) (*OperationResult, error)
+	Upgrade(ctx context.Context, releaseName string, chartRef string, config *UpgradeConfig) (*OperationResult, error)
 	// Reconcile performs a fork-free, self-healing "apply-if-changed" reconcile:
 	// it converges the live cluster to the rendered chart (recreating deleted
 	// children and patching drifted fields via helm's 3-way merge) and writes a
@@ -304,7 +333,7 @@ type Client interface {
 	// steady state it is a no-op (no revision, no hooks). See the v3 impl for the
 	// exact change-detection semantics.
 	Reconcile(ctx context.Context, releaseName string, chartRef string, config *UpgradeConfig) (*ReconcileResult, error)
-	Uninstall(ctx context.Context, releaseName string, config *UninstallConfig) error
+	Uninstall(ctx context.Context, releaseName string, config *UninstallConfig) (*OperationResult, error)
 	Rollback(ctx context.Context, releaseName string, config *RollbackConfig) (*Release, error)
 	GetRelease(ctx context.Context, releaseName string, config *GetConfig) (*Release, error)
 	ListReleases(ctx context.Context, config *ListConfig) ([]*Release, error)

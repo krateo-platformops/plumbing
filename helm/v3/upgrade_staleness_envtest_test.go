@@ -169,9 +169,9 @@ func TestEnvtest_UpgradePicksUpCRDVersionRegisteredAfterWarmup(t *testing.T) {
 
 	// STEP 4 — the same client, no restart. On the broken code this fails identically to the
 	// control, forever; the production symptom was exactly this, repeating every reconcile.
-	rel, err := c.Upgrade(context.Background(), "probe", gadgetChart, &helmconfig.UpgradeConfig{
+	rel, err := releaseOf(c.Upgrade(context.Background(), "probe", gadgetChart, &helmconfig.UpgradeConfig{
 		ActionConfig: &helmconfig.ActionConfig{DryRun: helmconfig.DryRunServer},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Upgrade did not recover after the CRD version was registered — a stale "+
 			"process-lifetime mapper still wedges the render, which is the whole defect: %v", err)
