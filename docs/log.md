@@ -22,7 +22,10 @@ timestamp: 2026-08-07T00:00:00Z
     `http/request` and `helm/getter` would never see a hop, and a JWKS fetch could be bounced
     anywhere. The new `dialguard.RoundTripper` sets fetch's redirect mode to `error` wherever
     net/http uses fetch, mirroring its choice (`jsFetchDisabled`: not under Node), and is the
-    identity elsewhere. `Client`, `http/request` and `helm/getter` use it.
+    identity elsewhere. `Client`, `http/request` and both `helm/getter` paths (HTTP and OCI)
+    use it. The OCI getter had its own transport literal with dialguard's dialer, so on js it
+    could never use fetch; it's now built by `dialguard.Transport()`, which is the same on
+    servers (core-provider's review).
   - **Proof:** the js tests run in CI under Node's real fetch and Go's network, against a
     redirecting server whose target must never be reached.
 - **2026-11-11 — the CSR cleanup is bounded, and a failed create cleans up too** (plumbing#129,

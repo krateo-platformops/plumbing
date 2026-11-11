@@ -59,16 +59,15 @@ func TestPlumbingClientsRefuseRedirectsOnJS(t *testing.T) {
 
 	var starts, targets atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case strings.HasPrefix(r.URL.Path, "/start"): // helm/getter asks for <url>/index.yaml
-			starts.Add(1)
-			http.Redirect(w, r, "/target", http.StatusFound)
-		case r.URL.Path == "/target":
+		// Every path but /target redirects: helm/getter asks for <url>/index.yaml, and an OCI
+		// registry client for /v2/<repo>/... .
+		if r.URL.Path == "/target" {
 			targets.Add(1)
 			_, _ = w.Write([]byte("reached"))
-		default:
-			http.NotFound(w, r)
+			return
 		}
+		starts.Add(1)
+		http.Redirect(w, r, "/target", http.StatusFound)
 	}))
 	defer srv.Close()
 
@@ -90,10 +89,16 @@ func TestPlumbingClientsRefuseRedirectsOnJS(t *testing.T) {
 
 	// One package at a time, so each must send its own request to the redirecting URL: a client
 	// that fails for any other reason first proves nothing.
-	for _, pkg := range []string{"./dialguard", "./http/request", "./helm/getter"} {
-		t.Run("fetch, as in a browser: "+pkg, func(t *testing.T) {
+	for _, c := range []struct{ pkg, test string }{
+		{"./dialguard", "TestJSRefusesRedirects|TestRoundTripperRefusesRedirectsOnJS"},
+		{"./http/request", "TestJSRefusesRedirects"},
+		{"./helm/getter", "TestJSRefusesRedirects"},
+		{"./helm/getter", "TestJSRefusesRedirectsOCI"},
+	} {
+		pkg := c.pkg
+		t.Run("fetch, as in a browser: "+pkg+" "+c.test, func(t *testing.T) {
 			before := starts.Load()
-			out := run(t, "fetch", execFetch, "^(TestJSRefusesRedirects|TestRoundTripperRefusesRedirectsOnJS)$", pkg)
+			out := run(t, "fetch", execFetch, "^("+c.test+")$", pkg)
 			if starts.Load() == before {
 				t.Fatalf("%s never requested the redirecting URL, so its refusal proves nothing:\n%s", pkg, out)
 			}

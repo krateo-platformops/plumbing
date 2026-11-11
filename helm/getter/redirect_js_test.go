@@ -4,6 +4,7 @@ package getter
 
 import (
 	"context"
+	"net/url"
 	"os"
 	"testing"
 )
@@ -17,6 +18,24 @@ func TestJSRefusesRedirects(t *testing.T) {
 		t.Skip("run by dialguard's TestPlumbingClientsRefuseRedirectsOnJS")
 	}
 	_, _, err := Get(context.Background(), url)
+	if err == nil {
+		t.Fatal("a redirect was followed")
+	}
+	t.Logf("refused: %v", err)
+}
+
+// The OCI getter, likewise: its registry client must take fetch and refuse the hop.
+func TestJSRefusesRedirectsOCI(t *testing.T) {
+	raw := os.Getenv("PLUMBING_JS_REDIRECT_URL")
+	if raw == "" {
+		t.Skip("run by dialguard's TestPlumbingClientsRefuseRedirectsOnJS")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A 127.0.0.1 registry is spoken to in plain HTTP (oci.go).
+	_, _, err = Get(context.Background(), "oci://"+u.Host+"/start/chart", WithVersion("1.0.0"))
 	if err == nil {
 		t.Fatal("a redirect was followed")
 	}
