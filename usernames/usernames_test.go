@@ -11,10 +11,10 @@ import (
 func TestReserved(t *testing.T) {
 	for _, n := range []string{"admin", "administrator", "root", "masterclient", "nodeclient", "aksservice",
 		"system", "systemd", "system:node", "kube-proxy", "kubelet", "kubelet-api", "cluster-autoscaler",
-		"gke-node", "eks-admin", "aks-agent"} {
+		"gke-node", "eks-admin", "aks-agent", "krateo:public", "krateo:anything"} {
 		assert.True(t, Reserved(n), n)
 	}
-	for _, n := range []string{"alice", "admins", "my-admin", "kube", "cluster", "braghettos", "Admin"} {
+	for _, n := range []string{"alice", "admins", "my-admin", "kube", "cluster", "braghettos", "Admin", "krateo", "krateo-public"} {
 		assert.False(t, Reserved(n), n)
 	}
 }
@@ -50,4 +50,12 @@ func TestCheck(t *testing.T) {
 		}
 		assert.True(t, errors.Is(got, tc.want), "%q: %v, want %v", tc.name, got, tc.want)
 	}
+}
+
+// snowplow impersonates "krateo:public" for token-less public widgets, and its
+// safety rests on no identity ever being issued that name: Check refuses it,
+// and so does Reserved on its own, for a source that issues a name as-is.
+func TestThePlatformColonNamesAreNeverIssued(t *testing.T) {
+	assert.Error(t, Check("krateo:public"))
+	assert.True(t, Reserved("krateo:public"), "reserved even where a source issues names unnormalized (LDAP uid)")
 }

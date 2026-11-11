@@ -20,9 +20,15 @@ import (
 // OAuth, OIDC) may never take, whether or not any binding names them yet: the
 // names Kubernetes and the managed platforms give their own components, and
 // administrator names. A cluster may grant them rights at any time.
+//
+// The colon form, "krateo:<name>", is reserved for platform identities authn
+// never issues: a component impersonates one (snowplow's "krateo:public" for
+// token-less public widgets) and relies on no person ever signing in as it. A
+// name an identity source issues as-is (LDAP's uid) must therefore never be
+// one of them.
 var (
 	reservedNames    = []string{"admin", "administrator", "root", "masterclient", "nodeclient", "aksservice"}
-	reservedPrefixes = []string{"system", "kube-", "kubelet", "cluster-", "gke-", "eks-", "aks-"}
+	reservedPrefixes = []string{"system", "kube-", "kubelet", "cluster-", "gke-", "eks-", "aks-", "krateo:"}
 )
 
 // ReservedNames returns the exact usernames that are reserved.
