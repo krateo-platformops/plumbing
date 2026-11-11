@@ -113,6 +113,60 @@ func TestContentDiffers(t *testing.T) {
 			false,
 		},
 		{
+			"secret: immutable set",
+			secret(map[string]interface{}{"type": "Opaque", "data": map[string]interface{}{"k": b64("v")}}),
+			secret(map[string]interface{}{"type": "Opaque", "immutable": true, "data": map[string]interface{}{"k": b64("v")}}),
+			true,
+		},
+		{
+			"rbac: roleRef changed",
+			binding(subj("a")),
+			func() runtime.Object {
+				u := binding(subj("a"))
+				u.Object["roleRef"] = map[string]interface{}{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "edit"}
+				return u
+			}(),
+			true,
+		},
+		{
+			"rbac: clusterrolebinding subjects reordered",
+			vobj("rbac.authorization.k8s.io/v1", "ClusterRoleBinding", "", "crb", map[string]interface{}{"subjects": []interface{}{subj("a"), subj("b")}}),
+			vobj("rbac.authorization.k8s.io/v1", "ClusterRoleBinding", "", "crb", map[string]interface{}{"subjects": []interface{}{subj("b"), subj("a")}}),
+			false,
+		},
+		{
+			"rbac: aggregationRule selectors reordered",
+			vobj("rbac.authorization.k8s.io/v1", "ClusterRole", "", "agg", map[string]interface{}{"aggregationRule": map[string]interface{}{"clusterRoleSelectors": []interface{}{
+				map[string]interface{}{"matchLabels": map[string]interface{}{"a": "true"}}, map[string]interface{}{"matchLabels": map[string]interface{}{"b": "true"}}}}}),
+			vobj("rbac.authorization.k8s.io/v1", "ClusterRole", "", "agg", map[string]interface{}{"aggregationRule": map[string]interface{}{"clusterRoleSelectors": []interface{}{
+				map[string]interface{}{"matchLabels": map[string]interface{}{"b": "true"}}, map[string]interface{}{"matchLabels": map[string]interface{}{"a": "true"}}}}}),
+			false,
+		},
+		{
+			"rbac: aggregationRule selector changed",
+			vobj("rbac.authorization.k8s.io/v1", "ClusterRole", "", "agg", map[string]interface{}{"aggregationRule": map[string]interface{}{"clusterRoleSelectors": []interface{}{
+				map[string]interface{}{"matchLabels": map[string]interface{}{"a": "true"}}}}}),
+			vobj("rbac.authorization.k8s.io/v1", "ClusterRole", "", "agg", map[string]interface{}{"aggregationRule": map[string]interface{}{"clusterRoleSelectors": []interface{}{
+				map[string]interface{}{"matchLabels": map[string]interface{}{"c": "true"}}}}}),
+			true,
+		},
+		{
+			"admission: webhooks changed",
+			vobj("admissionregistration.k8s.io/v1", "ValidatingWebhookConfiguration", "", "w", map[string]interface{}{"webhooks": []interface{}{map[string]interface{}{"name": "a.example.com", "failurePolicy": "Fail"}}}),
+			vobj("admissionregistration.k8s.io/v1", "ValidatingWebhookConfiguration", "", "w", map[string]interface{}{"webhooks": []interface{}{map[string]interface{}{"name": "a.example.com", "failurePolicy": "Ignore"}}}),
+			true,
+		},
+		{
+			"admission: annotations only",
+			vobj("admissionregistration.k8s.io/v1", "MutatingWebhookConfiguration", "", "w", map[string]interface{}{"webhooks": []interface{}{map[string]interface{}{"name": "a.example.com"}}}),
+			func() runtime.Object {
+				u := vobj("admissionregistration.k8s.io/v1", "MutatingWebhookConfiguration", "", "w", map[string]interface{}{"webhooks": []interface{}{map[string]interface{}{"name": "a.example.com"}}})
+				u.SetAnnotations(map[string]string{"x": "y"})
+				return u
+			}(),
+			false,
+		},
+		{
 			"configmap: data changed",
 			vobj("v1", "ConfigMap", "ns", "c", map[string]interface{}{"data": map[string]interface{}{"color": "blue"}}),
 			vobj("v1", "ConfigMap", "ns", "c", map[string]interface{}{"data": map[string]interface{}{"color": "red"}}),

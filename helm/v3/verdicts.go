@@ -137,6 +137,12 @@ func contentDiffers(before, after runtime.Object) (bool, error) {
 
 // canonicalContent is obj's content in the form the AUDIT-4 ruling compares (snowplow, 2026-11-11):
 //
+// DELIBERATE, not a shortcut: krateo-platformops/installer#413 condition 2 says ".spec changed",
+// and the AUDIT-4 lead ruled (2026-11-11, recorded on installer#410) that this means every
+// top-level field other than apiVersion, kind, metadata and status. Many kinds keep their desired
+// state outside .spec (ConfigMap and Secret data, RBAC rules and subjects, admission webhooks), and
+// reading the condition literally would make a change to them never count.
+//
 //   - every top-level field except apiVersion, kind, metadata and status. That is .spec where there
 //     is one; data and type for a Secret or ConfigMap; webhooks for an admission configuration.
 //   - a Secret's stringData folded into data, as the apiserver does, so the same value written
