@@ -9,6 +9,13 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-11 — `endpoints.StoreWritten` and `signup.DoWritten` report the write**
+  (authn#119): authn records its own certificate renewal as an audit record (AUDIT-4), which
+  must name the Secret written, the verb sent and the apiserver's answer. `Store` sends a
+  create and, when the Secret exists, an update after the 409, and returned neither, so the
+  verb could only have been guessed. `StoreWritten` returns `Written{Namespace, Name, UID,
+  ResourceVersion, Verb, StatusCode}` for the request that stored the Secret, and
+  `signup.DoWritten` passes it through. `Store` and `Do` are unchanged.
 - **2026-11-11 — Reconcile reports every changed child** (#106): to write one
   controller audit record per child (AUDIT-4), core-provider's cdc must know each
   child the self-heal merge changed, what it sent, and whether the content changed.

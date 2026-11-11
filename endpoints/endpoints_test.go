@@ -72,6 +72,14 @@ func TestEndpoints(t *testing.T) {
 			assert.Nil(t, err)
 			assert.Equal(t, want, got)
 
+			// Storing again is an update of the same Secret, and says so.
+			w, err := StoreWritten(ctx, rc, namespace, want)
+			assert.Nil(t, err)
+			assert.Equal(t, "update", w.Verb)
+			assert.Equal(t, 200, w.StatusCode)
+			assert.Equal(t, name, w.Name)
+			assert.NotEmpty(t, w.UID)
+
 			return ctx
 		}).
 		Feature()

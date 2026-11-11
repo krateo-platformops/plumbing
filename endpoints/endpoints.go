@@ -108,7 +108,36 @@ func SecretName(username string) string {
 	return kubeutil.MakeDNS1123Compatible(username) + ClientConfigSuffix
 }
 
+// Written is what Store wrote: the Secret, the verb of the request that stored
+// it, and the apiserver's answer to that request. An audit record names the
+// object written and the verb sent (AUDIT-4), and neither can be inferred
+// afterwards: Store's create is answered 409 when the Secret exists, and the
+// update that follows is the write. Names only, never data.
+type Written struct {
+	Namespace string
+	Name      string
+	// UID and ResourceVersion are the stored Secret's; empty when nothing was
+	// stored.
+	UID             string
+	ResourceVersion string
+	// Verb is "create" or "update": the request that stored the Secret, or the
+	// one that failed.
+	Verb string
+	// StatusCode is the apiserver's HTTP status for that request, 0 when no
+	// response arrived.
+	StatusCode int
+}
+
+// Store writes ep as username's credential Secret in ns: a create, or an update
+// when the Secret exists.
 func Store(ctx context.Context, rc *rest.Config, ns string, ep Endpoint) error {
+	_, err := StoreWritten(ctx, rc, ns, ep)
+	return err
+}
+
+// StoreWritten is Store, reporting what it wrote. On an error, Written still
+// names the Secret and, when a request was sent, its verb and status.
+func StoreWritten(ctx context.Context, rc *rest.Config, ns string, ep Endpoint) (Written, error) {
 	sec := corev1.Secret{}
 	sec.SetName(SecretName(ep.Username))
 	sec.SetNamespace(ns)
@@ -125,20 +154,30 @@ func Store(ctx context.Context, rc *rest.Config, ns string, ep Endpoint) error {
 		insecureLabel:   strconv.FormatBool(ep.Insecure),
 	}
 
+	w := Written{Namespace: ns, Name: sec.Name}
 	cli, err := newSecretsRESTClient(rc)
 	if err != nil {
-		return err
+		return w, err
 	}
-	err = createSecret(ctx, cli, &sec)
+	stored, code, err := createSecret(ctx, cli, &sec)
 	if err == nil {
-		return nil
+		return written(w, "create", code, stored), nil
 	}
 
 	if !apierrors.IsAlreadyExists(err) {
-		return err
+		return written(w, "create", code, nil), err
 	}
 
-	return updateSecret(ctx, cli, &sec)
+	stored, code, err = updateSecret(ctx, cli, &sec)
+	return written(w, "update", code, stored), err
+}
+
+func written(w Written, verb string, code int, stored *corev1.Secret) Written {
+	w.Verb, w.StatusCode = verb, code
+	if stored != nil {
+		w.UID, w.ResourceVersion = string(stored.UID), stored.ResourceVersion
+	}
+	return w
 }
 
 const (
