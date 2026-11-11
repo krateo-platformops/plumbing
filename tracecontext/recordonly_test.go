@@ -91,7 +91,7 @@ func (dropRoots) Description() string { return "dropRoots" }
 
 // provider-runtime#74. The act links to its root, and the root to the act, each only when its
 // TARGET is head-sampled: one rule for both directions. One row per sampled/dropped combination
-// that leaves the act observable. Before v1.46.0 the act linked to an unsampled root as well (the
+// that leaves the act observable. Before v1.48.0 the act linked to an unsampled root as well (the
 // third row), pointing an exported span at one that was never exported.
 func TestStartActStepLinksOnlyToSampledTargets(t *testing.T) {
 	for _, tc := range []struct {
