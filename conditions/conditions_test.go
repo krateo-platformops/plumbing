@@ -9,6 +9,7 @@ func TestContractStrings(t *testing.T) {
 	for _, c := range []struct{ got, want string }{
 		{TypeControllerActive, "ControllerActive"},
 		{ReasonScaledToZero, "ScaledToZero"},
+		{ReasonRunning, "Running"},
 	} {
 		if c.got != c.want {
 			t.Errorf("contract string changed: %q, want %q", c.got, c.want)
