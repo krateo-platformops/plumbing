@@ -9,6 +9,8 @@ import (
 	"go/token"
 	"testing"
 
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"helm.sh/helm/v3/pkg/action"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -47,12 +49,16 @@ func TestRetryOnStaleMapping(t *testing.T) {
 		errs      []error // error returned by attempt 1, 2, ...
 		wantCalls int
 		wantErr   bool
+		// wantOutcome is the ONE MappingRetry the observer must receive; "" means none at all.
+		wantOutcome string
+		wantKind    string
 	}{
 		{
-			name:      "mapping miss is retried once and can succeed",
-			cached:    &cc,
-			errs:      []error{noKindMatch(), nil},
-			wantCalls: 2,
+			name:        "mapping miss is retried once and can succeed",
+			cached:      &cc,
+			errs:        []error{noKindMatch(), nil},
+			wantCalls:   2,
+			wantOutcome: MappingRetryRecovered, wantKind: "FrontendCrds",
 		},
 		{
 			// The shipped failure: the kind really is absent, so the retry also misses. It must
@@ -62,6 +68,17 @@ func TestRetryOnStaleMapping(t *testing.T) {
 			errs:      []error{noKindMatch(), noKindMatch()},
 			wantCalls: 2,
 			wantErr:   true,
+			// The case the observer exists for: the reset re-read discovery and the kind is still
+			// absent, which is apiserver-side, not a stale cache.
+			wantOutcome: MappingRetryMissedAgain, wantKind: "FrontendCrds",
+		},
+		{
+			name:        "a retry that gets past the mapping and fails otherwise",
+			cached:      &cc,
+			errs:        []error{noKindMatch(), errors.New("upgrade failed: timed out")},
+			wantCalls:   2,
+			wantErr:     true,
+			wantOutcome: MappingRetryOtherError, wantKind: "FrontendCrds",
 		},
 		{
 			// helm stringifies the miss when it surfaces through the post-renderer, which is how
@@ -70,6 +87,8 @@ func TestRetryOnStaleMapping(t *testing.T) {
 			cached:    &cc,
 			errs:      []error{errors.New(`no matches for kind "GithubProviderKog" in version "composition.krateo.io/v0-6-0"`), nil},
 			wantCalls: 2,
+			// Recognised by its text only, so the kind is unknown and reported empty, not guessed.
+			wantOutcome: MappingRetryRecovered, wantKind: "",
 		},
 		{
 			name:      "an unrelated error is NOT retried",
@@ -95,9 +114,15 @@ func TestRetryOnStaleMapping(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			c := &client{restConfig: &rest.Config{Host: "https://api.example.invalid:6443"}, cachedClients: tc.cached}
+			var seen []MappingRetry
+			c := &client{restConfig: &rest.Config{Host: "https://api.example.invalid:6443"}, cachedClients: tc.cached,
+				mappingRetryObserver: func(_ context.Context, r MappingRetry) { seen = append(seen, r) }}
+			rec := tracetest.NewSpanRecorder()
+			tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+			t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+			ctx, span := tp.Tracer("test").Start(context.Background(), "op")
 			calls := 0
-			err := c.retryOnStaleMapping(context.Background(), "default", c.restConfig, nil,
+			err := c.retryOnStaleMapping(ctx, "upgrade", "default", c.restConfig, nil,
 				func(_ *action.Configuration) error {
 					defer func() { calls++ }()
 					if calls < len(tc.errs) {
@@ -110,6 +135,32 @@ func TestRetryOnStaleMapping(t *testing.T) {
 			}
 			if (err != nil) != tc.wantErr {
 				t.Errorf("err = %v, wantErr = %v", err, tc.wantErr)
+			}
+			span.End()
+			var events []string
+			for _, e := range rec.Ended()[0].Events() {
+				if e.Name == EventMappingRetry {
+					for _, a := range e.Attributes {
+						if a.Key == AttrMappingRetryOutcome {
+							events = append(events, a.Value.AsString())
+						}
+					}
+				}
+			}
+			if tc.wantOutcome == "" {
+				if len(seen) != 0 || len(events) != 0 {
+					t.Errorf("no retry ran, but the observer saw %v and the span got %v", seen, events)
+				}
+				return
+			}
+			if len(seen) != 1 || seen[0].Outcome != tc.wantOutcome || seen[0].Operation != "upgrade" || seen[0].Kind != tc.wantKind {
+				t.Errorf("observer saw %+v, want one {upgrade %s kind=%q}", seen, tc.wantOutcome, tc.wantKind)
+			}
+			if tc.wantKind != "" && (len(seen) != 1 || len(seen[0].Versions) != 1 || seen[0].Versions[0] != "v1-8-15") {
+				t.Errorf("searched versions = %+v, want [v1-8-15]", seen)
+			}
+			if len(events) != 1 || events[0] != tc.wantOutcome {
+				t.Errorf("span events %s = %v, want one with outcome %s", EventMappingRetry, events, tc.wantOutcome)
 			}
 		})
 	}
