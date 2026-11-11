@@ -33,6 +33,14 @@ type Options struct {
 }
 
 func Do(ctx context.Context, opts Options) (endpoints.Endpoint, error) {
+	ep, _, err := DoWritten(ctx, opts)
+	return ep, err
+}
+
+// DoWritten is Do, also reporting what it stored: the credential Secret, the
+// verb sent and the apiserver's answer (endpoints.StoreWritten). It is empty
+// when signup failed before the write.
+func DoWritten(ctx context.Context, opts Options) (endpoints.Endpoint, endpoints.Written, error) {
 	handler := &signupHandler{
 		caData:       opts.CAData,
 		proxyURL:     opts.ProxyURL,
@@ -54,23 +62,23 @@ type signupHandler struct {
 	namespace    string
 }
 
-func (g *signupHandler) doIt(ctx context.Context, user string, groups []string) (endpoints.Endpoint, error) {
+func (g *signupHandler) doIt(ctx context.Context, user string, groups []string) (endpoints.Endpoint, endpoints.Written, error) {
 	if len(g.caData) == 0 {
 		caCrt, err := kubeutil.CACrt(ctx, g.restconfig)
 		if err != nil {
-			return endpoints.Endpoint{}, err
+			return endpoints.Endpoint{}, endpoints.Written{}, err
 		}
 		g.caData = caCrt
 	}
 
 	ep, err := g.generateEndpoint(user, groups)
 	if err != nil {
-		return endpoints.Endpoint{}, err
+		return endpoints.Endpoint{}, endpoints.Written{}, err
 	}
 	ep.Username = user
 
-	err = endpoints.Store(ctx, g.restconfig, g.namespace, ep)
-	return ep, err
+	w, err := endpoints.StoreWritten(ctx, g.restconfig, g.namespace, ep)
+	return ep, w, err
 }
 
 func (g *signupHandler) generateEndpoint(user string, groups []string) (ep endpoints.Endpoint, err error) {

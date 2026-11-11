@@ -33,8 +33,10 @@ func TestSecrets(t *testing.T) {
 				"dontTell": "shh!shh!",
 			}
 
-			err = createSecret(ctx, cli, &obj)
+			stored, code, err := createSecret(ctx, cli, &obj)
 			assert.Nil(t, err)
+			assert.Equal(t, 201, code)
+			assert.NotEmpty(t, stored.UID, "the stored Secret is returned")
 
 			return ctx
 		}).
@@ -67,8 +69,10 @@ func TestSecrets(t *testing.T) {
 				"dontTell": "alreadyDone!",
 			}
 
-			err = updateSecret(ctx, cli, got)
+			stored, code, err := updateSecret(ctx, cli, got)
 			assert.Nil(t, err)
+			assert.Equal(t, 200, code)
+			assert.Equal(t, got.UID, stored.UID)
 
 			want := map[string][]byte{
 				"dontTell": []byte("alreadyDone!"),

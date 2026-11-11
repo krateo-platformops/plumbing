@@ -71,23 +71,42 @@ func getSecret(ctx context.Context, opts clientOptions) (result *corev1.Secret, 
 	return
 }
 
-func createSecret(ctx context.Context, cli *rest.RESTClient, in *corev1.Secret) error {
-	return cli.Post().
+// createSecret POSTs in and returns the apiserver's status code (0 when no
+// response arrived) and, on success, the stored Secret.
+func createSecret(ctx context.Context, cli *rest.RESTClient, in *corev1.Secret) (*corev1.Secret, int, error) {
+	return storedSecret(cli.Post().
 		Namespace(in.GetNamespace()).
 		Resource("secrets").
 		Body(in).
-		Do(ctx).
-		Error()
+		Do(ctx))
 }
 
-func updateSecret(ctx context.Context, cli *rest.RESTClient, in *corev1.Secret) error {
-	return cli.Put().
+// updateSecret PUTs in, as createSecret.
+func updateSecret(ctx context.Context, cli *rest.RESTClient, in *corev1.Secret) (*corev1.Secret, int, error) {
+	return storedSecret(cli.Put().
 		Namespace(in.GetNamespace()).
 		Resource("secrets").
 		Name(in.Name).
 		Body(in).
-		Do(ctx).
-		Error()
+		Do(ctx))
+}
+
+// storedSecret reads res. The write succeeded when res carries no error, and
+// then the error is nil whatever happens next: a response body that can't be
+// decoded only leaves the stored Secret unknown (nil), so Store keeps
+// succeeding whenever the write did, and an audit record never calls a done
+// write failed.
+func storedSecret(res rest.Result) (*corev1.Secret, int, error) {
+	var code int
+	res.StatusCode(&code)
+	if err := res.Error(); err != nil {
+		return nil, code, err
+	}
+	out := &corev1.Secret{}
+	if err := res.Into(out); err != nil {
+		return nil, code, nil
+	}
+	return out, code, nil
 }
 
 func deleteSecret(ctx context.Context, opts clientOptions) error {
