@@ -64,9 +64,12 @@ func NewCertificateRequest(opts CertificateRequestOptions) ([]byte, error) {
 	return enc, nil
 }
 
-func DeleteCertificateSigningRequest(client kubernetes.Interface, name string) error {
+// DeleteCertificateSigningRequest deletes the CSR name and waits until the
+// apiserver no longer serves it. ctx bounds both, with certificateWaitTimeout
+// as the longest wait (plumbing#129).
+func DeleteCertificateSigningRequest(ctx context.Context, client kubernetes.Interface, name string) error {
 	err := client.CertificatesV1().CertificateSigningRequests().
-		Delete(context.Background(), name, metav1.DeleteOptions{})
+		Delete(ctx, name, metav1.DeleteOptions{})
 	if err != nil {
 		return err
 	}
@@ -81,7 +84,6 @@ func DeleteCertificateSigningRequest(client kubernetes.Interface, name string) e
 		return false, nil
 	}
 
-	ctx := context.Background()
 	err = wait.PollUntilContextTimeout(ctx, certificateWaitPollInternval, certificateWaitTimeout, true, condFunc)
 	if err != nil {
 		return fmt.Errorf("waiting for CSR certificate to be deleted: %w", err)
@@ -89,13 +91,13 @@ func DeleteCertificateSigningRequest(client kubernetes.Interface, name string) e
 	return nil
 }
 
-func CreateCertificateSigningRequests(client kubernetes.Interface, csr *certv1.CertificateSigningRequest) error {
+func CreateCertificateSigningRequests(ctx context.Context, client kubernetes.Interface, csr *certv1.CertificateSigningRequest) error {
 	_, err := client.CertificatesV1().CertificateSigningRequests().
-		Create(context.Background(), csr, metav1.CreateOptions{})
+		Create(ctx, csr, metav1.CreateOptions{})
 	return err
 }
 
-func ApproveCertificateSigningRequest(client kubernetes.Interface, csr *certv1.CertificateSigningRequest, approver string) error {
+func ApproveCertificateSigningRequest(ctx context.Context, client kubernetes.Interface, csr *certv1.CertificateSigningRequest, approver string) error {
 	cond := certv1.CertificateSigningRequestCondition{
 		Type:           certv1.CertificateApproved,
 		Status:         corev1.ConditionTrue,
@@ -106,7 +108,6 @@ func ApproveCertificateSigningRequest(client kubernetes.Interface, csr *certv1.C
 
 	csr.Status.Conditions = append(csr.Status.Conditions, cond)
 
-	ctx := context.Background()
 	_, err := client.CertificatesV1().CertificateSigningRequests().
 		UpdateApproval(ctx, csr.Name, csr, metav1.UpdateOptions{})
 	if err != nil {
@@ -115,8 +116,9 @@ func ApproveCertificateSigningRequest(client kubernetes.Interface, csr *certv1.C
 	return nil
 }
 
-func WaitForCertificate(client kubernetes.Interface, name string) error {
-	ctx := context.Background()
+// WaitForCertificate waits until the CSR name carries its certificate. ctx
+// bounds the wait, with certificateWaitTimeout as the longest.
+func WaitForCertificate(ctx context.Context, client kubernetes.Interface, name string) error {
 	err := wait.PollUntilContextTimeout(ctx, certificateWaitPollInternval,
 		certificateWaitTimeout, false, CertificateExistsFunc(client, name))
 	if err != nil {
@@ -142,8 +144,8 @@ func CertificateExistsFunc(client kubernetes.Interface, name string) wait.Condit
 	}
 }
 
-func Certificate(client kubernetes.Interface, name string) ([]byte, error) {
-	csr, err := GetCertificateSigningRequest(client, name)
+func Certificate(ctx context.Context, client kubernetes.Interface, name string) ([]byte, error) {
+	csr, err := GetCertificateSigningRequest(ctx, client, name)
 	if err != nil {
 		return nil, err
 	}
@@ -151,9 +153,9 @@ func Certificate(client kubernetes.Interface, name string) ([]byte, error) {
 	return csr.Status.Certificate, nil
 }
 
-func GetCertificateSigningRequest(client kubernetes.Interface, name string) (*certv1.CertificateSigningRequest, error) {
+func GetCertificateSigningRequest(ctx context.Context, client kubernetes.Interface, name string) (*certv1.CertificateSigningRequest, error) {
 	csr, err := client.CertificatesV1().CertificateSigningRequests().
-		Get(context.Background(), name, metav1.GetOptions{})
+		Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("getting CSR '%s': %w", name, err)
 	}

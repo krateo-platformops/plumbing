@@ -9,6 +9,17 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-11 — the CSR cleanup is bounded, and a failed create cleans up too** (plumbing#129,
+  from the review of authn#123):
+  - **Context:** the `certs` helpers take a `context.Context` first (a signature change, Diego), and
+    signup passes the caller's.
+  - **Bounded cleanup:** a cleanup delete runs on `context.WithoutCancel(ctx)` with
+    `csrCleanupTimeout` (30s). A cancelled request still deletes the CSR it created, and an
+    apiserver that accepts the delete but never confirms it holds the signup 30s, not the
+    5 minutes of `certificateWaitTimeout`.
+  - **Failed create:** a create that fails other than AlreadyExists may still have been stored (a
+    timeout after the write). It is now deleted by name, best effort, NotFound meaning nothing was
+    stored, and a failed delete is joined after the create's error.
 - **2026-11-11 — Reconcile counts the caller's authorization annotations as content**
   (plumbing#124, AUDIT-4): audit v0.6.0's content hash counts the annotations authorization
   reads (`content_annotations`, `audit.AuthorizationAnnotations()`), but `canonicalContent`

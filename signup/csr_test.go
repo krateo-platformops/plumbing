@@ -1,9 +1,18 @@
 package signup
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -11,7 +20,9 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/rest"
 	k8stesting "k8s.io/client-go/testing"
 )
 
@@ -51,7 +62,7 @@ func TestTheCSRIsDeletedOnEveryWayOut(t *testing.T) {
 	t.Run("issued", func(t *testing.T) {
 		c := fake.NewClientset()
 		signer(c)
-		crt, key, err := generateClientCertAndKey(c, opts)
+		crt, key, err := generateClientCertAndKey(t.Context(), c, opts)
 		require.NoError(t, err)
 		assert.NotEmpty(t, crt)
 		assert.NotEmpty(t, key)
@@ -67,7 +78,7 @@ func TestTheCSRIsDeletedOnEveryWayOut(t *testing.T) {
 			}
 			return false, nil, nil
 		})
-		_, _, err := generateClientCertAndKey(c, opts)
+		_, _, err := generateClientCertAndKey(t.Context(), c, opts)
 		require.ErrorContains(t, err, "approving", "the original error is kept")
 		assert.Empty(t, csrNames(t, c), "the refused CSR is deleted too")
 	})
@@ -77,7 +88,7 @@ func TestTheCSRIsDeletedOnEveryWayOut(t *testing.T) {
 		stale.Name = opts.username
 		c := fake.NewClientset(stale)
 		signer(c)
-		_, _, err := generateClientCertAndKey(c, opts)
+		_, _, err := generateClientCertAndKey(t.Context(), c, opts)
 		require.NoError(t, err)
 		assert.Empty(t, csrNames(t, c))
 	})
@@ -105,7 +116,7 @@ func TestTheCSRIsDeletedOnEveryWayOut(t *testing.T) {
 	t.Run("the wait for the certificate fails", func(t *testing.T) {
 		c := fake.NewClientset()
 		failingGet(c, 1) // the wait's first poll
-		_, _, err := generateClientCertAndKey(c, opts)
+		_, _, err := generateClientCertAndKey(t.Context(), c, opts)
 		require.ErrorContains(t, err, "waiting for CSR certificate")
 		assert.Empty(t, csrNames(t, c), "the CSR is deleted")
 	})
@@ -113,7 +124,7 @@ func TestTheCSRIsDeletedOnEveryWayOut(t *testing.T) {
 	t.Run("reading the certificate fails", func(t *testing.T) {
 		c := fake.NewClientset()
 		failingGet(c, 2) // the wait saw the certificate; the read after it fails
-		crt, _, err := generateClientCertAndKey(c, opts)
+		crt, _, err := generateClientCertAndKey(t.Context(), c, opts)
 		require.ErrorContains(t, err, "getting CSR")
 		assert.Empty(t, crt)
 		assert.Empty(t, csrNames(t, c), "the CSR is deleted")
@@ -131,7 +142,7 @@ func TestTheCSRIsDeletedOnEveryWayOut(t *testing.T) {
 		c.PrependReactor("delete", "certificatesigningrequests", func(k8stesting.Action) (bool, runtime.Object, error) {
 			return true, nil, apierrors.NewForbidden(csrGVR.GroupResource(), "authn", errors.New("no delete"))
 		})
-		_, _, err := generateClientCertAndKey(c, opts)
+		_, _, err := generateClientCertAndKey(t.Context(), c, opts)
 		require.Error(t, err)
 		msg := err.Error()
 		assert.Contains(t, msg, "approving")
@@ -145,9 +156,170 @@ func TestTheCSRIsDeletedOnEveryWayOut(t *testing.T) {
 		c.PrependReactor("delete", "certificatesigningrequests", func(k8stesting.Action) (bool, runtime.Object, error) {
 			return true, nil, apierrors.NewForbidden(csrGVR.GroupResource(), "authn", errors.New("no delete"))
 		})
-		crt, key, err := generateClientCertAndKey(c, opts)
+		crt, key, err := generateClientCertAndKey(t.Context(), c, opts)
 		require.ErrorContains(t, err, "deleting the used CSR")
 		assert.Empty(t, crt, "nothing is returned for the caller to store")
 		assert.Empty(t, key)
+	})
+}
+
+// The cleanup delete is bounded (plumbing#129): an apiserver that accepts the
+// delete but never confirms it holds the signup csrCleanupTimeout at most, not
+// the 5 minutes of certificateWaitTimeout, and the CSR left behind is reported.
+func TestTheCleanupDeleteIsBounded(t *testing.T) {
+	old := csrCleanupTimeout
+	csrCleanupTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { csrCleanupTimeout = old })
+
+	c := fake.NewClientset()
+	signer(c)
+	// Accepted, never done: the tracker keeps serving the CSR.
+	c.PrependReactor("delete", "certificatesigningrequests", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, nil
+	})
+	start := time.Now()
+	crt, _, err := generateClientCertAndKey(t.Context(), c, opts)
+	elapsed := time.Since(start)
+	require.ErrorContains(t, err, "deleting the used CSR")
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Empty(t, crt, "nothing is returned for the caller to store")
+	// The certificate wait's first poll (certs' certificateWaitPollInternval,
+	// 3s) comes before the cleanup; after it, only csrCleanupTimeout, not the 5
+	// minutes of certificateWaitTimeout.
+	const certificatePoll = 3 * time.Second
+	assert.Less(t, elapsed, certificatePoll+2*time.Second, "bounded by csrCleanupTimeout")
+}
+
+// A caller whose context is cancelled mid-signup still has the CSR it created
+// cleaned up: the cleanup runs without the caller's cancellation. The client
+// is client-go over HTTP, which honors the context (the fake clientset
+// ignores it, so it can't show this).
+func TestACancelledSignupStillDeletesItsCSR(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	api := newCSRServer(t, func() { cancel() }) // the caller goes away at the approval
+	client, err := kubernetes.NewForConfig(&rest.Config{Host: api.srv.URL,
+		ContentConfig: rest.ContentConfig{ContentType: "application/json", AcceptContentTypes: "application/json"}})
+	require.NoError(t, err)
+
+	_, _, err = generateClientCertAndKey(ctx, client, opts)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Empty(t, api.names(), "the CSR is deleted though the caller cancelled")
+	assert.Positive(t, api.deletes.Load(), "the cleanup reached the apiserver")
+}
+
+// csrServer is an in-memory apiserver for CSRs: create, approval, get and
+// delete. It never issues a certificate. onApproval runs when an approval
+// arrives.
+type csrServer struct {
+	srv     *httptest.Server
+	mu      sync.Mutex
+	csrs    map[string][]byte
+	deletes atomic.Int32
+}
+
+func newCSRServer(t *testing.T, onApproval func()) *csrServer {
+	t.Helper()
+	const base = "/apis/certificates.k8s.io/v1/certificatesigningrequests"
+	s := &csrServer{csrs: map[string][]byte{}}
+	notFound := func(w http.ResponseWriter, name string) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = fmt.Fprintf(w, `{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"NotFound","code":404,"message":"%s not found"}`, name)
+	}
+	s.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		rest := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, base), "/")
+		name, sub, _ := strings.Cut(rest, "/")
+		body, _ := io.ReadAll(r.Body)
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		switch {
+		case r.Method == http.MethodPost && name == "":
+			var csr certv1.CertificateSigningRequest
+			require.NoError(t, json.Unmarshal(body, &csr))
+			s.csrs[csr.Name] = body
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write(body)
+		case r.Method == http.MethodPut && sub == "approval":
+			if onApproval != nil {
+				onApproval()
+			}
+			_, _ = w.Write(body)
+		case r.Method == http.MethodGet && name != "":
+			b, ok := s.csrs[name]
+			if !ok {
+				notFound(w, name)
+				return
+			}
+			_, _ = w.Write(b)
+		case r.Method == http.MethodDelete && name != "":
+			s.deletes.Add(1)
+			if _, ok := s.csrs[name]; !ok {
+				notFound(w, name)
+				return
+			}
+			delete(s.csrs, name)
+			_, _ = w.Write([]byte(`{"kind":"Status","apiVersion":"v1","status":"Success"}`))
+		default:
+			t.Errorf("unexpected apiserver call: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotImplemented)
+		}
+	}))
+	t.Cleanup(s.srv.Close)
+	return s
+}
+
+func (s *csrServer) names() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []string
+	for n := range s.csrs {
+		out = append(out, n)
+	}
+	return out
+}
+
+// A create answered with an error after the apiserver stored the CSR (a
+// timeout after the write) leaves none behind (plumbing#129); one that stored
+// nothing reports the create's error alone.
+func TestAFailedCreateLeavesNoCSR(t *testing.T) {
+	t.Run("stored, then answered 504", func(t *testing.T) {
+		c := fake.NewClientset()
+		c.PrependReactor("create", "certificatesigningrequests", func(a k8stesting.Action) (bool, runtime.Object, error) {
+			obj := a.(k8stesting.CreateAction).GetObject()
+			require.NoError(t, c.Tracker().Create(csrGVR, obj, ""))
+			return true, nil, apierrors.NewTimeoutError("the write may have succeeded", 0)
+		})
+		_, _, err := generateClientCertAndKey(t.Context(), c, opts)
+		require.ErrorContains(t, err, "creating CSR kubernetes object")
+		assert.NotContains(t, err.Error(), "whose create failed", "the delete succeeded")
+		assert.Empty(t, csrNames(t, c), "the stored CSR is deleted")
+	})
+
+	t.Run("nothing stored", func(t *testing.T) {
+		c := fake.NewClientset()
+		c.PrependReactor("create", "certificatesigningrequests", func(k8stesting.Action) (bool, runtime.Object, error) {
+			return true, nil, apierrors.NewForbidden(csrGVR.GroupResource(), "authn", errors.New("no create"))
+		})
+		_, _, err := generateClientCertAndKey(t.Context(), c, opts)
+		require.ErrorContains(t, err, "creating CSR kubernetes object")
+		assert.NotContains(t, err.Error(), "whose create failed", "NotFound means nothing was stored")
+	})
+
+	t.Run("stored, and the delete fails too: both are reported", func(t *testing.T) {
+		c := fake.NewClientset()
+		c.PrependReactor("create", "certificatesigningrequests", func(a k8stesting.Action) (bool, runtime.Object, error) {
+			require.NoError(t, c.Tracker().Create(csrGVR, a.(k8stesting.CreateAction).GetObject(), ""))
+			return true, nil, apierrors.NewTimeoutError("the write may have succeeded", 0)
+		})
+		c.PrependReactor("delete", "certificatesigningrequests", func(k8stesting.Action) (bool, runtime.Object, error) {
+			return true, nil, apierrors.NewForbidden(csrGVR.GroupResource(), "authn", errors.New("no delete"))
+		})
+		_, _, err := generateClientCertAndKey(t.Context(), c, opts)
+		require.Error(t, err)
+		msg := err.Error()
+		assert.Contains(t, msg, "creating CSR kubernetes object")
+		assert.Contains(t, msg, "whose create failed")
+		assert.Less(t, strings.Index(msg, "creating CSR"), strings.Index(msg, "whose create failed"), "the create's error first")
 	})
 }
