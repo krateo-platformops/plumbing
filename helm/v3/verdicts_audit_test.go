@@ -78,7 +78,11 @@ func TestContentAnnotationsAgreeWithTheAuditHash(t *testing.T) {
 		{"a deeply nested null is an absent member",
 			dep(map[string]interface{}{"template": map[string]interface{}{"spec": map[string]interface{}{"hostname": nil, "x": "y"}}}, nil),
 			dep(map[string]interface{}{"template": map[string]interface{}{"spec": map[string]interface{}{"x": "y"}}}, nil), false, false},
+		{"a null member inside a list element is an absent member",
+			dep(map[string]interface{}{"template": map[string]interface{}{"spec": map[string]interface{}{"containers": []interface{}{map[string]interface{}{"name": "a", "x": nil}}}}}, nil),
+			dep(map[string]interface{}{"template": map[string]interface{}{"spec": map[string]interface{}{"containers": []interface{}{map[string]interface{}{"name": "a"}}}}}, nil), false, false},
 		{"a null list element is a value", dep(map[string]interface{}{"args": []interface{}{"a", nil}}, nil), dep(map[string]interface{}{"args": []interface{}{"a"}}, nil), true, true},
+		{"a null list element is not an empty string", dep(map[string]interface{}{"args": []interface{}{"a", nil}}, nil), dep(map[string]interface{}{"args": []interface{}{"a", ""}}, nil), true, true},
 		{"a map left empty is not an absent one", dep(map[string]interface{}{"replicas": int64(1), "strategy": map[string]interface{}{"type": nil}}, nil), dep(replicas(1), nil), true, true},
 
 		// The deliberate differences.
