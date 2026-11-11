@@ -226,11 +226,14 @@ type InstallConfig struct {
 type UpgradeConfig struct {
 	*ActionConfig
 	// Upgrade-Only Fields
-	Install              bool
-	MaxHistory           int
-	ResetValues          bool
-	ReuseValues          bool
-	ResetThenReuseValues bool
+	Install    bool
+	MaxHistory int
+	// NO ReuseValues / ResetValues / ResetThenReuseValues, deliberately (#115). They were declared
+	// here and never copied onto helm's action.Upgrade (applyUpgradeConfig), so setting one did
+	// nothing, silently. The upgrade contract is "fresh values rendered against the NEW chart's
+	// defaults", and honouring ReuseValues would reintroduce the --reuse-values render crash class
+	// (an old release's values without a key a new template dereferences: keycloak-config-kog 0.5.0,
+	// "nil pointer evaluating interface {}.enabled").
 }
 
 type RollbackConfig struct {
