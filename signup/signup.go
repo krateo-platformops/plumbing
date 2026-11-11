@@ -1,6 +1,7 @@
 package signup
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
 	"encoding/base64"
@@ -17,6 +18,7 @@ import (
 	"github.com/krateo-platformops/plumbing/certs"
 	"github.com/krateo-platformops/plumbing/endpoints"
 	"github.com/krateo-platformops/plumbing/kubeutil"
+	certv1 "k8s.io/api/certificates/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -134,13 +136,27 @@ func cleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), csrCleanupTimeout)
 }
 
-// deleteCSR is the cleanup delete of the CSR name: done when the apiserver
-// confirms it is gone, NotFound included.
-func deleteCSR(ctx context.Context, client kubernetes.Interface, name string) error {
+// deleteOwnCSR is the cleanup delete of the CSR named after csr, and only if
+// it is provably this signup's (plumbing#134 review). Its name is the user's,
+// so another signup for the same user may hold it by now: a CSR whose
+// spec.request isn't csr's (another key) is left alone, and the one delete
+// carries a UID precondition, so a CSR re-created between the read and the
+// delete isn't touched either. NotFound, or a precondition that no longer
+// holds, means there is nothing of ours to delete. It runs on cleanupContext.
+func deleteOwnCSR(ctx context.Context, client kubernetes.Interface, csr *certv1.CertificateSigningRequest) error {
 	cctx, cancel := cleanupContext(ctx)
 	defer cancel()
-	err := certs.DeleteCertificateSigningRequest(cctx, client, name)
-	if err == nil || errors.IsNotFound(err) {
+	live, err := certs.GetCertificateSigningRequest(cctx, client, csr.Name)
+	switch {
+	case errors.IsNotFound(err):
+		return nil
+	case err != nil:
+		return err
+	case !bytes.Equal(live.Spec.Request, csr.Spec.Request):
+		return nil // another signup's
+	}
+	err = certs.DeleteCertificateSigningRequestUID(cctx, client, csr.Name, live.UID)
+	if err == nil || errors.IsNotFound(err) || errors.IsConflict(err) {
 		return nil
 	}
 	return err
@@ -167,7 +183,7 @@ func generateClientCertAndKey(ctx context.Context, client kubernetes.Interface, 
 	err = certs.CreateCertificateSigningRequests(ctx, client, csr)
 	if err != nil {
 		if !errors.IsAlreadyExists(err) {
-			return "", "", createFailed(ctx, client, csr.Name, err)
+			return "", "", createFailed(ctx, client, csr, err)
 		}
 
 		if err := certs.DeleteCertificateSigningRequest(ctx, client, csr.Name); err != nil {
@@ -175,7 +191,7 @@ func generateClientCertAndKey(ctx context.Context, client kubernetes.Interface, 
 		}
 
 		if err := certs.CreateCertificateSigningRequests(ctx, client, csr); err != nil {
-			return "", "", createFailed(ctx, client, csr.Name, err)
+			return "", "", createFailed(ctx, client, csr, err)
 		}
 	}
 
@@ -187,7 +203,7 @@ func generateClientCertAndKey(ctx context.Context, client kubernetes.Interface, 
 	// the caller retries and the CSR doesn't linger unnoticed; after a failure
 	// the original error is kept, joined with the delete's when that fails too.
 	defer func() {
-		derr := deleteCSR(ctx, client, csr.Name)
+		derr := deleteOwnCSR(ctx, client, csr)
 		if derr == nil {
 			return
 		}
@@ -230,15 +246,16 @@ func mkID(in string) string {
 	return strconv.FormatUint(hash.Sum64(), 16)
 }
 
-// createFailed is the error of a create that failed other than AlreadyExists.
-// The apiserver may have stored the CSR anyway (a timeout after the write), so
-// it is deleted by name, best effort, before signup returns (plumbing#129):
-// NotFound means nothing was stored. A delete that fails too is joined after
-// the create's error, so the CSR left behind is not hidden.
-func createFailed(ctx context.Context, client kubernetes.Interface, name string, err error) error {
+// createFailed is the error of a create that failed. The apiserver may have
+// stored this CSR anyway (a timeout after the write), so it is deleted before
+// signup returns (plumbing#129), and only if it is ours (deleteOwnCSR): a create
+// refused outright, or answered AlreadyExists because another signup won the
+// name, leaves that signup's CSR alone. A delete that fails too is joined
+// after the create's error, so the CSR left behind is not hidden.
+func createFailed(ctx context.Context, client kubernetes.Interface, csr *certv1.CertificateSigningRequest, err error) error {
 	err = fmt.Errorf("creating CSR kubernetes object: %w", err)
-	if derr := deleteCSR(ctx, client, name); derr != nil {
-		return stderrors.Join(err, fmt.Errorf("deleting the CSR %s whose create failed: %w", name, derr))
+	if derr := deleteOwnCSR(ctx, client, csr); derr != nil {
+		return stderrors.Join(err, fmt.Errorf("deleting the CSR %s whose create failed: %w", csr.Name, derr))
 	}
 	return err
 }

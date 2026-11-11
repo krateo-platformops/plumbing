@@ -15,11 +15,17 @@ timestamp: 2026-08-07T00:00:00Z
     signup passes the caller's.
   - **Bounded cleanup:** a cleanup delete runs on `context.WithoutCancel(ctx)` with
     `csrCleanupTimeout` (30s). A cancelled request still deletes the CSR it created, and an
-    apiserver that accepts the delete but never confirms it holds the signup 30s, not the
-    5 minutes of `certificateWaitTimeout`.
-  - **Failed create:** a create that fails other than AlreadyExists may still have been stored (a
-    timeout after the write). It is now deleted by name, best effort, NotFound meaning nothing was
-    stored, and a failed delete is joined after the create's error.
+    apiserver that never answers holds the signup 30s, not the 5 minutes of
+    `certificateWaitTimeout`.
+  - **Only our own CSR is deleted** (snowplow's review): the CSR's name is the user's, so
+    another signup for the same user may hold it. The cleanup reads it and deletes it only if
+    its `spec.request` is ours, with one DELETE carrying a UID precondition
+    (`certs.DeleteCertificateSigningRequestUID`), so a CSR re-created in between is never
+    touched. The cleanup delete from #123, which deleted by name, now works the same way.
+  - **Failed create:** a create that fails may still have been stored (a timeout after the
+    write). It is now cleaned up, if it is ours, a failed delete being joined after the
+    create's error. A create refused outright, or a re-create that lost the name to
+    another signup, leaves that signup's CSR alone.
 - **2026-11-11 — Reconcile counts the caller's authorization annotations as content**
   (plumbing#124, AUDIT-4): audit v0.6.0's content hash counts the annotations authorization
   reads (`content_annotations`, `audit.AuthorizationAnnotations()`), but `canonicalContent`

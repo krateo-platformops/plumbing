@@ -16,6 +16,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 )
 
@@ -89,6 +90,15 @@ func DeleteCertificateSigningRequest(ctx context.Context, client kubernetes.Inte
 		return fmt.Errorf("waiting for CSR certificate to be deleted: %w", err)
 	}
 	return nil
+}
+
+// DeleteCertificateSigningRequestUID deletes the CSR name only if it is still
+// the object uid: one DELETE with a UID precondition, so a CSR re-created
+// under the same name since is never touched (plumbing#134 review). ctx bounds
+// the request. A precondition that no longer holds is answered Conflict.
+func DeleteCertificateSigningRequestUID(ctx context.Context, client kubernetes.Interface, name string, uid types.UID) error {
+	return client.CertificatesV1().CertificateSigningRequests().
+		Delete(ctx, name, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid}})
 }
 
 func CreateCertificateSigningRequests(ctx context.Context, client kubernetes.Interface, csr *certv1.CertificateSigningRequest) error {
