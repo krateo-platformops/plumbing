@@ -15,6 +15,7 @@ import (
 	"github.com/krateo-platformops/plumbing/helm/v3/tracer"
 	"helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/cli"
+	"helm.sh/helm/v3/pkg/kube"
 	"helm.sh/helm/v3/pkg/release"
 	"helm.sh/helm/v3/pkg/storage/driver"
 	apiextclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
@@ -240,7 +241,7 @@ func (c *client) Close() error {
 	return nil
 }
 
-func (c *client) Install(ctx context.Context, releaseName string, chartRef string, cfg *helmconfig.InstallConfig) (*helmconfig.Release, error) {
+func (c *client) Install(ctx context.Context, releaseName string, chartRef string, cfg *helmconfig.InstallConfig) (*helmconfig.OperationResult, error) {
 	if cfg == nil {
 		cfg = &helmconfig.InstallConfig{}
 	}
@@ -259,13 +260,15 @@ func (c *client) Install(ctx context.Context, releaseName string, chartRef strin
 	}
 
 	var rel *helmconfig.Release
+	var obs writeObserver
 	err := c.retryOnStaleMapping(ctx, "install", namespace, restCfg, cfg.ActionConfig,
 		func(ac *action.Configuration) error {
+			obs.attach(ac)
 			var e error
 			rel, e = c.install(ctx, namespace, releaseName, chartRef, cfg, ac)
 			return e
 		})
-	return rel, err
+	return obs.result(rel, nil, nil), err
 }
 
 // retryOnStaleMapping builds an action.Configuration, runs op, and — if op fails because the REST
@@ -321,7 +324,7 @@ func (c *client) retryOnStaleMapping(
 	return retryErr
 }
 
-func (c *client) Upgrade(ctx context.Context, releaseName, chartRef string, cfg *helmconfig.UpgradeConfig) (*helmconfig.Release, error) {
+func (c *client) Upgrade(ctx context.Context, releaseName, chartRef string, cfg *helmconfig.UpgradeConfig) (*helmconfig.OperationResult, error) {
 	if cfg == nil {
 		cfg = &helmconfig.UpgradeConfig{}
 	}
@@ -354,8 +357,10 @@ func (c *client) Upgrade(ctx context.Context, releaseName, chartRef string, cfg 
 	}
 
 	var rel *release.Release
+	var obs writeObserver
 	err = c.retryOnStaleMapping(ctx, "upgrade", c.namespace, c.restConfig, cfg.ActionConfig,
 		func(ac *action.Configuration) error {
+			obs.attach(ac)
 			// The upgrade client AND the post-renderer are rebuilt per attempt, deliberately. The
 			// post-renderer closes over ac.KubeClient, which carries the RESTMapper — so reusing a
 			// client built from the previous configuration would retry against the very mapper the
@@ -374,23 +379,46 @@ func (c *client) Upgrade(ctx context.Context, releaseName, chartRef string, cfg 
 			rel = r
 			return nil
 		})
-	if err != nil {
-		return nil, err
+	var wrapped *helmconfig.Release
+	if rel != nil {
+		wrapped = toWrapperRelease(rel)
 	}
-	return toWrapperRelease(rel), nil
+	// A failed upgrade still returns what it wrote: helm's update continues past per-object errors,
+	// so some children may have changed even though the operation failed.
+	return obs.result(wrapped, cfg.ContentAnnotations, nil), err
 }
 
-func (c *client) Uninstall(ctx context.Context, releaseName string, cfg *helmconfig.UninstallConfig) error {
+func (c *client) Uninstall(ctx context.Context, releaseName string, cfg *helmconfig.UninstallConfig) (*helmconfig.OperationResult, error) {
 	// Uninstall resolves kinds to delete the release's resources, so it can hit a stale mapper too.
-	return c.retryOnStaleMapping(ctx, "uninstall", c.namespace, c.restConfig, nil,
+	var obs writeObserver
+	var rel *release.Release
+	var manifest kube.ResourceList
+	err := c.retryOnStaleMapping(ctx, "uninstall", c.namespace, c.restConfig, nil,
 		func(ac *action.Configuration) error {
+			obs.attach(ac)
 			cmd := action.NewUninstall(ac)
 			applyUninstallConfig(cmd, cfg)
-			if _, err := cmd.Run(releaseName); err != nil {
+			resp, err := cmd.Run(releaseName)
+			if resp != nil && resp.Release != nil {
+				rel = resp.Release
+				// The release's children, to name the ones helm kept (it never sent their delete).
+				// Built with the attempt's own client, so it resolves kinds as the uninstall did.
+				if m, berr := ac.KubeClient.Build(strings.NewReader(resp.Release.Manifest), false); berr == nil {
+					manifest = m
+				} else {
+					obs.unresolved = true
+				}
+			}
+			if err != nil {
 				return fmt.Errorf("uninstall failed: %w", err)
 			}
 			return nil
 		})
+	var wrapped *helmconfig.Release
+	if rel != nil {
+		wrapped = toWrapperRelease(rel)
+	}
+	return obs.result(wrapped, nil, manifest), err
 }
 
 func (c *client) Rollback(ctx context.Context, releaseName string, cfg *helmconfig.RollbackConfig) (*helmconfig.Release, error) {

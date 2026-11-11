@@ -113,11 +113,11 @@ func TestControllerReconcile(t *testing.T) {
 			}
 
 			// --- Initial install (revision 1). ---
-			rel, err := cli.Install(ctx, releaseName, chartURL, &helmconfig.InstallConfig{ActionConfig: upCfg().ActionConfig})
+			rel, err := releaseOf(cli.Install(ctx, releaseName, chartURL, &helmconfig.InstallConfig{ActionConfig: upCfg().ActionConfig}))
 			require.NoError(t, err)
 			require.Equal(t, 1, rel.Revision)
 			t.Cleanup(func() {
-				_ = cli.Uninstall(context.Background(), releaseName, &helmconfig.UninstallConfig{IgnoreNotFound: true})
+				_, _ = cli.Uninstall(context.Background(), releaseName, &helmconfig.UninstallConfig{IgnoreNotFound: true})
 			})
 
 			require.Equal(t, "blue", liveColor(t, cs, namespace, cmName))

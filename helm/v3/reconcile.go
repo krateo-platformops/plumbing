@@ -102,11 +102,14 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 		// path) normally handles this, but we keep Reconcile total.
 		installCfg := *cfg
 		installCfg.Install = true
-		rel, err := c.Upgrade(ctx, releaseName, chartRef, &installCfg)
+		op, err := c.Upgrade(ctx, releaseName, chartRef, &installCfg)
 		if err != nil {
 			return nil, fmt.Errorf("reconcile: initial upgrade (no stored release): %w", err)
 		}
-		return &helmconfig.ReconcileResult{Changed: true, Release: rel}, nil
+		// The install-through-Upgrade path reports its per-child verdicts too (plumbing#135),
+		// observed at the KubeClient. It used to leave Objects empty and ObjectsComplete false.
+		return &helmconfig.ReconcileResult{Changed: true, Release: op.Release,
+			Objects: op.Objects, ObjectsComplete: op.ObjectsComplete, ObjectsNotAttempted: op.ObjectsNotAttempted}, nil
 	}
 	currentManifest := stored.Manifest
 
@@ -138,7 +141,7 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 	if err != nil {
 		return nil, fmt.Errorf("reconcile: rendering target (dry-run): %w", err)
 	}
-	targetManifest := rendered.Manifest
+	targetManifest := rendered.Release.Manifest
 
 	// 3. Build current + target resource lists via helm's own kube client.
 	actionConfig, err := c.newActionConfig(ctx, c.namespace, c.restConfig, cfg.ActionConfig)
@@ -497,14 +500,14 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 
 	// 7. A real change happened. Run ONE real Upgrade to persist a revision and run hooks with
 	// correct ordering + delete-policy. Step 5 already converged the cluster, so this is a near-no-op.
-	rel, err := c.Upgrade(ctx, releaseName, chartRef, cfg)
+	op, err := c.Upgrade(ctx, releaseName, chartRef, cfg)
 	if err != nil {
 		if retryFailed && !changed {
 			return result, fmt.Errorf("reconcile: retrying the upgrade of a release whose latest revision (%d) failed: %w", stored.Revision, err)
 		}
 		return result, fmt.Errorf("reconcile: real upgrade after detected change: %w", err)
 	}
-	result.Release = rel
+	result.Release = op.Release
 	return result, nil
 }
 

@@ -188,7 +188,7 @@ func TestDuplicateResourcesInstallAndUpgrade(t *testing.T) {
 
 			failedInstallRelease := "duplicate-resources-install"
 			defer func() {
-				_ = cli.Uninstall(ctx, failedInstallRelease, &helmconfig.UninstallConfig{IgnoreNotFound: true})
+				_, _ = cli.Uninstall(ctx, failedInstallRelease, &helmconfig.UninstallConfig{IgnoreNotFound: true})
 			}()
 
 			_, err = cli.Install(ctx, failedInstallRelease, duplicateChartURL, &helmconfig.InstallConfig{
@@ -201,16 +201,16 @@ func TestDuplicateResourcesInstallAndUpgrade(t *testing.T) {
 			assert.Error(t, err, "installing the duplicate chart should fail")
 
 			seedRelease := "duplicate-resources-seed"
-			rel, err := cli.Install(ctx, seedRelease, seedChartURL, &helmconfig.InstallConfig{
+			rel, err := releaseOf(cli.Install(ctx, seedRelease, seedChartURL, &helmconfig.InstallConfig{
 				ActionConfig: &helmconfig.ActionConfig{
 					TakeOwnership: true,
 					Values:        values,
 				},
-			})
+			}))
 			require.NoError(t, err)
 			require.NotNil(t, rel)
 			defer func() {
-				_ = cli.Uninstall(ctx, seedRelease, &helmconfig.UninstallConfig{IgnoreNotFound: true})
+				_, _ = cli.Uninstall(ctx, seedRelease, &helmconfig.UninstallConfig{IgnoreNotFound: true})
 			}()
 
 			_, err = cli.Upgrade(ctx, seedRelease, duplicateChartURL, &helmconfig.UpgradeConfig{
@@ -249,7 +249,7 @@ func TestInstallAndUninstall_OCI(t *testing.T) {
 			t.Logf("Attempting to install chart: %s", chartRef)
 
 			// 4. Run Install
-			rel, err := cli.Install(
+			op, err := cli.Install(
 				ctx,
 				releaseName,
 				chartRef,
@@ -260,15 +260,36 @@ func TestInstallAndUninstall_OCI(t *testing.T) {
 				},
 			)
 			require.NoError(t, err)
+			rel := op.Release
 			assert.Equal(t, releaseName, rel.Name)
 			assert.Equal(t, "deployed", string(rel.Status))
 
-			t.Logf("Successfully installed release: %s (v%d)", rel.Name, rel.Revision)
+			// plumbing#135: the install reports every child it created, observed at the
+			// KubeClient, each with the server's uid, and completely.
+			require.True(t, op.ObjectsComplete, "an install through a wrappable KubeClient is fully observed")
+			require.NotEmpty(t, op.Objects, "a real chart's install must report its children")
+			for _, v := range op.Objects {
+				assert.Equal(t, helmconfig.ChangeCreated, v.Change, "%s/%s", v.Resource, v.Name)
+				assert.Equal(t, "create", v.Verb, "%s/%s", v.Resource, v.Name)
+				assert.NotEmpty(t, v.UID, "a created child carries the uid the server gave it: %s/%s", v.Resource, v.Name)
+			}
+
+			t.Logf("Successfully installed release: %s (v%d), %d children", rel.Name, rel.Revision, len(op.Objects))
 
 			// 5. Run Uninstall
 			t.Logf("Attempting to uninstall release: %s", releaseName)
-			err = cli.Uninstall(ctx, releaseName, &helmconfig.UninstallConfig{})
+			un, err := cli.Uninstall(ctx, releaseName, &helmconfig.UninstallConfig{})
 			require.NoError(t, err)
+			// ... and the uninstall reports every one of them deleted: none kept, none left.
+			require.True(t, un.ObjectsComplete, "an uninstall through a wrappable KubeClient is fully observed")
+			deleted := 0
+			for _, v := range un.Objects {
+				assert.Equal(t, helmconfig.ChangeDeleted, v.Change, "%s/%s", v.Resource, v.Name)
+				if v.Change == helmconfig.ChangeDeleted {
+					deleted++
+				}
+			}
+			assert.Equal(t, len(op.Objects), deleted, "the uninstall deletes what the install created")
 
 			t.Log("Successfully uninstalled release")
 
@@ -299,7 +320,7 @@ func TestUpgrade(t *testing.T) {
 
 			// Install initial version
 			t.Log("Installing initial release")
-			rel, err := cli.Install(
+			rel, err := releaseOf(cli.Install(
 				ctx,
 				releaseName,
 				chartRef,
@@ -311,14 +332,14 @@ func TestUpgrade(t *testing.T) {
 						},
 					},
 				},
-			)
+			))
 			require.NoError(t, err)
 			assert.Equal(t, releaseName, rel.Name)
 			assert.Equal(t, 1, rel.Revision)
 
 			// Upgrade the release
 			t.Log("Upgrading release")
-			rel, err = cli.Upgrade(
+			rel, err = releaseOf(cli.Upgrade(
 				ctx,
 				releaseName,
 				chartRef,
@@ -330,13 +351,13 @@ func TestUpgrade(t *testing.T) {
 						},
 					},
 				},
-			)
+			))
 			require.NoError(t, err)
 			assert.Equal(t, releaseName, rel.Name)
 			assert.Equal(t, 2, rel.Revision)
 
 			// Cleanup
-			err = cli.Uninstall(ctx, releaseName, &helmconfig.UninstallConfig{})
+			_, err = cli.Uninstall(ctx, releaseName, &helmconfig.UninstallConfig{})
 			require.NoError(t, err)
 
 			return ctx
@@ -363,7 +384,7 @@ func TestRollback(t *testing.T) {
 
 			// Install initial version
 			t.Log("Installing initial release")
-			rel, err := cli.Install(
+			rel, err := releaseOf(cli.Install(
 				ctx,
 				releaseName,
 				chartRef,
@@ -375,13 +396,13 @@ func TestRollback(t *testing.T) {
 						},
 					},
 				},
-			)
+			))
 			require.NoError(t, err)
 			assert.Equal(t, 1, rel.Revision)
 
 			// Upgrade the release
 			t.Log("Upgrading release")
-			rel, err = cli.Upgrade(
+			rel, err = releaseOf(cli.Upgrade(
 				ctx,
 				releaseName,
 				chartRef,
@@ -393,7 +414,7 @@ func TestRollback(t *testing.T) {
 						},
 					},
 				},
-			)
+			))
 			require.NoError(t, err)
 			assert.Equal(t, 2, rel.Revision)
 
@@ -410,7 +431,7 @@ func TestRollback(t *testing.T) {
 			assert.Equal(t, 3, rel.Revision) // Rollback creates a new revision
 
 			// Cleanup
-			err = cli.Uninstall(ctx, releaseName, &helmconfig.UninstallConfig{})
+			_, err = cli.Uninstall(ctx, releaseName, &helmconfig.UninstallConfig{})
 			require.NoError(t, err)
 
 			return ctx
@@ -437,7 +458,7 @@ func TestGetRelease(t *testing.T) {
 
 			// Install a release
 			t.Log("Installing release")
-			rel, err := cli.Install(
+			rel, err := releaseOf(cli.Install(
 				ctx,
 				releaseName,
 				chartRef,
@@ -446,7 +467,7 @@ func TestGetRelease(t *testing.T) {
 						TakeOwnership: true,
 					},
 				},
-			)
+			))
 			require.NoError(t, err)
 
 			// Get the release
@@ -465,7 +486,7 @@ func TestGetRelease(t *testing.T) {
 			assert.Nil(t, notFound)
 
 			// Cleanup
-			err = cli.Uninstall(ctx, releaseName, &helmconfig.UninstallConfig{})
+			_, err = cli.Uninstall(ctx, releaseName, &helmconfig.UninstallConfig{})
 			require.NoError(t, err)
 
 			return ctx
@@ -532,7 +553,7 @@ func TestListReleases(t *testing.T) {
 
 			// Cleanup
 			for _, releaseName := range releases {
-				err = cli.Uninstall(ctx, releaseName, &helmconfig.UninstallConfig{})
+				_, err = cli.Uninstall(ctx, releaseName, &helmconfig.UninstallConfig{})
 				require.NoError(t, err)
 			}
 
@@ -564,7 +585,7 @@ func TestInstallAndUninstall_Repo(t *testing.T) {
 			t.Logf("Attempting to install chart %s from repo: %s", chartName, chartRef)
 
 			// 4. Run Install
-			rel, err := cli.Install(
+			rel, err := releaseOf(cli.Install(
 				ctx,
 				releaseName,
 				chartRef,
@@ -576,7 +597,7 @@ func TestInstallAndUninstall_Repo(t *testing.T) {
 						TakeOwnership: true,
 					},
 				},
-			)
+			))
 			require.NoError(t, err)
 			assert.Equal(t, releaseName, rel.Name)
 			assert.Equal(t, "deployed", string(rel.Status))
@@ -585,7 +606,7 @@ func TestInstallAndUninstall_Repo(t *testing.T) {
 
 			// 5. Run Uninstall
 			t.Logf("Attempting to uninstall release: %s", releaseName)
-			err = cli.Uninstall(ctx, releaseName, &helmconfig.UninstallConfig{})
+			_, err = cli.Uninstall(ctx, releaseName, &helmconfig.UninstallConfig{})
 			require.NoError(t, err)
 
 			t.Log("Successfully uninstalled release")
@@ -618,7 +639,7 @@ func TestInstallAndUninstall_TGZ(t *testing.T) {
 			t.Logf("Attempting to install chart from tgz: %s", chartRef)
 
 			// 4. Run Install
-			rel, err := cli.Install(
+			rel, err := releaseOf(cli.Install(
 				ctx,
 				releaseName,
 				chartRef,
@@ -629,7 +650,7 @@ func TestInstallAndUninstall_TGZ(t *testing.T) {
 						TakeOwnership: true,
 					},
 				},
-			)
+			))
 			require.NoError(t, err)
 			assert.Equal(t, releaseName, rel.Name)
 			assert.Equal(t, "deployed", string(rel.Status))
@@ -638,7 +659,7 @@ func TestInstallAndUninstall_TGZ(t *testing.T) {
 
 			// 5. Run Uninstall
 			t.Logf("Attempting to uninstall release: %s", releaseName)
-			err = cli.Uninstall(ctx, releaseName, &helmconfig.UninstallConfig{})
+			_, err = cli.Uninstall(ctx, releaseName, &helmconfig.UninstallConfig{})
 			require.NoError(t, err)
 
 			t.Log("Successfully uninstalled release")
@@ -962,7 +983,7 @@ func TestFullStackAppRedisUpgrade(t *testing.T) {
 			require.NoError(t, err, "Redis CR should exist after install")
 
 			// defer func() {
-			// 	_ = cli.Uninstall(ctx, releaseName, &helmconfig.UninstallConfig{IgnoreNotFound: true})
+			// 	_, _ = cli.Uninstall(ctx, releaseName, &helmconfig.UninstallConfig{IgnoreNotFound: true})
 			// }()
 
 			// Optional: verify it is there first

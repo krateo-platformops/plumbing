@@ -133,10 +133,10 @@ func widgetSeen(manifest string) string {
 // nothing) on the given client and returns the rendered manifest.
 func renderProbe(t *testing.T, hc *client, chartURL, releaseName string) string {
 	t.Helper()
-	rel, err := hc.Install(context.Background(), releaseName, chartURL, &helmconfig.InstallConfig{
+	rel, err := releaseOf(hc.Install(context.Background(), releaseName, chartURL, &helmconfig.InstallConfig{
 		ActionConfig: &helmconfig.ActionConfig{DryRun: helmconfig.DryRunServer},
 		Namespace:    "default",
-	})
+	}))
 	if err != nil {
 		t.Fatalf("render (%s): %v", releaseName, err)
 	}
