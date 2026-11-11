@@ -90,12 +90,20 @@ func StartReconcile(ctx context.Context, tracer trace.Tracer, obj Object, d Deci
 //
 //   - its parent is upstream, so the act and the calls it makes join the
 //     upstream trace;
-//   - it carries one link back to the reconcile root in ctx;
+//   - it carries one link back to the reconcile root in ctx, when the root is
+//     sampled;
 //   - it carries the root's three k8s.object attributes, since it isn't the
 //     root's child and its root is often not stored;
 //   - the root gains a link to it (Span.AddLink), when the act is sampled. An
 //     unsampled act, which a parent-based sampler makes under an unsampled
 //     upstream, is never exported, so the root doesn't point at it.
+//
+// The two links follow ONE rule (provider-runtime#74): each is added only when its target is
+// sampled, because an unsampled span is never exported and a link to it would point at nothing.
+// "Sampled" is the HEAD decision, the SDK sampler's. Whether either target is STORED is the
+// collector's (tail sampling), so neither link is guaranteed to resolve in a backend; the rule
+// only keeps this process from writing a link it already knows points nowhere. Before v1.46.0 the
+// act linked to its root unconditionally.
 //
 // With upstream invalid it is an ordinary StartStep child of the root. With tracer
 // nil it starts nothing.
@@ -112,7 +120,7 @@ func StartActStep(ctx context.Context, tracer trace.Tracer, obj Object, step str
 			AttrObjectNamespace.String(obj.Namespace),
 		),
 	}
-	if sc := root.SpanContext(); sc.IsValid() {
+	if sc := root.SpanContext(); sc.IsValid() && sc.IsSampled() {
 		opts = append(opts, trace.WithLinks(trace.Link{SpanContext: sc}))
 	}
 	actCtx, act := tracer.Start(trace.ContextWithRemoteSpanContext(ctx, upstream), step, opts...)

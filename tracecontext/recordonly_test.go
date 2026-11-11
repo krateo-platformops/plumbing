@@ -89,34 +89,77 @@ func (dropRoots) ShouldSample(p sdktrace.SamplingParameters) sdktrace.SamplingRe
 }
 func (dropRoots) Description() string { return "dropRoots" }
 
-// PINS v1.14.1 AS IT IS, not as it should be: the act links to its root even when the root is
-// unsampled, so an exported act can point at a root that was never exported. The provider-runtime
-// session flagged the asymmetry (the root links to the act only when the act is sampled) and is
-// deciding it there. This test makes a change to it deliberate: update it with that decision.
-func TestStartActStepLinksToAnUnsampledRootAsInV1141(t *testing.T) {
-	rec := tracetest.NewSpanRecorder()
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec), sdktrace.WithSampler(dropRoots{}))
-	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+// provider-runtime#74. The act links to its root, and the root to the act, each only when its
+// TARGET is head-sampled: one rule for both directions. One row per sampled/dropped combination
+// that leaves the act observable. Before v1.46.0 the act linked to an unsampled root as well (the
+// third row), pointing an exported span at one that was never exported.
+func TestStartActStepLinksOnlyToSampledTargets(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		sampler            sdktrace.Sampler // nil: sample everything
+		rootSampled        bool
+		actSampled         bool
+		wantActToRoot      bool
+		wantRootToActIfRec bool
+	}{
+		{"root sampled, act sampled", nil, true, true, true, true},
+		{"root sampled, act recorded but not sampled", recordOnlyActs{}, true, false, true, false},
+		{"root dropped, act sampled", dropRoots{}, false, true, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := tracetest.NewSpanRecorder()
+			opts := []sdktrace.TracerProviderOption{sdktrace.WithSpanProcessor(rec)}
+			if tc.sampler != nil {
+				opts = append(opts, sdktrace.WithSampler(tc.sampler))
+			}
+			tp := sdktrace.NewTracerProvider(opts...)
+			t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 
-	d := Decide(ann(AnnotationKeyTraceparent, tpA), "", time.Time{}, time.Now(), time.Minute)
-	ctx, root := StartReconcile(context.Background(), tp.Tracer(testScope), obj, d, time.Now())
-	if root.SpanContext().IsSampled() {
-		t.Fatal("premise: the root must be unsampled")
-	}
-	_, act := StartActStep(ctx, tp.Tracer(testScope), obj, SpanUpdate, d.Remote)
-	act.End()
-	root.End()
-	var got sdktrace.ReadOnlySpan
-	for _, s := range rec.Ended() {
-		if s.Name() == SpanUpdate {
-			got = s
-		}
-	}
-	if got == nil {
-		t.Fatal("the act was not recorded")
-	}
-	if l := got.Links(); len(l) != 1 || l[0].SpanContext.SpanID() != root.SpanContext().SpanID() {
-		t.Errorf("act links = %v; v1.14.1 links the act to its root even when the root is unsampled", l)
+			d := Decide(ann(AnnotationKeyTraceparent, tpA), "", time.Time{}, time.Now(), time.Minute)
+			ctx, root := StartReconcile(context.Background(), tp.Tracer(testScope), obj, d, time.Now())
+			_, act := StartActStep(ctx, tp.Tracer(testScope), obj, SpanUpdate, d.Remote)
+			if root.SpanContext().IsSampled() != tc.rootSampled || act.SpanContext().IsSampled() != tc.actSampled {
+				t.Fatalf("premise: root sampled %v, act sampled %v; want %v, %v",
+					root.SpanContext().IsSampled(), act.SpanContext().IsSampled(), tc.rootSampled, tc.actSampled)
+			}
+			act.End()
+			root.End()
+
+			var gotAct, gotRoot sdktrace.ReadOnlySpan
+			for _, s := range rec.Ended() {
+				switch s.Name() {
+				case SpanUpdate:
+					gotAct = s
+				case SpanReconcile:
+					gotRoot = s
+				}
+			}
+			if gotAct == nil {
+				t.Fatal("control: the act must be recorded in every row")
+			}
+			actToRoot := false
+			for _, l := range gotAct.Links() {
+				if l.SpanContext.SpanID() == root.SpanContext().SpanID() {
+					actToRoot = true
+				}
+			}
+			if actToRoot != tc.wantActToRoot {
+				t.Errorf("act -> root link = %v, want %v (act links %v)", actToRoot, tc.wantActToRoot, gotAct.Links())
+			}
+			if gotRoot != nil {
+				rootToAct := false
+				for _, l := range gotRoot.Links() {
+					if l.SpanContext.SpanID() == act.SpanContext().SpanID() {
+						rootToAct = true
+					}
+				}
+				if rootToAct != tc.wantRootToActIfRec {
+					t.Errorf("root -> act link = %v, want %v", rootToAct, tc.wantRootToActIfRec)
+				}
+			} else if tc.rootSampled {
+				t.Error("control: a sampled root must be recorded")
+			}
+		})
 	}
 }
 
