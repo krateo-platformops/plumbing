@@ -202,12 +202,19 @@ type ReconcileResult struct {
 	//
 	// Names and the resource only: no manifest, no field values, no Secret data.
 	//
-	// Empty when ObjectsComplete is false.
+	// May be partial when ObjectsComplete is false.
 	Objects []ObjectVerdict
-	// ObjectsComplete is false when Reconcile could not say which children changed: the release
-	// did not exist yet and Reconcile installed it through Upgrade, which reports no per-object
-	// outcome. On every other path (a clean or partial apply, an ErrJobTemplateChanged return)
-	// Objects is complete for what the merge did.
+	// ObjectsComplete is false when Objects may not name every child the merge changed:
+	//
+	//   - the release did not exist yet and Reconcile installed it through Upgrade, which reports
+	//     no per-object outcome. Objects is empty, and a caller that records creates must derive
+	//     them from the installed release's manifest.
+	//   - an intended deletion could not be resolved to the object it names. Objects lists the
+	//     rest.
+	//
+	// On every other path (a clean or partial apply, an ErrJobTemplateChanged return) Objects is
+	// complete for what the merge did. A child whose state could not be read is listed as
+	// ChangeDeleteUnknown, not left out.
 	ObjectsComplete bool
 }
 
@@ -229,7 +236,8 @@ type ObjectVerdict struct {
 	Change ObjectChange
 }
 
-// ObjectChange is how a child changed. See SpecChanged for how each counts.
+// ObjectChange is how a child changed. It states what happened; whether a change counts (for an
+// audit, a revision, a metric) is the caller's policy, so no helper decides it here.
 type ObjectChange string
 
 const (
@@ -255,14 +263,11 @@ const (
 	// ChangeDeleteNotDone: the child left the render, is still live, and is not kept: its deletion
 	// failed, or helm never reached its deletion loop. The next reconcile asks again.
 	ChangeDeleteNotDone ObjectChange = "deleteNotDone"
+	// ChangeDeleteUnknown: the child left the render and helm did not report deleting it, but its
+	// live state could not be read (an error other than NotFound), so nobody can say whether it was
+	// kept, deleted or left. A child already gone (NotFound) is not listed.
+	ChangeDeleteUnknown ObjectChange = "deleteUnknown"
 )
-
-// SpecChanged reports whether the change counts as a content change: a create or a delete
-// (absent to present, present to absent) or a content change. A metadata-only change, a failed
-// comparison, a kept deletion and a deletion not done do not.
-func (c ObjectChange) SpecChanged() bool {
-	return c == ChangeCreated || c == ChangeDeleted || c == ChangeSpec
-}
 
 // ErrJobTemplateChanged is returned (wrapped) by Reconcile when the chart changed the pod template of
 // a Job that is live. The template is immutable, so the release cannot converge until the chart stops

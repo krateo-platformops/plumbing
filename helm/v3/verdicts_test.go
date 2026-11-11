@@ -2,11 +2,13 @@ package helm
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"testing"
 
 	helmconfig "github.com/krateo-platformops/plumbing/helm"
 	"helm.sh/helm/v3/pkg/kube"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -215,7 +217,10 @@ func TestObjectVerdicts(t *testing.T) {
 			live[infoKey(info)] = cm(name, "blue")
 			target = append(target, info)
 		}
-		got := objectVerdicts(verdictInputs{target: target, live: live, absent: map[string]bool{}})
+		got, complete := objectVerdicts(verdictInputs{target: target, live: live, absent: map[string]bool{}})
+		if !complete {
+			t.Fatal("complete = false with every key resolvable")
+		}
 		if len(got) != n {
 			t.Fatalf("got %d verdicts, want %d (maxChangedObjects is %d and must not apply)", len(got), n, maxChangedObjects)
 		}
@@ -234,33 +239,38 @@ func TestObjectVerdicts(t *testing.T) {
 		same := vinfo(cm("same", "blue"), "configmaps")
 		keptInfo := vinfo(withUID(cm("kept", "blue"), "uid-kept"), "configmaps")
 		notDoneInfo := vinfo(cm("stuck", "blue"), "configmaps")
+		unknownInfo := vinfo(cm("unread", "blue"), "configmaps")
 
 		live := map[string]runtime.Object{
 			infoKey(spec): cm("spec", "blue"),
 			infoKey(meta): cm("meta", "blue"),
 			infoKey(same): cm("same", "blue"),
 		}
-		got := objectVerdicts(verdictInputs{
+		got, complete := objectVerdicts(verdictInputs{
 			target:  kube.ResourceList{created, spec, meta, same},
 			created: kube.ResourceList{created},
 			deleted: kube.ResourceList{deleted},
-			current: kube.ResourceList{spec, meta, same, keptInfo, notDoneInfo},
+			current: kube.ResourceList{spec, meta, same, keptInfo, notDoneInfo, unknownInfo},
 			live:    live,
 			absent:  map[string]bool{infoKey(created): true},
 			kept:    []string{infoKey(keptInfo)},
 			notDone: []string{infoKey(notDoneInfo)},
+			unknown: []string{infoKey(unknownInfo)},
 		})
+		if !complete {
+			t.Fatal("complete = false with every key resolvable")
+		}
 		want := map[string]struct {
 			verb   string
 			change helmconfig.ObjectChange
-			spec   bool
 		}{
-			"new":   {"create", helmconfig.ChangeCreated, true},
-			"gone":  {"delete", helmconfig.ChangeDeleted, true},
-			"spec":  {"patch", helmconfig.ChangeSpec, true},
-			"meta":  {"patch", helmconfig.ChangeMetadataOnly, false},
-			"kept":  {"delete", helmconfig.ChangeKept, false},
-			"stuck": {"delete", helmconfig.ChangeDeleteNotDone, false},
+			"new":    {"create", helmconfig.ChangeCreated},
+			"gone":   {"delete", helmconfig.ChangeDeleted},
+			"spec":   {"patch", helmconfig.ChangeSpec},
+			"meta":   {"patch", helmconfig.ChangeMetadataOnly},
+			"kept":   {"delete", helmconfig.ChangeKept},
+			"stuck":  {"delete", helmconfig.ChangeDeleteNotDone},
+			"unread": {"delete", helmconfig.ChangeDeleteUnknown},
 		}
 		if len(got) != len(want) {
 			t.Fatalf("got %d verdicts %+v, want %d (the unchanged child must be absent)", len(got), got, len(want))
@@ -270,8 +280,8 @@ func TestObjectVerdicts(t *testing.T) {
 			if !ok {
 				t.Fatalf("unexpected verdict %+v", v)
 			}
-			if v.Verb != w.verb || v.Change != w.change || v.Change.SpecChanged() != w.spec {
-				t.Errorf("%s: verb %q change %q specChanged %v, want %q %q %v", v.Name, v.Verb, v.Change, v.Change.SpecChanged(), w.verb, w.change, w.spec)
+			if v.Verb != w.verb || v.Change != w.change {
+				t.Errorf("%s: verb %q change %q, want %q %q", v.Name, v.Verb, v.Change, w.verb, w.change)
 			}
 		}
 		for _, v := range got {
@@ -283,7 +293,7 @@ func TestObjectVerdicts(t *testing.T) {
 
 	t.Run("force replaces: verb update", func(t *testing.T) {
 		info := vinfo(cm("x", "red"), "configmaps")
-		got := objectVerdicts(verdictInputs{
+		got, _ := objectVerdicts(verdictInputs{
 			target: kube.ResourceList{info}, live: map[string]runtime.Object{infoKey(info): cm("x", "blue")},
 			absent: map[string]bool{}, force: true,
 		})
@@ -295,9 +305,23 @@ func TestObjectVerdicts(t *testing.T) {
 	t.Run("a failed comparison is its own verdict", func(t *testing.T) {
 		info := vinfo(cm("x", "red"), "configmaps")
 		// No before state: the comparison cannot run, as when the live read returned nothing usable.
-		got := objectVerdicts(verdictInputs{target: kube.ResourceList{info}, live: map[string]runtime.Object{}, absent: map[string]bool{}})
-		if len(got) != 1 || got[0].Change != helmconfig.ChangeCompareFailed || got[0].Change.SpecChanged() {
-			t.Fatalf("got %+v, want one compareFailed verdict that is not a spec change", got)
+		got, _ := objectVerdicts(verdictInputs{target: kube.ResourceList{info}, live: map[string]runtime.Object{}, absent: map[string]bool{}})
+		if len(got) != 1 || got[0].Change != helmconfig.ChangeCompareFailed {
+			t.Fatalf("got %+v, want one compareFailed verdict", got)
+		}
+	})
+
+	t.Run("a deletion key that resolves to nothing makes the list incomplete", func(t *testing.T) {
+		known := vinfo(cm("known", "x"), "configmaps")
+		for name, in := range map[string]verdictInputs{
+			"kept":    {current: kube.ResourceList{known}, kept: []string{infoKey(known), "v1/ConfigMap/ns/missing"}},
+			"notDone": {current: kube.ResourceList{known}, notDone: []string{"v1/ConfigMap/ns/missing"}},
+			"unknown": {current: kube.ResourceList{known}, unknown: []string{"v1/ConfigMap/ns/missing"}},
+		} {
+			got, complete := objectVerdicts(in)
+			if complete {
+				t.Errorf("%s: complete = true although a key resolved to nothing (%+v)", name, got)
+			}
 		}
 	})
 }
@@ -306,20 +330,28 @@ func TestObjectVerdicts(t *testing.T) {
 func TestPendingDeletions(t *testing.T) {
 	keep := map[string]string{kube.ResourcePolicyAnno: kube.KeepPolicy}
 	a, b, c := vinfo(cm("a", "x"), "configmaps"), vinfo(cm("b", "x"), "configmaps"), vinfo(cm("c", "x"), "configmaps")
+	d, e := vinfo(cm("d", "x"), "configmaps"), vinfo(cm("e", "x"), "configmaps")
 	reads := 0
 	get := func(info *resource.Info) (runtime.Object, error) {
 		reads++
+		switch info.Name {
+		case "d":
+			return nil, apierrors.NewNotFound(schema.GroupResource{Resource: "configmaps"}, "d")
+		case "e":
+			return nil, errors.New("connection refused")
+		}
 		u := cm(info.Name, "x")
 		if info.Name == "b" {
 			u.SetAnnotations(keep)
 		}
 		return u, nil
 	}
-	kept, notDone := pendingDeletions(kube.ResourceList{a, b, c}, kube.ResourceList{a}, nil, get)
-	if fmt.Sprint(kept) != fmt.Sprint([]string{infoKey(b)}) || fmt.Sprint(notDone) != fmt.Sprint([]string{infoKey(c)}) {
-		t.Fatalf("kept %v notDone %v, want [b] and [c]", kept, notDone)
+	kept, notDone, unknown := pendingDeletions(kube.ResourceList{a, b, c, d, e}, kube.ResourceList{a}, nil, get)
+	if fmt.Sprint(kept) != fmt.Sprint([]string{infoKey(b)}) || fmt.Sprint(notDone) != fmt.Sprint([]string{infoKey(c)}) ||
+		fmt.Sprint(unknown) != fmt.Sprint([]string{infoKey(e)}) {
+		t.Fatalf("kept %v notDone %v unknown %v, want [b] [c] [e] (d is gone, so in none)", kept, notDone, unknown)
 	}
-	if reads != 2 {
-		t.Fatalf("%d reads, want 2: one per object not deleted", reads)
+	if reads != 4 {
+		t.Fatalf("%d reads, want 4: one per object not deleted", reads)
 	}
 }

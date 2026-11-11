@@ -15,8 +15,10 @@ timestamp: 2026-08-07T00:00:00Z
   `ChangedObjects` stopped at 10 and couldn't tell a content change from a
   metadata-only one. `ReconcileResult.Objects` is a separate, uncapped list of
   `ObjectVerdict`s: the resource, name and uid, the verb sent, and one of
-  `created`, `deleted`, `specChanged`, `metadataOnly`, `compareFailed`, `kept` or
-  `deleteNotDone`. Content compares as snowplow ruled: RBAC rules and subjects as
+  `created`, `deleted`, `specChanged`, `metadataOnly`, `compareFailed`, `kept`,
+  `deleteNotDone` or `deleteUnknown` (an intended deletion whose live state couldn't
+  be read). It says what happened and leaves what counts to the caller, and
+  `ObjectsComplete` says when the list may be missing a child. Content compares as snowplow ruled: RBAC rules and subjects as
   sets, Secrets by effective data and type. The capped diagnostic lists and their
   log lines are unchanged. Kept and not-done deletions now come from one read per
   object (`pendingDeletions`), shared by the verdicts and the `Changed` decision.

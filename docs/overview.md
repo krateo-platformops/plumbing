@@ -67,15 +67,19 @@ uncapped `ObjectVerdict` per child it created, deleted, changed, kept
 group, version, resource, kind, namespace, name, uid when known, the verb sent
 (`create`, `patch`, `update` under `Force`, `delete`) and the `Change`:
 
-| Change | Meaning | `SpecChanged()` |
-|---|---|---|
-| `created` | absent, now created | true |
-| `deleted` | pruned: left the render and deleted | true |
-| `specChanged` | content changed: the fields other than apiVersion, kind, metadata, status | true |
-| `metadataOnly` | only labels, annotations or other metadata changed | false |
-| `compareFailed` | applied, but before/after couldn't be compared (Reconcile counts it as a change, fail safe) | false |
-| `kept` | left the render; helm declined the delete (keep) | false |
-| `deleteNotDone` | left the render, still live, not kept: the delete failed or never ran | false |
+| Change | Meaning |
+|---|---|
+| `created` | absent, now created |
+| `deleted` | pruned: left the render and deleted |
+| `specChanged` | content changed: the fields other than apiVersion, kind, metadata, status |
+| `metadataOnly` | only labels, annotations or other metadata changed |
+| `compareFailed` | applied, but before/after couldn't be compared (Reconcile counts it as a change, fail safe) |
+| `kept` | left the render; helm declined the delete (keep) |
+| `deleteNotDone` | left the render, still live, not kept: the delete failed or never ran |
+| `deleteUnknown` | left the render, not reported deleted, and its live state couldn't be read |
+
+The verdict states what happened. Whether it counts (for an audit, a revision, a metric)
+is the caller's policy.
 
 Content compares canonically: RBAC rules, aggregation selectors and binding subjects
 are sets, and a Secret compares by its effective `data` (after `stringData` folds in)
@@ -83,8 +87,10 @@ and `type`. Created, deleted and patched in the counts equal the number of
 `created`, `deleted` and other surviving-child verdicts. A child the merge left
 unchanged is absent, and so is a Job kept out of the merge. The list holds names
 only, never values, and it is uncapped for one audit record per entry (AUDIT-4).
-So log the capped `ChangedObjects`, never `Objects`. `ObjectsComplete` is false only
-on the install fallback in step 1, which reports no per-object outcome.
+So log the capped `ChangedObjects`, never `Objects`. `ObjectsComplete` is false on the
+install fallback in step 1, which reports no per-object outcome (derive creates from the
+installed release's manifest), and when an intended deletion can't be resolved to its
+object.
 
 The steady-state guarantee is "no cluster mutation → no Helm revision, no hooks",
 which is what stopped the platform's per-60s revision churn. It is only as no-churn

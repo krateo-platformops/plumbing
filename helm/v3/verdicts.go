@@ -19,13 +19,14 @@ import (
 //
 // target holds the children handed to the merge, each Object refreshed to its post-merge state;
 // live holds their state before the merge (absent ones are missing from it). created and deleted
-// are helm's result. kept and notDone are the infoKeys of intended deletions that helm declined
-// (resource-policy keep) or did not perform, and current resolves them to their Infos.
+// are helm's result. kept, notDone and unknown are the infoKeys of intended deletions that helm
+// declined (resource-policy keep), did not perform, or whose state could not be read
+// (pendingDeletions), and current resolves them to their Infos.
 type verdictInputs struct {
 	target, created, deleted, current kube.ResourceList
 	live                              map[string]runtime.Object
 	absent                            map[string]bool
-	kept, notDone                     []string
+	kept, notDone, unknown            []string
 	force                             bool
 }
 
@@ -38,7 +39,11 @@ type verdictInputs struct {
 //
 // EXTRACTED for the same reason as classifyApply and keptDeletions: a decision reachable only
 // through a full Reconcile is a decision nobody tests.
-func objectVerdicts(in verdictInputs) []helmconfig.ObjectVerdict {
+//
+// complete is false when an intended deletion's key resolves to no Info in current, which the
+// lists it came from should make impossible; the verdict is then missing, and the caller is told
+// rather than left to read the gap as "nothing happened".
+func objectVerdicts(in verdictInputs) (verdicts []helmconfig.ObjectVerdict, complete bool) {
 	updateVerb := "patch"
 	if in.force {
 		updateVerb = "update" // helm replaces (PUT) under Force
@@ -78,18 +83,26 @@ func objectVerdicts(in verdictInputs) []helmconfig.ObjectVerdict {
 	for _, info := range in.current {
 		byKey[infoKey(info)] = info
 	}
-	for _, k := range in.kept {
-		if info := byKey[k]; info != nil {
-			out = append(out, verdictOf(info, info.Object, "delete", helmconfig.ChangeKept))
-		}
-	}
-	for _, k := range in.notDone {
-		if info := byKey[k]; info != nil {
-			out = append(out, verdictOf(info, info.Object, "delete", helmconfig.ChangeDeleteNotDone))
+	complete = true
+	for _, d := range []struct {
+		keys   []string
+		change helmconfig.ObjectChange
+	}{
+		{in.kept, helmconfig.ChangeKept},
+		{in.notDone, helmconfig.ChangeDeleteNotDone},
+		{in.unknown, helmconfig.ChangeDeleteUnknown},
+	} {
+		for _, k := range d.keys {
+			info := byKey[k]
+			if info == nil {
+				complete = false
+				continue
+			}
+			out = append(out, verdictOf(info, info.Object, "delete", d.change))
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return verdictKey(out[i]) < verdictKey(out[j]) })
-	return out
+	return out, complete
 }
 
 func verdictKey(v helmconfig.ObjectVerdict) string {
