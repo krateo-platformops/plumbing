@@ -9,6 +9,17 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-11 — Reconcile counts the caller's authorization annotations as content**
+  (plumbing#124, AUDIT-4): audit v0.6.0's content hash counts the annotations authorization
+  reads (`content_annotations`, `audit.AuthorizationAnnotations()`), but `canonicalContent`
+  counted no annotation. A merge that changed only one would be a `metadataOnly` verdict
+  next to a record whose `content_sha256` changed. `UpgradeConfig.ContentAnnotations` names
+  them, and they're kept under `metadata.annotations` exactly as the hash keeps them: present
+  with a non-null value. plumbing hard-codes no component's keys. The caller passes the
+  schema's list, and an empty list keeps the previous behavior. A null member now counts as
+absent at every depth, as c1 reads it, so a verdict never calls content changed whose hash
+is the same. The three differences that remain on purpose (a ConfigMap's non-data fields,
+RBAC as sets, a top-level empty list) are documented, and the parity test pins each one.
 - **2026-11-11 — signup deletes its CSR** (authn#119 review): `signup.Do`/`DoWritten`
   created a CertificateSigningRequest under the fixed name of the identity (authn's own,
   `authn`), approved it, read the certificate and never deleted it. An approved CSR left
