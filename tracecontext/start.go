@@ -90,17 +90,31 @@ func StartReconcile(ctx context.Context, tracer trace.Tracer, obj Object, d Deci
 //
 //   - its parent is upstream, so the act and the calls it makes join the
 //     upstream trace;
-//   - it carries one link back to the reconcile root in ctx;
+//   - it carries one link back to the reconcile root in ctx, when the root is
+//     sampled;
 //   - it carries the root's three k8s.object attributes, since it isn't the
 //     root's child and its root is often not stored;
 //   - the root gains a link to it (Span.AddLink), when the act is sampled. An
 //     unsampled act, which a parent-based sampler makes under an unsampled
 //     upstream, is never exported, so the root doesn't point at it.
 //
+// The two links follow ONE rule (provider-runtime#74): each is added only when its target is
+// sampled, because an unsampled span is never exported and a link to it would point at nothing.
+// "Sampled" is the HEAD decision, the SDK sampler's. Whether either target is STORED is the
+// collector's (tail sampling), so neither link is guaranteed to resolve in a backend; the rule
+// only keeps this process from writing a link it already knows points nowhere. Before v1.46.0 the
+// act linked to its root unconditionally.
+//
+// In both cases, joined or not, it first marks the root in ctx with AttrActed (MarkActed).
+//
 // With upstream invalid it is an ordinary StartStep child of the root. With tracer
-// nil it starts nothing.
+// nil it starts nothing and marks nothing.
 func StartActStep(ctx context.Context, tracer trace.Tracer, obj Object, step string, upstream trace.SpanContext) (context.Context, trace.Span) {
-	if tracer == nil || !upstream.IsValid() {
+	if tracer == nil {
+		return StartStep(ctx, tracer, step)
+	}
+	MarkActed(ctx)
+	if !upstream.IsValid() {
 		return StartStep(ctx, tracer, step)
 	}
 	root := trace.SpanFromContext(ctx)
@@ -112,7 +126,7 @@ func StartActStep(ctx context.Context, tracer trace.Tracer, obj Object, step str
 			AttrObjectNamespace.String(obj.Namespace),
 		),
 	}
-	if sc := root.SpanContext(); sc.IsValid() {
+	if sc := root.SpanContext(); sc.IsValid() && sc.IsSampled() {
 		opts = append(opts, trace.WithLinks(trace.Link{SpanContext: sc}))
 	}
 	actCtx, act := tracer.Start(trace.ContextWithRemoteSpanContext(ctx, upstream), step, opts...)
@@ -120,6 +134,18 @@ func StartActStep(ctx context.Context, tracer trace.Tracer, obj Object, step str
 		root.AddLink(trace.Link{SpanContext: act.SpanContext()})
 	}
 	return actCtx, act
+}
+
+// MarkActed sets AttrActed=true on the span active in ctx, which must be the pass's reconcile root
+// (the ctx StartReconcile returned, or one derived from it before any act step starts). StartActStep
+// calls it in both its branches, so a runtime whose every act goes through StartActStep never calls
+// it directly. A runtime that acts WITHOUT opening a step span (unstructured-runtime opens one only
+// for the joined act) calls it at each act instead. It only ever sets true; with no recording span in
+// ctx it does nothing.
+func MarkActed(ctx context.Context) {
+	if span := trace.SpanFromContext(ctx); span.IsRecording() {
+		span.SetAttributes(AttrActed.Bool(true))
+	}
 }
 
 // StartStep opens the child span named step under the reconcile root in ctx,
