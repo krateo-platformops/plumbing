@@ -1,6 +1,7 @@
 package signup
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
 	"encoding/base64"
@@ -17,6 +18,7 @@ import (
 	"github.com/krateo-platformops/plumbing/certs"
 	"github.com/krateo-platformops/plumbing/endpoints"
 	"github.com/krateo-platformops/plumbing/kubeutil"
+	certv1 "k8s.io/api/certificates/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -72,7 +74,7 @@ func (g *signupHandler) doIt(ctx context.Context, user string, groups []string) 
 		g.caData = caCrt
 	}
 
-	ep, err := g.generateEndpoint(user, groups)
+	ep, err := g.generateEndpoint(ctx, user, groups)
 	if err != nil {
 		return endpoints.Endpoint{}, endpoints.Written{}, err
 	}
@@ -82,7 +84,7 @@ func (g *signupHandler) doIt(ctx context.Context, user string, groups []string) 
 	return ep, w, err
 }
 
-func (g *signupHandler) generateEndpoint(user string, groups []string) (ep endpoints.Endpoint, err error) {
+func (g *signupHandler) generateEndpoint(ctx context.Context, user string, groups []string) (ep endpoints.Endpoint, err error) {
 	if len(g.serverURL) == 0 {
 		host, port := os.Getenv("KUBERNETES_SERVICE_HOST"), os.Getenv("KUBERNETES_SERVICE_PORT")
 		if len(host) == 0 || len(port) == 0 {
@@ -96,7 +98,7 @@ func (g *signupHandler) generateEndpoint(user string, groups []string) (ep endpo
 		return ep, err
 	}
 
-	cert, key, err := generateClientCertAndKey(cli, generateClientCertAndKeyOpts{
+	cert, key, err := generateClientCertAndKey(ctx, cli, generateClientCertAndKeyOpts{
 		userID:   mkID(fmt.Sprintf("%s@%s", user, strings.Join(groups, ","))),
 		username: user,
 		groups:   groups,
@@ -121,7 +123,46 @@ type generateClientCertAndKeyOpts struct {
 	groups   []string
 }
 
-func generateClientCertAndKey(client kubernetes.Interface, o generateClientCertAndKeyOpts) (crtOut, keyOut string, err error) {
+// csrCleanupTimeout bounds each delete of the CSR signup makes on the way out
+// (plumbing#129): an apiserver that accepts a delete but never confirms it,
+// or doesn't answer, holds the signup this long at most, not
+// certificateWaitTimeout.
+var csrCleanupTimeout = 30 * time.Second
+
+// cleanupContext is the context a cleanup delete runs on: ctx's values without
+// its cancellation, so a cancelled request still cleans up the CSR it created,
+// bounded by csrCleanupTimeout.
+func cleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), csrCleanupTimeout)
+}
+
+// deleteOwnCSR is the cleanup delete of the CSR named after csr, and only if
+// it is provably this signup's (plumbing#134 review). Its name is the user's,
+// so another signup for the same user may hold it by now: a CSR whose
+// spec.request isn't csr's (another key) is left alone, and the one delete
+// carries a UID precondition, so a CSR re-created between the read and the
+// delete isn't touched either. NotFound, or a precondition that no longer
+// holds, means there is nothing of ours to delete. It runs on cleanupContext.
+func deleteOwnCSR(ctx context.Context, client kubernetes.Interface, csr *certv1.CertificateSigningRequest) error {
+	cctx, cancel := cleanupContext(ctx)
+	defer cancel()
+	live, err := certs.GetCertificateSigningRequest(cctx, client, csr.Name)
+	switch {
+	case errors.IsNotFound(err):
+		return nil
+	case err != nil:
+		return err
+	case !bytes.Equal(live.Spec.Request, csr.Spec.Request):
+		return nil // another signup's
+	}
+	err = certs.DeleteCertificateSigningRequestUID(cctx, client, csr.Name, live.UID)
+	if err == nil || errors.IsNotFound(err) || errors.IsConflict(err) {
+		return nil
+	}
+	return err
+}
+
+func generateClientCertAndKey(ctx context.Context, client kubernetes.Interface, o generateClientCertAndKeyOpts) (crtOut, keyOut string, err error) {
 	key, err := certs.NewPrivateKey()
 	if err != nil {
 		return "", "", err
@@ -139,18 +180,18 @@ func generateClientCertAndKey(client kubernetes.Interface, o generateClientCertA
 		UserID: o.userID, Username: o.username,
 	})
 
-	err = certs.CreateCertificateSigningRequests(client, csr)
+	err = certs.CreateCertificateSigningRequests(ctx, client, csr)
 	if err != nil {
 		if !errors.IsAlreadyExists(err) {
-			return "", "", fmt.Errorf("creating CSR kubernetes object: %w", err)
+			return "", "", createFailed(ctx, client, csr, err)
 		}
 
-		if err := certs.DeleteCertificateSigningRequest(client, csr.Name); err != nil {
+		if err := certs.DeleteCertificateSigningRequest(ctx, client, csr.Name); err != nil {
 			return "", "", fmt.Errorf("deleting existing CSR kubernetes object: %w", err)
 		}
 
-		if err := certs.CreateCertificateSigningRequests(client, csr); err != nil {
-			return "", "", fmt.Errorf("creating CSR kubernetes object: %w", err)
+		if err := certs.CreateCertificateSigningRequests(ctx, client, csr); err != nil {
+			return "", "", createFailed(ctx, client, csr, err)
 		}
 	}
 
@@ -162,8 +203,8 @@ func generateClientCertAndKey(client kubernetes.Interface, o generateClientCertA
 	// the caller retries and the CSR doesn't linger unnoticed; after a failure
 	// the original error is kept, joined with the delete's when that fails too.
 	defer func() {
-		derr := certs.DeleteCertificateSigningRequest(client, csr.Name)
-		if derr == nil || errors.IsNotFound(derr) {
+		derr := deleteOwnCSR(ctx, client, csr)
+		if derr == nil {
 			return
 		}
 		derr = fmt.Errorf("deleting the used CSR %s: %w", csr.Name, derr)
@@ -176,17 +217,17 @@ func generateClientCertAndKey(client kubernetes.Interface, o generateClientCertA
 		err = stderrors.Join(err, derr)
 	}()
 
-	err = certs.ApproveCertificateSigningRequest(client, csr, "authn")
+	err = certs.ApproveCertificateSigningRequest(ctx, client, csr, "authn")
 	if err != nil {
 		return "", "", err
 	}
 
-	err = certs.WaitForCertificate(client, csr.Name)
+	err = certs.WaitForCertificate(ctx, client, csr.Name)
 	if err != nil {
 		return "", "", err
 	}
 
-	crt, err := certs.Certificate(client, csr.Name)
+	crt, err := certs.Certificate(ctx, client, csr.Name)
 	if err != nil {
 		return "", "", err
 	}
@@ -203,4 +244,18 @@ func mkID(in string) string {
 	hash := fnv.New64a()
 	hash.Write([]byte(in))
 	return strconv.FormatUint(hash.Sum64(), 16)
+}
+
+// createFailed is the error of a create that failed. The apiserver may have
+// stored this CSR anyway (a timeout after the write), so it is deleted before
+// signup returns (plumbing#129), and only if it is ours (deleteOwnCSR): a create
+// refused outright, or answered AlreadyExists because another signup won the
+// name, leaves that signup's CSR alone. A delete that fails too is joined
+// after the create's error, so the CSR left behind is not hidden.
+func createFailed(ctx context.Context, client kubernetes.Interface, csr *certv1.CertificateSigningRequest, err error) error {
+	err = fmt.Errorf("creating CSR kubernetes object: %w", err)
+	if derr := deleteOwnCSR(ctx, client, csr); derr != nil {
+		return stderrors.Join(err, fmt.Errorf("deleting the CSR %s whose create failed: %w", csr.Name, derr))
+	}
+	return err
 }
