@@ -102,7 +102,7 @@ func StartReconcile(ctx context.Context, tracer trace.Tracer, obj Object, d Deci
 // sampled, because an unsampled span is never exported and a link to it would point at nothing.
 // "Sampled" is the HEAD decision, the SDK sampler's. Whether either target is STORED is the
 // collector's (tail sampling), so neither link is guaranteed to resolve in a backend; the rule
-// only keeps this process from writing a link it already knows points nowhere. Before v1.46.0 the
+// only keeps this process from writing a link it already knows points nowhere. Before v1.48.0 the
 // act linked to its root unconditionally.
 //
 // In both cases, joined or not, it first marks the root in ctx with AttrActed (MarkActed).
