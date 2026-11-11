@@ -189,7 +189,7 @@ func TestContentDiffers(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := contentDiffers(tc.before, tc.after)
+			got, err := contentDiffers(tc.before, tc.after, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -213,6 +213,78 @@ func stored(u *unstructured.Unstructured) *unstructured.Unstructured {
 
 // The verdict list is uncapped, names each child once with the verb sent and how it changed, and
 // agrees with the counts Reconcile reports.
+func withAnnotations(u *unstructured.Unstructured, a map[string]string) *unstructured.Unstructured {
+	u.SetAnnotations(a)
+	return u
+}
+
+// The caller's content annotations (plumbing#124) count as content, as audit.ContentSHA256 counts
+// them; every other annotation stays metadata, and with no list none counts.
+func TestContentAnnotations(t *testing.T) {
+	const strategy, groups = "authn.krateo.io/strategy", "authn.krateo.io/groups"
+	keys := []string{strategy, groups}
+	sec := func(a map[string]string) runtime.Object {
+		return withAnnotations(vobj("v1", "Secret", "ns", "s", map[string]interface{}{"data": map[string]interface{}{"k": b64("v")}}), a)
+	}
+	for _, tc := range []struct {
+		name          string
+		before, after runtime.Object
+		keys          []string
+		want          bool
+	}{
+		{"a listed annotation changed", sec(map[string]string{groups: "devs"}), sec(map[string]string{groups: "devs\nops"}), keys, true},
+		{"a listed annotation stamped", sec(nil), sec(map[string]string{strategy: "oidc"}), keys, true},
+		{"a listed annotation removed", sec(map[string]string{strategy: "oidc"}), sec(nil), keys, true},
+		{"a listed annotation set to empty is a value", sec(nil), sec(map[string]string{strategy: ""}), keys, true},
+		{"a listed annotation unchanged, another changed", sec(map[string]string{strategy: "oidc", "x": "1"}), sec(map[string]string{strategy: "oidc", "x": "2"}), keys, false},
+		{"an unlisted annotation changed", sec(map[string]string{"x": "1"}), sec(map[string]string{"x": "2"}), keys, false},
+		{"no list: a would-be listed annotation is metadata", sec(map[string]string{groups: "devs"}), sec(map[string]string{groups: "ops"}), nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := contentDiffers(tc.before, tc.after, tc.keys)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("contentDiffers = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	// Through objectVerdicts: a merge that changed only a listed annotation is specChanged, one
+	// that changed only an unlisted one is metadataOnly, and an unchanged child has no verdict.
+	authz := vinfo(stored(withAnnotations(cm("authz", "blue"), map[string]string{groups: "ops"})), "configmaps")
+	other := vinfo(stored(withAnnotations(cm("other", "blue"), map[string]string{groups: "devs", "x": "2"})), "configmaps")
+	same := vinfo(stored(withAnnotations(cm("same", "blue"), map[string]string{groups: "devs"})), "configmaps")
+	live := map[string]runtime.Object{
+		infoKey(authz): withAnnotations(cm("authz", "blue"), map[string]string{groups: "devs"}),
+		infoKey(other): withAnnotations(cm("other", "blue"), map[string]string{groups: "devs", "x": "1"}),
+		infoKey(same):  withAnnotations(cm("same", "blue"), map[string]string{groups: "devs"}),
+	}
+	list := kube.ResourceList{authz, other, same}
+	for _, tc := range []struct {
+		name string
+		keys []string
+		want map[string]helmconfig.ObjectChange
+	}{
+		{"listed", keys, map[string]helmconfig.ObjectChange{"authz": helmconfig.ChangeSpec, "other": helmconfig.ChangeMetadataOnly}},
+		{"not listed", nil, map[string]helmconfig.ObjectChange{"authz": helmconfig.ChangeMetadataOnly, "other": helmconfig.ChangeMetadataOnly}},
+	} {
+		t.Run("verdicts, "+tc.name, func(t *testing.T) {
+			got, _, _ := objectVerdicts(verdictInputs{target: list, updated: list, live: live,
+				absent: map[string]bool{}, contentAnnotations: tc.keys})
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %d verdicts %+v, want %d (the unchanged child must be absent)", len(got), got, len(tc.want))
+			}
+			for _, v := range got {
+				if w, ok := tc.want[v.Name]; !ok || v.Change != w {
+					t.Errorf("%s: change %q, want %q", v.Name, v.Change, w)
+				}
+			}
+		})
+	}
+}
+
 func TestObjectVerdicts(t *testing.T) {
 	t.Run("more than ten changed children are all listed", func(t *testing.T) {
 		var target kube.ResourceList

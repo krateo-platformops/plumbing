@@ -71,8 +71,8 @@ group, version, resource, kind, namespace, name, uid when known, the verb sent
 |---|---|
 | `created` | absent, now created |
 | `deleted` | pruned: left the render and deleted |
-| `specChanged` | content changed: the fields other than apiVersion, kind, metadata, status |
-| `metadataOnly` | only labels, annotations or other metadata changed |
+| `specChanged` | content changed: the fields other than apiVersion, kind, metadata, status, or an annotation in `UpgradeConfig.ContentAnnotations` |
+| `metadataOnly` | only labels, other annotations or other metadata changed |
 | `compareFailed` | applied, but before/after couldn't be compared (Reconcile counts it as a change, fail safe) |
 | `kept` | left the render; helm declined the delete (keep) |
 | `deleteNotDone` | left the render, still live, not kept: the delete failed or never ran |
@@ -91,6 +91,14 @@ pins this helm behaviour, and a helm bump must keep it green.
 
 The verdict states what happened. Whether it counts (for an audit, a revision, a metric)
 is the caller's policy.
+
+Some annotations are desired state: authorization reads them, so changing one changes
+what an identity may do (the AUDIT-4 ruling). The caller names them in
+`UpgradeConfig.ContentAnnotations` (plumbing#124), and a merge that changes only one of
+them is `specChanged`. plumbing declares none of its own. A caller that writes audit
+records passes the schema's list, `audit.AuthorizationAnnotations()`, so the verdict
+counts the same annotations as the record's `content_sha256`. Left empty, no annotation
+is content.
 
 Content compares canonically: RBAC rules, aggregation selectors and binding subjects
 are sets, and a Secret compares by its effective `data` (after `stringData` folds in)

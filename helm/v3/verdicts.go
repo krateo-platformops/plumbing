@@ -35,6 +35,8 @@ type verdictInputs struct {
 	absent                                     map[string]bool
 	kept, notDone, unknown                     []string
 	force                                      bool
+	// contentAnnotations are the caller's UpgradeConfig.ContentAnnotations.
+	contentAnnotations []string
 }
 
 // objectVerdicts builds the uncapped per-child verdict list (plumbing#106).
@@ -104,7 +106,7 @@ func objectVerdicts(in verdictInputs) (verdicts []helmconfig.ObjectVerdict, comp
 		if !changed {
 			continue
 		}
-		contentChanged, err := contentDiffers(before, info.Object)
+		contentChanged, err := contentDiffers(before, info.Object, in.contentAnnotations)
 		switch {
 		case err != nil:
 			out = append(out, verdictOf(info, info.Object, updateVerb, helmconfig.ChangeCompareFailed))
@@ -170,13 +172,14 @@ func verdictOf(info *resource.Info, obj runtime.Object, verb string, change helm
 }
 
 // contentDiffers reports whether before and after differ in content: every top-level field other
-// than apiVersion, kind, metadata and status, compared canonically (see canonicalContent).
-func contentDiffers(before, after runtime.Object) (bool, error) {
-	b, err := canonicalContent(before)
+// than apiVersion, kind, metadata and status, and the annotations listed in contentAnnotations,
+// compared canonically (see canonicalContent).
+func contentDiffers(before, after runtime.Object, contentAnnotations []string) (bool, error) {
+	b, err := canonicalContent(before, contentAnnotations)
 	if err != nil {
 		return false, fmt.Errorf("before: %w", err)
 	}
-	a, err := canonicalContent(after)
+	a, err := canonicalContent(after, contentAnnotations)
 	if err != nil {
 		return false, fmt.Errorf("after: %w", err)
 	}
@@ -193,15 +196,21 @@ func contentDiffers(before, after runtime.Object) (bool, error) {
 //
 //   - every top-level field except apiVersion, kind, metadata and status. That is .spec where there
 //     is one; data and type for a Secret or ConfigMap; webhooks for an admission configuration.
+//
 //   - a Secret's stringData folded into data, as the apiserver does, so the same value written
 //     either way is the same content. A changed type is a change.
+//
 //   - RBAC: a Role's or ClusterRole's rules, and a binding's subjects, as sets: order and
 //     duplicates don't matter, and within a rule neither do the order or duplicates of its verbs,
 //     apiGroups, resources, resourceNames and nonResourceURLs. A ClusterRole's
 //     aggregationRule.clusterRoleSelectors compare as a set too. roleRef compares as it is.
 //
-// Labels and annotations are metadata, so they never count here.
-func canonicalContent(obj runtime.Object) (map[string]interface{}, error) {
+//   - the annotations listed in contentAnnotations (UpgradeConfig.ContentAnnotations: the audit
+//     schema's content_annotations, which authorization reads), under metadata.annotations, as
+//     audit.ContentSHA256 keeps them: each one present with a non-null value, the rest dropped.
+//
+// Labels and every other annotation are metadata, so they never count here.
+func canonicalContent(obj runtime.Object, contentAnnotations []string) (map[string]interface{}, error) {
 	if obj == nil {
 		return nil, fmt.Errorf("no object")
 	}
@@ -213,8 +222,12 @@ func canonicalContent(obj runtime.Object) (map[string]interface{}, error) {
 	if gvk.Group == "" && gvk.Kind == "Secret" {
 		foldStringData(u)
 	}
+	kept := keptAnnotations(u, contentAnnotations)
 	for _, k := range []string{"apiVersion", "kind", "metadata", "status"} {
 		delete(u, k)
+	}
+	if len(kept) > 0 {
+		u["metadata"] = map[string]interface{}{"annotations": kept}
 	}
 	if gvk.Group == "rbac.authorization.k8s.io" {
 		switch gvk.Kind {
@@ -312,3 +325,16 @@ func asSet(l []interface{}) []interface{} {
 }
 
 func encodeStd(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+
+// keptAnnotations is u's metadata.annotations kept to keys, without the absent or null ones.
+func keptAnnotations(u map[string]interface{}, keys []string) map[string]interface{} {
+	meta, _ := u["metadata"].(map[string]interface{})
+	all, _ := meta["annotations"].(map[string]interface{})
+	out := map[string]interface{}{}
+	for _, k := range keys {
+		if v, ok := all[k]; ok && v != nil {
+			out[k] = v
+		}
+	}
+	return out
+}
