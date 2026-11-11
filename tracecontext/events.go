@@ -24,3 +24,11 @@ const (
 // original "provider_runtime." prefix on purpose: renaming it would move provider-runtime's
 // exported name and every query that already reads it.
 const AttrStep = attribute.Key("provider_runtime.step")
+
+// AttrActed is a bool, true on the reconcile root of any pass that starts an act step (StartActStep,
+// i.e. a create, update or delete, or a handler-declared act such as unstructured-runtime's
+// controller.StartAct), whether or not that act joins an upstream trace. It is never set to false.
+// The collector's tail sampler keeps traces carrying it: a pass that made changes keeps its record,
+// including a non-joined act, which lives in the root's own trace. Set it with MarkActed. Same
+// "provider_runtime." prefix as AttrStep, for the same reason.
+const AttrActed = attribute.Key("provider_runtime.acted")

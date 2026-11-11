@@ -10,6 +10,7 @@ func TestSharedEventAndAttributeStrings(t *testing.T) {
 		{EventMarkerFailed, "trace.marker_failed"},
 		{EventConflict, "k8s.conflict"},
 		{string(AttrStep), "provider_runtime.step"},
+		{string(AttrActed), "provider_runtime.acted"},
 	} {
 		if c.got != c.want {
 			t.Errorf("contract string changed: %q, want %q", c.got, c.want)

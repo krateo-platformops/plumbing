@@ -319,3 +319,69 @@ func TestStartActStepUnderAnUnsampledUpstream(t *testing.T) {
 		})
 	}
 }
+
+// AttrActed marks the root of ANY pass that starts an act step, joined or not: the record of a change
+// lives in the root's own trace when the act does not join, so marking only joined acts would let a
+// tail sampler drop exactly those. Both StartActStep branches mark; a pass that does not act does
+// not; and MarkActed is how a runtime that acts without a step span marks its root.
+func TestStartActStepMarksTheRootActed(t *testing.T) {
+	d := Decide(ann(AnnotationKeyTraceparent, tpA), "", time.Time{}, time.Now(), time.Minute)
+	acted := func(s sdktrace.ReadOnlySpan) (bool, bool) {
+		for _, kv := range s.Attributes() {
+			if kv.Key == AttrActed {
+				return kv.Value.AsBool(), true
+			}
+		}
+		return false, false
+	}
+	for _, tc := range []struct {
+		name string
+		act  func(ctx context.Context, tr trace.Tracer)
+		want bool
+	}{
+		{"joined act (upstream valid)", func(ctx context.Context, tr trace.Tracer) {
+			_, s := StartActStep(ctx, tr, obj, SpanUpdate, d.Remote)
+			s.End()
+		}, true},
+		{"plain act (upstream invalid)", func(ctx context.Context, tr trace.Tracer) {
+			_, s := StartActStep(ctx, tr, obj, SpanUpdate, trace.SpanContext{})
+			s.End()
+		}, true},
+		{"act without a step span (MarkActed)", func(ctx context.Context, tr trace.Tracer) {
+			MarkActed(ctx)
+		}, true},
+		{"control: a pass that does not act", func(ctx context.Context, tr trace.Tracer) {
+			_, s := StartStep(ctx, tr, "observe")
+			s.End()
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tp, rec := recorder(t)
+			ctx, root := StartReconcile(context.Background(), tp.Tracer(testScope), obj, d, time.Now())
+			tc.act(ctx, tp.Tracer(testScope))
+			root.End()
+			var r sdktrace.ReadOnlySpan
+			for _, s := range rec.Ended() {
+				if s.Name() == SpanReconcile {
+					r = s
+				}
+			}
+			if r == nil {
+				t.Fatal("control: the root must be recorded")
+			}
+			v, ok := acted(r)
+			if tc.want && (!ok || !v) {
+				t.Errorf("root %s = (%v, present %v), want true", AttrActed, v, ok)
+			}
+			if !tc.want && ok {
+				t.Errorf("a pass that did not act carries %s=%v; it must be absent, never false", AttrActed, v)
+			}
+		})
+	}
+
+	// No recording span in ctx, and tracing off: nothing to mark, nothing panics.
+	MarkActed(context.Background())
+	if _, s := StartActStep(context.Background(), nil, obj, SpanUpdate, d.Remote); s.SpanContext().IsValid() {
+		t.Error("StartActStep with a nil tracer must start nothing")
+	}
+}
