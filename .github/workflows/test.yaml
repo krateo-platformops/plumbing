@@ -65,7 +65,7 @@ jobs:
           fi
           echo "pin reached the runner"
 
-      # Node runs the js/wasm tests: dialguard's TestPlumbingClientsRefuseRedirectsOnJS drives them
+      # Node runs the js/wasm tests: dialguard's TestPlumbingClientsKeepTheFetchPolicyOnJS drives them
       # through Node's real fetch and Go's in-process network. PLUMBING_REQUIRE_JS makes it FAIL
       # when Node is missing here, so the browser build's redirect guarantee can't pass by skipping.
       - name: Set up Node (js/wasm tests)

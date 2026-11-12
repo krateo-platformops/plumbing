@@ -39,7 +39,7 @@ func TestRoundTripperIsTheIdentityOnServers(t *testing.T) {
 //
 // Without Node it skips, unless PLUMBING_REQUIRE_JS is set (CI sets it), so it can't pass by not
 // running where it matters.
-func TestPlumbingClientsRefuseRedirectsOnJS(t *testing.T) {
+func TestPlumbingClientsKeepTheFetchPolicyOnJS(t *testing.T) {
 	gorootOut, err := exec.Command("go", "env", "GOROOT").Output()
 	if err != nil {
 		t.Fatalf("go env GOROOT: %v", err)
@@ -106,7 +106,7 @@ func TestPlumbingClientsRefuseRedirectsOnJS(t *testing.T) {
 	// One package at a time, so each must send its own request to the redirecting URL: a client
 	// that fails for any other reason first proves nothing.
 	for _, c := range []struct{ pkg, test string }{
-		{"./dialguard", "TestJSRefusesRedirects|TestRoundTripperRefusesRedirectsOnJS"},
+		{"./dialguard", "TestJSRefusesRedirects|TestRoundTripperSetsTheFetchPolicyOnJS"},
 		{"./http/request", "TestJSRefusesRedirects"},
 		{"./helm/getter", "TestJSRefusesRedirects"},
 		{"./helm/getter", "TestJSRefusesRedirectsOCI"},
@@ -142,7 +142,7 @@ func TestPlumbingClientsRefuseRedirectsOnJS(t *testing.T) {
 	}
 
 	t.Run("Go's network, as under plain Node", func(t *testing.T) {
-		run(t, "node", execNode, "^TestRoundTripperRefusesRedirectsOnJS$", "./dialguard")
+		run(t, "node", execNode, "^TestRoundTripperSetsTheFetchPolicyOnJS$", "./dialguard")
 	})
 }
 

@@ -17,10 +17,10 @@ func (r *recordingRT) RoundTrip(req *http.Request) (*http.Response, error) {
 
 // Where fetch is the path, RoundTripper sets fetch's redirect mode to "error" and its credentials
 // mode to "omit" on every request, overriding the caller's, and leaves the caller's request as it
-// was. Where it isn't (Node), it is
-// the identity: Go follows redirects itself there, with CheckRedirect.
-func TestRoundTripperRefusesRedirectsOnJS(t *testing.T) {
-	// Run by TestPlumbingClientsRefuseRedirectsOnJS, the mode net/http uses is known: usesFetch
+// was. Where it isn't (Node), it is the identity: Go follows redirects itself there, with
+// CheckRedirect.
+func TestRoundTripperSetsTheFetchPolicyOnJS(t *testing.T) {
+	// Run by TestPlumbingClientsKeepTheFetchPolicyOnJS, the mode net/http uses is known: usesFetch
 	// must match it, in both directions.
 	if mode := os.Getenv("PLUMBING_JS_MODE"); mode != "" && usesFetch != (mode == "fetch") {
 		t.Fatalf("usesFetch = %v under %s: it no longer mirrors net/http's choice", usesFetch, mode)
@@ -59,12 +59,12 @@ func TestRoundTripperRefusesRedirectsOnJS(t *testing.T) {
 	}
 }
 
-// Run by TestPlumbingClientsRefuseRedirectsOnJS against a redirecting server: Client must fail
+// Run by TestPlumbingClientsKeepTheFetchPolicyOnJS against a redirecting server: Client must fail
 // the request, not follow it.
 func TestJSRefusesRedirects(t *testing.T) {
 	url := os.Getenv("PLUMBING_JS_REDIRECT_URL")
 	if url == "" {
-		t.Skip("run by TestPlumbingClientsRefuseRedirectsOnJS")
+		t.Skip("run by TestPlumbingClientsKeepTheFetchPolicyOnJS")
 	}
 	resp, err := Client(0).Get(url)
 	if err == nil {
