@@ -9,6 +9,13 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-12 — a dry run is never a write: `ApplyDryRun` / `UninstallDryRun`** (snowplow): every
+  objectclient request with `DryRun` set reports op `dryRun`, created, updated, unchanged or
+  refused alike, with Before/After as for the write it stood in for. A dry run was reported
+  `updated`, so a caller recording writes, under the shared predicate (created/updated/deleted AND
+  content changed), recorded a write that never happened whenever desired state drifted from live
+  (oasgen-provider's Observe dry-runs its RBAC applies on every poll). Now excluded by
+  construction. Not breaking for non-dry-run callers.
 - **2026-11-12 — `content.DiffersWith`: declared labels count as content** (snowplow, for
   authn's session Secret labels): `Keys{Annotations, Labels}`; `DiffersWith` / `CanonicalWith` keep
   the declared labels under `metadata.labels` as declared annotations are kept. `Differs` and
