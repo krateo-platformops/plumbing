@@ -19,6 +19,9 @@ func TestBoundedVectors(t *testing.T) {
 		{"john.doe", "john-doe--30f69670bba2"},
 		{"a--b", "a--b--90827a2e5636"},
 		{a57, strings.Repeat("a", 42) + "--f13b2d724659"},
+		// Longer than a label: the chart's kyverno test pins the same vector,
+		// so Go and the policy agree on the long path (acmp).
+		{strings.Repeat("a", 70), strings.Repeat("a", 42) + "--6bd5e5034855"},
 		{"braghettos", "braghettos"},
 		{"edmonddantes21", "edmonddantes21"},
 		{"cdc-krateo-system-selfservicekrateoes-v0-2-61", "cdc-krateo-system-selfservicekrateoes-v0-2-61"},
