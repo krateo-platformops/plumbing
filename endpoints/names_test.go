@@ -119,7 +119,11 @@ func TestOwnsSecretNeverHandsOneUserAnothersCredential(t *testing.T) {
 		{"annotated for x", secret(shared, map[string]string{UsernameAnnotation: x}, certData(t, x)), []string{x}},
 		{"legacy, certificate for y", secret(shared, nil, certData(t, y)), []string{y}},
 		{"legacy, certificate for x", secret(shared, nil, certData(t, x)), []string{x}},
-		{"the annotation wins over the certificate", secret(shared, map[string]string{UsernameAnnotation: y}, certData(t, x)), []string{y}},
+		// An annotation that disagrees with its certificate is no one's: the
+		// reader would serve x's certificate to y (authn#147's review, L2).
+		{"an annotation the certificate contradicts is no one's", secret(shared, map[string]string{UsernameAnnotation: y}, certData(t, x)), nil},
+		{"annotated, with no certificate", secret(shared, map[string]string{UsernameAnnotation: y}, nil), []string{y}},
+		{"annotated, with a certificate that doesn't parse", secret(shared, map[string]string{UsernameAnnotation: y}, []byte("garbage")), nil},
 		{"an empty annotation is no one's", secret(shared, map[string]string{UsernameAnnotation: ""}, certData(t, y)), nil},
 		{"no annotation, no certificate", secret(shared, nil, nil), nil},
 		{"a certificate that doesn't parse", secret(shared, nil, []byte("not a certificate")), nil},

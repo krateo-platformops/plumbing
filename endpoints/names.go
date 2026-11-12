@@ -64,9 +64,11 @@ func SessionSecretNames(username string) []string {
 
 // OwnsSecret reports whether sec holds username's credential. A Secret
 // written since authn#140 says so in UsernameAnnotation, which must equal
-// username exactly. One written before, without the annotation, is
-// username's when its client certificate's CommonName is username: authn
-// issues the certificate to the username. Anything else is not username's,
+// username exactly, and when it holds a client certificate, that
+// certificate's CommonName must be username too: a certificate that can't
+// be read, or names someone else, fails it. One written before, without the
+// annotation, is username's when its client certificate's CommonName is
+// username: authn issues the certificate to the username. Anything else is not username's,
 // however it was found: alice.smith and alicesmith share the legacy name
 // alicesmith-clientconfig, and a reader must never use one's credential for
 // the other.
@@ -74,10 +76,23 @@ func OwnsSecret(sec *corev1.Secret, username string) bool {
 	if sec == nil || username == "" {
 		return false
 	}
+	data, hasCert := sec.Data[clientCertLabel]
 	if v, ok := sec.GetAnnotations()[UsernameAnnotation]; ok {
-		return v == username
+		if v != username {
+			return false
+		}
+		// The annotation is the claim; the certificate is what a reader
+		// serves. When there is one, its CommonName must agree, or the
+		// Secret would hand username a credential issued to someone else
+		// (an annotation that disagrees with its certificate is what authn's
+		// backfill audits as inconsistent; a reader must not trust it either).
+		if hasCert {
+			cn, ok := certificateCommonName(data)
+			return ok && cn == username
+		}
+		return true
 	}
-	cn, ok := certificateCommonName(sec.Data[clientCertLabel])
+	cn, ok := certificateCommonName(data)
 	return ok && cn == username
 }
 
