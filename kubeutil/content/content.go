@@ -68,8 +68,12 @@ func DiffersWith(before, after runtime.Object, keys Keys) (bool, error) {
 //     null list element is kept, and a map left empty stays an empty map).
 //
 //   - the annotations listed in contentAnnotations (UpgradeConfig.ContentAnnotations: the audit
-//     schema's content_annotations, which authorization reads), under metadata.annotations, as
-//     audit.ContentSHA256 keeps them: each one present with a non-null value, the rest dropped.
+//     schema's authorization annotations, audit.AuthorizationAnnotations), under
+//     metadata.annotations: each one present with a non-null value, the rest dropped. This is the
+//     verdict's form, NOT audit.ContentSHA256's: the c1 hash form is fixed, so its key set stays
+//     the two annotations v0.12.0 declared, while the schema's list may grow (v0.13.0 added
+//     authn.krateo.io/username). A key outside c1's set is content here and not to the hash: a
+//     deliberate disagreement, pinned in TestContentAnnotationsAgreeWithTheAuditHash.
 //
 // Labels and every other annotation are metadata, so they never count here (CanonicalWith counts
 // declared labels).

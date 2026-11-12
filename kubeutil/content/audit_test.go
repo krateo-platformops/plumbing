@@ -21,6 +21,7 @@ import (
 // Secrets aren't here: the hash refuses credential targets.
 func TestContentAnnotationsAgreeWithTheAuditHash(t *testing.T) {
 	keys := audit.AuthorizationAnnotations()
+	labels := audit.AuthorizationLabels()
 	if len(keys) == 0 {
 		t.Fatal("the schema declares no content annotation: nothing to agree on")
 	}
@@ -44,6 +45,11 @@ func TestContentAnnotationsAgreeWithTheAuditHash(t *testing.T) {
 	rule := func(verb string) interface{} {
 		return map[string]interface{}{"apiGroups": []interface{}{""}, "resources": []interface{}{"pods"}, "verbs": []interface{}{verb}}
 	}
+	labelled := func(o obj, l map[string]string) obj {
+		o.u = o.u.DeepCopy()
+		o.u.SetLabels(l)
+		return o
+	}
 	widget := func(content map[string]interface{}) obj {
 		return obj{"example.com", "widgets", vobj("example.com/v1", "Widget", "ns", "w", content)}
 	}
@@ -57,7 +63,7 @@ func TestContentAnnotationsAgreeWithTheAuditHash(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
 		before, after obj
-		verdict       bool // Differs
+		verdict       bool // DiffersWith over the schema's declared annotations and labels
 		hashChanged   bool // the record's content_sha256 changed; equal to verdict unless deliberate
 	}{
 		{"nothing changed", dep(replicas(1), map[string]string{listed: "a"}), dep(replicas(1), map[string]string{listed: "a"}), false, false},
@@ -86,6 +92,18 @@ func TestContentAnnotationsAgreeWithTheAuditHash(t *testing.T) {
 		{"a map left empty is not an absent one", dep(map[string]interface{}{"replicas": int64(1), "strategy": map[string]interface{}{"type": nil}}, nil), dep(replicas(1), nil), true, true},
 
 		// The deliberate differences.
+		{"deliberate: authn.krateo.io/username (declared in v0.13.0) is content to the verdict only; c1's key set is fixed",
+			dep(replicas(1), map[string]string{"authn.krateo.io/username": "alice"}),
+			dep(replicas(1), map[string]string{"authn.krateo.io/username": "bob"}), true, false},
+		{"deliberate: a declared label changed is content to the verdict only; c1 is annotation-only",
+			labelled(dep(replicas(1), nil), map[string]string{"authn.krateo.io/principal": "alice"}),
+			labelled(dep(replicas(1), nil), map[string]string{"authn.krateo.io/principal": "bob"}), true, false},
+		{"deliberate: a declared label stamped is content to the verdict only",
+			dep(replicas(1), nil),
+			labelled(dep(replicas(1), nil), map[string]string{"authn.krateo.io/username-label": "alice"}), true, false},
+		{"an undeclared label is content to neither",
+			labelled(dep(replicas(1), nil), map[string]string{other: "1"}),
+			labelled(dep(replicas(1), nil), map[string]string{other: "2"}), false, false},
 		{"deliberate: a ConfigMap's immutable is content to the verdict only",
 			cmap(map[string]interface{}{"data": map[string]interface{}{"k": "v"}}),
 			cmap(map[string]interface{}{"data": map[string]interface{}{"k": "v"}, "immutable": true}), true, false},
@@ -96,7 +114,7 @@ func TestContentAnnotationsAgreeWithTheAuditHash(t *testing.T) {
 			widget(map[string]interface{}{"spec": map[string]interface{}{"a": "b"}}), false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			verdict, err := Differs(tc.before.u, tc.after.u, keys)
+			verdict, err := DiffersWith(tc.before.u, tc.after.u, Keys{Annotations: keys, Labels: labels})
 			if err != nil {
 				t.Fatal(err)
 			}
