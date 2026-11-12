@@ -69,6 +69,11 @@ const (
 	// unmoved). The apiserver short-circuits an Update whose result equals the stored object, so the
 	// cluster keeps no trace of it: a caller recording changes records none here.
 	ApplyUnchanged ApplyOp = "unchanged"
+	// ApplyDryRun: the request was a dry run (ApplyOptions.DryRun). It was validated and NOT
+	// persisted, whatever it would have changed, so it is not a write: a caller recording writes
+	// records none, by construction. Returned for every dry-run request, created or updated, and on
+	// a refused one too. Before and After are as for the write it stood in for.
+	ApplyDryRun ApplyOp = "dryRun"
 )
 
 // ApplyResult is what Apply did (core-provider#423: a caller writing one audit record per real
@@ -95,8 +100,9 @@ type ApplyResult struct {
 // object (core-provider CompositionDefinition Observe deployed-digest gate never converged, so the CD
 // never reached Available).
 //
-// The result is the final attempt's. Under DryRun nothing is persisted and the resourceVersion says
-// nothing, so a dry-run Update is reported ApplyUpdated, never ApplyUnchanged.
+// The result is the final attempt's. A dry-run request (ApplyOptions.DryRun) is reported
+// ApplyDryRun, never created, updated or unchanged: nothing was persisted. The response is still the
+// would-be object, written back into obj as described above.
 //
 // On error the result names the write the final attempt SENT, so a caller recording writes can
 // record a failed one (core-provider#423): Op is ApplyCreated for a Create the apiserver refused,
@@ -106,13 +112,21 @@ func Apply(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersionRe
 	res := namespacedOrCluster(dyn, gvr, obj.GetNamespace())
 	name := obj.GetName()
 
+	dryRun := len(opts.DryRun) > 0
+	// as names the op for a write that was sent: the write itself, or ApplyDryRun under DryRun.
+	as := func(op ApplyOp) ApplyOp {
+		if dryRun {
+			return ApplyDryRun
+		}
+		return op
+	}
 	var result, attempted ApplyResult
 	err := retry(ctx, func(ctx context.Context) error {
 		attempted = ApplyResult{}
 		current, err := res.Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			if apierrors.IsNotFound(err) {
-				attempted = ApplyResult{Op: ApplyCreated}
+				attempted = ApplyResult{Op: as(ApplyCreated)}
 				created, err := res.Create(ctx, obj, metav1.CreateOptions{
 					DryRun:          opts.DryRun,
 					FieldManager:    opts.FieldManager,
@@ -121,7 +135,7 @@ func Apply(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersionRe
 				if err != nil {
 					return err
 				}
-				result = ApplyResult{Op: ApplyCreated, After: created.DeepCopy()}
+				result = ApplyResult{Op: as(ApplyCreated), After: created.DeepCopy()}
 				obj.SetUnstructuredContent(created.UnstructuredContent())
 				return nil
 			}
@@ -138,7 +152,7 @@ func Apply(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersionRe
 			}
 		}
 		desired.SetResourceVersion(current.GetResourceVersion())
-		attempted = ApplyResult{Op: ApplyUpdated, Before: current}
+		attempted = ApplyResult{Op: as(ApplyUpdated), Before: current}
 		updated, err := res.Update(ctx, desired, metav1.UpdateOptions{
 			DryRun:          opts.DryRun,
 			FieldManager:    opts.FieldManager,
@@ -148,9 +162,10 @@ func Apply(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersionRe
 			return err
 		}
 		op := ApplyUpdated
-		if len(opts.DryRun) == 0 && updated.GetResourceVersion() == current.GetResourceVersion() {
+		if updated.GetResourceVersion() == current.GetResourceVersion() {
 			op = ApplyUnchanged
 		}
+		op = as(op)
 		result = ApplyResult{Op: op, Before: current, After: updated.DeepCopy()}
 		obj.SetUnstructuredContent(updated.UnstructuredContent())
 		return nil
@@ -176,6 +191,9 @@ const (
 	// UninstallAbsent: there was nothing to delete, absent before the call or removed concurrently
 	// (the Delete answered NotFound). Not a write of this caller's.
 	UninstallAbsent UninstallOp = "absent"
+	// UninstallDryRun: the Delete was a dry run (UninstallOptions.DryRun): validated, NOT persisted,
+	// so not a write. Returned for an accepted and a refused dry-run Delete alike, with Before.
+	UninstallDryRun UninstallOp = "dryRun"
 )
 
 // UninstallResult is what Uninstall did.
@@ -194,6 +212,10 @@ type UninstallResult struct {
 func Uninstall(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersionResource, ns, name string, opts UninstallOptions) (UninstallResult, error) {
 	res := namespacedOrCluster(dyn, gvr, ns)
 
+	deleted := UninstallDeleted
+	if len(opts.DryRun) > 0 {
+		deleted = UninstallDryRun
+	}
 	var result, attempted UninstallResult
 	err := retry(ctx, func(ctx context.Context) error {
 		attempted = UninstallResult{}
@@ -206,7 +228,7 @@ func Uninstall(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersi
 			return err
 		}
 
-		attempted = UninstallResult{Op: UninstallDeleted, Before: current}
+		attempted = UninstallResult{Op: deleted, Before: current}
 		err = res.Delete(ctx, name, metav1.DeleteOptions{
 			DryRun:             opts.DryRun,
 			Preconditions:      opts.Preconditions,
@@ -220,7 +242,7 @@ func Uninstall(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersi
 		if err != nil {
 			return err
 		}
-		result = UninstallResult{Op: UninstallDeleted, Before: current}
+		result = UninstallResult{Op: deleted, Before: current}
 		return nil
 	})
 	if err != nil {
