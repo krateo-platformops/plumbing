@@ -97,19 +97,27 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 		return nil, fmt.Errorf("reconcile: getting stored release: %w", err)
 	}
 	if stored == nil {
-		// No release yet: there is nothing to self-heal against. Perform a real
-		// install-or-upgrade and report it as a change. The caller (cdc Create
-		// path) normally handles this, but we keep Reconcile total.
-		installCfg := *cfg
-		installCfg.Install = true
-		op, err := c.Upgrade(ctx, releaseName, chartRef, &installCfg)
+		// No release yet: there is nothing to self-heal against. Perform a real install and report
+		// it as a change. The caller (cdc Create path) normally handles this, but we keep Reconcile
+		// total.
+		//
+		// An INSTALL, not an Upgrade with Install=true (plumbing#139). helm's action.Upgrade never
+		// installs: its Install field is informative, and the install-if-missing of `helm upgrade
+		// --install` is the CLI's, not the action's. This path used to call Upgrade and so failed on
+		// every chart with "<name> has no deployed releases", writing nothing.
+		op, err := c.Install(ctx, releaseName, chartRef, &helmconfig.InstallConfig{ActionConfig: cfg.ActionConfig})
+		// A failed install reports what it did write, alongside the error: a partly-applied first
+		// install created children that would otherwise have no audit record.
+		res := &helmconfig.ReconcileResult{ObjectsComplete: true}
+		foldOperation(res, op)
 		if err != nil {
-			return nil, fmt.Errorf("reconcile: initial upgrade (no stored release): %w", err)
+			return res, fmt.Errorf("reconcile: initial install (no stored release): %w", err)
 		}
-		// The install-through-Upgrade path reports its per-child verdicts too (plumbing#135),
-		// observed at the KubeClient. It used to leave Objects empty and ObjectsComplete false.
-		return &helmconfig.ReconcileResult{Changed: true, Release: op.Release,
-			Objects: op.Objects, ObjectsComplete: op.ObjectsComplete, ObjectsNotAttempted: op.ObjectsNotAttempted}, nil
+		res.Changed = true
+		if op != nil {
+			res.Release = op.Release
+		}
+		return res, nil
 	}
 	currentManifest := stored.Manifest
 
@@ -501,6 +509,10 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 	// 7. A real change happened. Run ONE real Upgrade to persist a revision and run hooks with
 	// correct ordering + delete-policy. Step 5 already converged the cluster, so this is a near-no-op.
 	op, err := c.Upgrade(ctx, releaseName, chartRef, cfg)
+	// The upgrade's own writes join the merge's, on both outcomes (plumbing#139). After a converged
+	// merge they are few, but on the retryFailed path the merge read changed=false and the upgrade
+	// is the ONLY phase that writes; it also runs the hooks.
+	foldOperation(result, op)
 	if err != nil {
 		if retryFailed && !changed {
 			return result, fmt.Errorf("reconcile: retrying the upgrade of a release whose latest revision (%d) failed: %w", stored.Revision, err)
@@ -1118,4 +1130,20 @@ func joinPath(prefix, key string) string {
 		return seg
 	}
 	return prefix + "." + seg
+}
+
+// foldOperation adds the writes of an operation Reconcile ran itself (the real Upgrade) to its
+// result (plumbing#139). Each verdict is one write, so a child the merge changed and the upgrade
+// changed again appears twice. The list stays sorted by verdictKey, which includes the change, so
+// two entries for one child sort by change; for the same change the sort is stable and the
+// merge's entry, already in place, comes first. A nil op wrote nothing.
+func foldOperation(r *helmconfig.ReconcileResult, op *helmconfig.OperationResult) {
+	if op == nil {
+		return
+	}
+	r.Objects = append(r.Objects, op.Objects...)
+	sort.SliceStable(r.Objects, func(i, j int) bool { return verdictKey(r.Objects[i]) < verdictKey(r.Objects[j]) })
+	r.ObjectsComplete = r.ObjectsComplete && op.ObjectsComplete
+	r.ObjectsNotAttempted += op.ObjectsNotAttempted
+	r.HooksExcluded += op.HooksExcluded
 }
