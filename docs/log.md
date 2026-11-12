@@ -9,6 +9,12 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-12 — a failed objectclient write still names the write** (core-provider#423): on
+  error, `ApplyResult.Op` is the write the final attempt sent (`created`, or `updated` with
+  `Before`) and `UninstallResult.Op` is `deleted` with `Before` for a refused Delete; `""` when no
+  write was sent (a failed read, a `FromCurrent` refusal). The trail records writes the apiserver
+  answered, refusals included, and v1.55.0 returned an empty result on every error. Not breaking:
+  callers that ignore the result on error see no change.
 - **2026-11-12 — `kubeutil/content`, the AUDIT-4 content comparison, exported** (core-provider#423):
   the canonical form the helm verdicts compared with (`contentDiffers` / `canonicalContent` in
   helm/v3) moves, unchanged, to `content.Differs` / `content.Canonical`, and the verdicts call it.
