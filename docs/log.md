@@ -9,6 +9,12 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-12 — `content.DiffersWith`: declared labels count as content** (snowplow, for
+  authn's session Secret labels): `Keys{Annotations, Labels}`; `DiffersWith` / `CanonicalWith` keep
+  the declared labels under `metadata.labels` as declared annotations are kept. `Differs` and
+  `Canonical` are unchanged (the With-forms with no labels, pinned by a differential). And a typed
+  nil (`(*unstructured.Unstructured)(nil)` as `runtime.Object`) is the `no object` error, not a
+  panic (#145).
 - **2026-11-12 — a failed objectclient write still names the write** (core-provider#423): on
   error, `ApplyResult.Op` is the write the final attempt sent (`created`, or `updated` with
   `Before`) and `UninstallResult.Op` is `deleted` with `Before` for a refused Delete; `""` when no
