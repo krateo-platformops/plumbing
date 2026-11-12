@@ -9,6 +9,14 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-12 — objectclient `Apply` and `Uninstall` report what they did** (core-provider#423):
+  `Apply` returns an `ApplyResult` {`Op`, `Before`, `After`}. `Op` is `created`; `updated` (an
+  Update the apiserver persisted, its resourceVersion moved); or `unchanged` (an Update the
+  apiserver short-circuited, its resourceVersion unmoved, so the cluster keeps no trace of it).
+  `Before` is the version the Update replaced. A dry run is never `unchanged`. `Uninstall`
+  returns an `UninstallResult` {`Op`: `deleted` | `absent`, `Before`}; a Delete answered NotFound
+  is `absent`. Apply still sends its unconditional Update: a caller recording changes reads the
+  result rather than re-deriving them. **Breaking:** both now return a result with the error.
 - **2026-11-12 — dialguard on js/wasm: requests go through fetch, and redirects are refused**
   (snowplow#1359, for the Agentiko sandbox):
   - **The bug:** on js/wasm, net/http uses the browser's fetch only for a Transport with no dial

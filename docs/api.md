@@ -33,7 +33,7 @@ derived from the actual package docs and code.
 | Package | What it exports |
 |---|---|
 | `kubeutil` | Misc helpers: DNS-1123 name mangling, `DetectClusterName`, `ServiceAccountNamespace`, `ConfigMapData`, in-cluster CA cert. |
-| `kubeutil/objectclient` | Retrying, `dynamic.Interface`-based create-or-update (`Apply` — writes the server response back into the object), `Get`, delete-if-present. |
+| `kubeutil/objectclient` | Retrying, `dynamic.Interface`-based create-or-update (`Apply` — writes the server response back into the object, and reports `created` / `updated` / `unchanged` with the replaced and persisted versions), `Get`, delete-if-present (`Uninstall`, reporting `deleted` / `absent`). |
 | `kubeutil/hasher` | Cumulative, order-dependent hash over JSON-marshalable values — desired-vs-deployed drift detection. |
 | `kubeutil/rbacgen` | Builds least-privilege Role/RoleBinding sets granting one ServiceAccount access to an exact named resource set. |
 | `kubeutil/rbac` | Batched `UserCan` permission checks (SelfSubjectAccessReview) with a TTL cache. |

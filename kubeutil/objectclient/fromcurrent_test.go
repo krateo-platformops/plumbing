@@ -47,12 +47,12 @@ func keepReplicas(seen *[]int64) func(current, desired *unstructured.Unstructure
 func TestApplyFromCurrentKeepsTheLiveValueAndAppliesTheRest(t *testing.T) {
 	ctx := context.Background()
 	dyn := newFakeClient(t)
-	if err := Apply(ctx, dyn, deployGVR, newDeploy(0, "v1"), ApplyOptions{}); err != nil {
+	if _, err := Apply(ctx, dyn, deployGVR, newDeploy(0, "v1"), ApplyOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	var seen []int64
 	desired := newDeploy(1, "v2")
-	if err := Apply(ctx, dyn, deployGVR, desired, ApplyOptions{FromCurrent: keepReplicas(&seen)}); err != nil {
+	if _, err := Apply(ctx, dyn, deployGVR, desired, ApplyOptions{FromCurrent: keepReplicas(&seen)}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := Get(ctx, dyn, deployGVR, "ns1", "ctrl")
@@ -75,7 +75,7 @@ func TestApplyFromCurrentKeepsTheLiveValueAndAppliesTheRest(t *testing.T) {
 func TestApplyFromCurrentRecopiesAfterAConflict(t *testing.T) {
 	ctx := context.Background()
 	dyn := newFakeClient(t)
-	if err := Apply(ctx, dyn, deployGVR, newDeploy(1, "v1"), ApplyOptions{}); err != nil {
+	if _, err := Apply(ctx, dyn, deployGVR, newDeploy(1, "v1"), ApplyOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	updates := 0
@@ -97,7 +97,7 @@ func TestApplyFromCurrentRecopiesAfterAConflict(t *testing.T) {
 		return true, nil, apierrors.NewConflict(deployGVR.GroupResource(), "ctrl", errors.New("changed meanwhile"))
 	})
 	var seen []int64
-	if err := Apply(ctx, dyn, deployGVR, newDeploy(0, "v2"), ApplyOptions{FromCurrent: keepReplicas(&seen)}); err != nil {
+	if _, err := Apply(ctx, dyn, deployGVR, newDeploy(0, "v2"), ApplyOptions{FromCurrent: keepReplicas(&seen)}); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := Get(ctx, dyn, deployGVR, "ns1", "ctrl")
@@ -113,7 +113,7 @@ func TestApplyFromCurrentIsNotCalledOnCreate(t *testing.T) {
 	ctx := context.Background()
 	dyn := newFakeClient(t)
 	var seen []int64
-	if err := Apply(ctx, dyn, deployGVR, newDeploy(2, "v1"), ApplyOptions{FromCurrent: keepReplicas(&seen)}); err != nil {
+	if _, err := Apply(ctx, dyn, deployGVR, newDeploy(2, "v1"), ApplyOptions{FromCurrent: keepReplicas(&seen)}); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := Get(ctx, dyn, deployGVR, "ns1", "ctrl")
@@ -128,12 +128,12 @@ func TestApplyFromCurrentIsNotCalledOnCreate(t *testing.T) {
 func TestApplyFromCurrentErrorIsNotRetried(t *testing.T) {
 	ctx := context.Background()
 	dyn := newFakeClient(t)
-	if err := Apply(ctx, dyn, deployGVR, newDeploy(1, "v1"), ApplyOptions{}); err != nil {
+	if _, err := Apply(ctx, dyn, deployGVR, newDeploy(1, "v1"), ApplyOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	verdict := errors.New("refusing: live object is not ours")
 	calls := 0
-	err := Apply(ctx, dyn, deployGVR, newDeploy(1, "v2"), ApplyOptions{FromCurrent: func(_, _ *unstructured.Unstructured) error {
+	_, err := Apply(ctx, dyn, deployGVR, newDeploy(1, "v2"), ApplyOptions{FromCurrent: func(_, _ *unstructured.Unstructured) error {
 		calls++
 		return verdict
 	}})
@@ -153,10 +153,10 @@ func TestApplyFromCurrentErrorIsNotRetried(t *testing.T) {
 func TestApplyWithoutFromCurrentWritesTheDesiredValue(t *testing.T) {
 	ctx := context.Background()
 	dyn := newFakeClient(t)
-	if err := Apply(ctx, dyn, deployGVR, newDeploy(0, "v1"), ApplyOptions{}); err != nil {
+	if _, err := Apply(ctx, dyn, deployGVR, newDeploy(0, "v1"), ApplyOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := Apply(ctx, dyn, deployGVR, newDeploy(1, "v2"), ApplyOptions{}); err != nil {
+	if _, err := Apply(ctx, dyn, deployGVR, newDeploy(1, "v2"), ApplyOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := Get(ctx, dyn, deployGVR, "ns1", "ctrl")

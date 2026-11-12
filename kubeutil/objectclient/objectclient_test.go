@@ -38,7 +38,7 @@ func TestApplyCreatesWhenAbsent(t *testing.T) {
 	ctx := context.Background()
 
 	obj := newRole("ns1", "my-role")
-	if err := Apply(ctx, dyn, roleGVR, obj, ApplyOptions{}); err != nil {
+	if _, err := Apply(ctx, dyn, roleGVR, obj, ApplyOptions{}); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 
@@ -56,7 +56,7 @@ func TestApplyUpdatesWhenPresent(t *testing.T) {
 	ctx := context.Background()
 
 	obj := newRole("ns1", "my-role")
-	if err := Apply(ctx, dyn, roleGVR, obj, ApplyOptions{}); err != nil {
+	if _, err := Apply(ctx, dyn, roleGVR, obj, ApplyOptions{}); err != nil {
 		t.Fatalf("initial Apply: %v", err)
 	}
 
@@ -64,7 +64,7 @@ func TestApplyUpdatesWhenPresent(t *testing.T) {
 	if err := unstructured.SetNestedField(updated.Object, "changed", "metadata", "labels", "marker"); err != nil {
 		t.Fatalf("SetNestedField: %v", err)
 	}
-	if err := Apply(ctx, dyn, roleGVR, updated, ApplyOptions{}); err != nil {
+	if _, err := Apply(ctx, dyn, roleGVR, updated, ApplyOptions{}); err != nil {
 		t.Fatalf("second Apply (update path): %v", err)
 	}
 
@@ -94,7 +94,7 @@ func TestUninstallDeletesWhenPresent(t *testing.T) {
 		t.Fatalf("seeding create: %v", err)
 	}
 
-	if err := Uninstall(ctx, dyn, roleGVR, "ns1", "my-role", UninstallOptions{}); err != nil {
+	if _, err := Uninstall(ctx, dyn, roleGVR, "ns1", "my-role", UninstallOptions{}); err != nil {
 		t.Fatalf("Uninstall: %v", err)
 	}
 
@@ -106,7 +106,7 @@ func TestUninstallDeletesWhenPresent(t *testing.T) {
 
 func TestUninstallIsIdempotentWhenAbsent(t *testing.T) {
 	dyn := newFakeClient(t)
-	if err := Uninstall(context.Background(), dyn, roleGVR, "ns1", "never-existed", UninstallOptions{}); err != nil {
+	if _, err := Uninstall(context.Background(), dyn, roleGVR, "ns1", "never-existed", UninstallOptions{}); err != nil {
 		t.Fatalf("expected Uninstall of a missing object to succeed, got %v", err)
 	}
 }
@@ -116,7 +116,7 @@ func TestClusterScopedWhenNamespaceEmpty(t *testing.T) {
 	ctx := context.Background()
 
 	obj := newRole("", "cluster-role")
-	if err := Apply(ctx, dyn, roleGVR, obj, ApplyOptions{}); err != nil {
+	if _, err := Apply(ctx, dyn, roleGVR, obj, ApplyOptions{}); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 	got, err := Get(ctx, dyn, roleGVR, "", "cluster-role")
@@ -154,7 +154,7 @@ func TestApplyWritesBackServerResponse(t *testing.T) {
 	dyn := newFakeClient(t)
 	dyn.PrependReactor("create", "roles", inject)
 	obj := newRole("ns1", "my-role")
-	if err := Apply(ctx, dyn, roleGVR, obj, ApplyOptions{}); err != nil {
+	if _, err := Apply(ctx, dyn, roleGVR, obj, ApplyOptions{}); err != nil {
 		t.Fatalf("Apply (create path): %v", err)
 	}
 	if v, _, _ := unstructured.NestedString(obj.Object, "spec", "injectedByServer"); v != "server-default" {
@@ -163,12 +163,12 @@ func TestApplyWritesBackServerResponse(t *testing.T) {
 
 	// UPDATE path: seed the object with a plain Apply, then apply again through the injecting reactor.
 	dyn2 := newFakeClient(t)
-	if err := Apply(ctx, dyn2, roleGVR, newRole("ns2", "my-role"), ApplyOptions{}); err != nil {
+	if _, err := Apply(ctx, dyn2, roleGVR, newRole("ns2", "my-role"), ApplyOptions{}); err != nil {
 		t.Fatalf("seed Apply: %v", err)
 	}
 	dyn2.PrependReactor("update", "roles", inject)
 	obj2 := newRole("ns2", "my-role")
-	if err := Apply(ctx, dyn2, roleGVR, obj2, ApplyOptions{}); err != nil {
+	if _, err := Apply(ctx, dyn2, roleGVR, obj2, ApplyOptions{}); err != nil {
 		t.Fatalf("Apply (update path): %v", err)
 	}
 	if v, _, _ := unstructured.NestedString(obj2.Object, "spec", "injectedByServer"); v != "server-default" {
