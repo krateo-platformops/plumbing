@@ -1,4 +1,4 @@
-package helm
+package content
 
 import (
 	"testing"
@@ -8,7 +8,7 @@ import (
 )
 
 // Given the audit schema's list, a verdict and the audit record agree on whether a write changed
-// content (plumbing#124): contentDiffers says yes exactly when audit.ContentSHA256 differs, on the
+// content (plumbing#124): Differs says yes exactly when audit.ContentSHA256 differs, on the
 // annotations, the spec, and nulls at any depth.
 //
 // It compares the judgement, not the bytes. The two canonical forms differ on purpose in three
@@ -57,7 +57,7 @@ func TestContentAnnotationsAgreeWithTheAuditHash(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
 		before, after obj
-		verdict       bool // contentDiffers
+		verdict       bool // Differs
 		hashChanged   bool // the record's content_sha256 changed; equal to verdict unless deliberate
 	}{
 		{"nothing changed", dep(replicas(1), map[string]string{listed: "a"}), dep(replicas(1), map[string]string{listed: "a"}), false, false},
@@ -96,13 +96,13 @@ func TestContentAnnotationsAgreeWithTheAuditHash(t *testing.T) {
 			widget(map[string]interface{}{"spec": map[string]interface{}{"a": "b"}}), false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			verdict, err := contentDiffers(tc.before.u, tc.after.u, keys)
+			verdict, err := Differs(tc.before.u, tc.after.u, keys)
 			if err != nil {
 				t.Fatal(err)
 			}
 			hashChanged := hash(t, tc.before) != hash(t, tc.after)
 			if verdict != tc.verdict {
-				t.Errorf("contentDiffers = %v, want %v", verdict, tc.verdict)
+				t.Errorf("Differs = %v, want %v", verdict, tc.verdict)
 			}
 			if hashChanged != tc.hashChanged {
 				t.Errorf("the audit hash changed = %v, want %v", hashChanged, tc.hashChanged)
