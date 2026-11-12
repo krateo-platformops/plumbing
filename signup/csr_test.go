@@ -184,18 +184,32 @@ func TestACancelledSignupStillDeletesItsCSR(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
+			// When the caller went away. The signup is timed from there, not
+			// from its start: generating the key, before any request, takes
+			// longer than the bound on a loaded machine, and isn't what this
+			// measures (core-provider saw it fail 5 of 6 under load).
+			var cancelledAt atomic.Int64
+			goAway := func() {
+				cancelledAt.Store(time.Now().UnixNano())
+				cancel()
+			}
 			api := newCSRServer(t, func() { // the caller goes away
 				if tc.after == 0 {
-					cancel()
+					goAway()
 					return
 				}
-				time.AfterFunc(tc.after, cancel)
+				time.AfterFunc(tc.after, goAway)
 			})
-			start := time.Now()
 			_, _, err := generateClientCertAndKey(ctx, jsonClient(t, api.srv), opts)
+			returned := time.Now()
 			require.Error(t, err)
 			assert.ErrorIs(t, err, context.Canceled)
-			assert.Less(t, time.Since(start), 2*time.Second, "the signup stops at the cancel")
+			require.NotZero(t, cancelledAt.Load(), "the caller went away")
+			// The bound is the point: the wait stops at the cancel, not after
+			// the certificate wait's 5 minutes (certs). The cleanup DELETE runs
+			// after it, within the same bound.
+			assert.Less(t, returned.Sub(time.Unix(0, cancelledAt.Load())), 10*time.Second,
+				"the signup stops at the cancel, not at the certificate wait's 5-minute timeout")
 			assert.Empty(t, api.names(), "the CSR is deleted though the caller cancelled")
 			assert.Positive(t, api.deletes.Load(), "the cleanup reached the apiserver")
 		})
