@@ -80,7 +80,9 @@ func Canonical(obj runtime.Object, contentAnnotations []string) (map[string]inte
 // CanonicalWith is Canonical keeping keys.Labels too, under metadata.labels, each one present with
 // a non-null value, the rest dropped. With no labels declared it is exactly Canonical's form.
 func CanonicalWith(obj runtime.Object, keys Keys) (map[string]interface{}, error) {
-	if obj == nil {
+	// A nil pointer inside the interface (a nil *unstructured.Unstructured passed as runtime.Object)
+	// is not == nil, and the converter would dereference it (plumbing#145).
+	if obj == nil || isNilPointer(obj) {
 		return nil, fmt.Errorf("no object")
 	}
 	u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj.DeepCopyObject())
@@ -238,4 +240,10 @@ func dropNullMembers(v interface{}) {
 			dropNullMembers(e)
 		}
 	}
+}
+
+// isNilPointer reports whether obj is a typed nil pointer.
+func isNilPointer(obj runtime.Object) bool {
+	v := reflect.ValueOf(obj)
+	return v.Kind() == reflect.Ptr && v.IsNil()
 }
