@@ -9,6 +9,12 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-12 — `kubeutil/content`, the AUDIT-4 content comparison, exported** (core-provider#423):
+  the canonical form the helm verdicts compared with (`contentDiffers` / `canonicalContent` in
+  helm/v3) moves, unchanged, to `content.Differs` / `content.Canonical`, and the verdicts call it.
+  A controller recording objectclient writes now reads "content changed" from the same code, so
+  two writers can't disagree on one pair of objects. No behaviour change: the 40 content subtests
+  moved with it and pass as before.
 - **2026-11-12 — objectclient `Apply` and `Uninstall` report what they did** (core-provider#423):
   `Apply` returns an `ApplyResult` {`Op`, `Before`, `After`}. `Op` is `created`; `updated` (an
   Update the apiserver persisted, its resourceVersion moved); or `unchanged` (an Update the
