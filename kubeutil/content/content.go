@@ -15,15 +15,30 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
+// Keys are the metadata keys that count as content: the annotations and labels authorization
+// reads (audit.AuthorizationAnnotations, audit.AuthorizationLabels). Every other annotation and
+// label is metadata.
+type Keys struct {
+	Annotations []string
+	Labels      []string
+}
+
 // Differs reports whether before and after differ in content: every top-level field other
 // than apiVersion, kind, metadata and status, and the annotations listed in contentAnnotations,
-// compared canonically (see Canonical).
+// compared canonically (see Canonical). It is DiffersWith with no content labels.
 func Differs(before, after runtime.Object, contentAnnotations []string) (bool, error) {
-	b, err := Canonical(before, contentAnnotations)
+	return DiffersWith(before, after, Keys{Annotations: contentAnnotations})
+}
+
+// DiffersWith is Differs counting keys.Labels as content too: a declared label changed, added or
+// removed is a change; an undeclared one is not (snowplow, 2026-11-12: authn's session Secrets
+// carry authorization-bearing labels that tenant onboarding selects on).
+func DiffersWith(before, after runtime.Object, keys Keys) (bool, error) {
+	b, err := CanonicalWith(before, keys)
 	if err != nil {
 		return false, fmt.Errorf("before: %w", err)
 	}
-	a, err := Canonical(after, contentAnnotations)
+	a, err := CanonicalWith(after, keys)
 	if err != nil {
 		return false, fmt.Errorf("after: %w", err)
 	}
@@ -56,8 +71,15 @@ func Differs(before, after runtime.Object, contentAnnotations []string) (bool, e
 //     schema's content_annotations, which authorization reads), under metadata.annotations, as
 //     audit.ContentSHA256 keeps them: each one present with a non-null value, the rest dropped.
 //
-// Labels and every other annotation are metadata, so they never count here.
+// Labels and every other annotation are metadata, so they never count here (CanonicalWith counts
+// declared labels).
 func Canonical(obj runtime.Object, contentAnnotations []string) (map[string]interface{}, error) {
+	return CanonicalWith(obj, Keys{Annotations: contentAnnotations})
+}
+
+// CanonicalWith is Canonical keeping keys.Labels too, under metadata.labels, each one present with
+// a non-null value, the rest dropped. With no labels declared it is exactly Canonical's form.
+func CanonicalWith(obj runtime.Object, keys Keys) (map[string]interface{}, error) {
 	if obj == nil {
 		return nil, fmt.Errorf("no object")
 	}
@@ -69,12 +91,20 @@ func Canonical(obj runtime.Object, contentAnnotations []string) (map[string]inte
 	if gvk.Group == "" && gvk.Kind == "Secret" {
 		foldStringData(u)
 	}
-	kept := keptAnnotations(u, contentAnnotations)
+	keptA := keptMeta(u, "annotations", keys.Annotations)
+	keptL := keptMeta(u, "labels", keys.Labels)
 	for _, k := range []string{"apiVersion", "kind", "metadata", "status"} {
 		delete(u, k)
 	}
-	if len(kept) > 0 {
-		u["metadata"] = map[string]interface{}{"annotations": kept}
+	if len(keptA) > 0 || len(keptL) > 0 {
+		meta := map[string]interface{}{}
+		if len(keptA) > 0 {
+			meta["annotations"] = keptA
+		}
+		if len(keptL) > 0 {
+			meta["labels"] = keptL
+		}
+		u["metadata"] = meta
 	}
 	// A null member says what an absent one does, at every depth, as audit's c1 form reads it:
 	// otherwise a verdict would call a write changed whose content_sha256 is the same. Before the
@@ -177,10 +207,11 @@ func asSet(l []interface{}) []interface{} {
 
 func encodeStd(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
 
-// keptAnnotations is u's metadata.annotations kept to keys, without the absent or null ones.
-func keptAnnotations(u map[string]interface{}, keys []string) map[string]interface{} {
+// keptMeta is u's metadata.<field> (annotations or labels) kept to keys, without the absent or null
+// ones.
+func keptMeta(u map[string]interface{}, field string, keys []string) map[string]interface{} {
 	meta, _ := u["metadata"].(map[string]interface{})
-	all, _ := meta["annotations"].(map[string]interface{})
+	all, _ := meta[field].(map[string]interface{})
 	out := map[string]interface{}{}
 	for _, k := range keys {
 		if v, ok := all[k]; ok && v != nil {
