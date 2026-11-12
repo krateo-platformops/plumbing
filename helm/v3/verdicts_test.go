@@ -384,3 +384,15 @@ func TestContentKeysOf(t *testing.T) {
 		t.Errorf("contentKeysOf(nil) = %+v, want empty", k)
 	}
 }
+
+// core-provider#465: a rollback's verdicts carry the RollbackConfig's declared content metadata, as
+// an upgrade's do; a nil config declares nothing.
+func TestRollbackContentKeysOf(t *testing.T) {
+	got := rollbackContentKeysOf(&helmconfig.RollbackConfig{ContentAnnotations: []string{"a"}, ContentLabels: []string{"l"}})
+	if len(got.Annotations) != 1 || got.Annotations[0] != "a" || len(got.Labels) != 1 || got.Labels[0] != "l" {
+		t.Errorf("rollbackContentKeysOf = %+v, want both lists", got)
+	}
+	if k := rollbackContentKeysOf(nil); len(k.Annotations) != 0 || len(k.Labels) != 0 {
+		t.Errorf("rollbackContentKeysOf(nil) = %+v, want empty", k)
+	}
+}

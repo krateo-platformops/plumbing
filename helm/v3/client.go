@@ -444,16 +444,16 @@ func (c *client) Rollback(ctx context.Context, releaseName string, cfg *helmconf
 	if err != nil {
 		// A failed rollback still returns what it wrote: helm's update continues past per-object
 		// errors, so some children may have changed.
-		return obs.result(nil, content.Keys{}, nil), err
+		return obs.result(nil, rollbackContentKeysOf(cfg), nil), err
 	}
 
 	rel, err := c.GetRelease(ctx, releaseName, &helmconfig.GetConfig{})
 	if err != nil {
 		// The rollback's writes happened; only the re-read of the release failed.
-		return obs.result(nil, content.Keys{}, nil), fmt.Errorf("failed to get release after rollback: %w", err)
+		return obs.result(nil, rollbackContentKeysOf(cfg), nil), fmt.Errorf("failed to get release after rollback: %w", err)
 	}
 
-	return obs.result(rel, content.Keys{}, nil), nil
+	return obs.result(rel, rollbackContentKeysOf(cfg), nil), nil
 }
 
 func (c *client) install(ctx context.Context, namespace, releaseName, chartRef string, cfg *helmconfig.InstallConfig, actionConfig *action.Configuration) (*helmconfig.Release, error) {
@@ -586,6 +586,15 @@ func (c *client) ListReleases(ctx context.Context, cfg *helmconfig.ListConfig) (
 // contentKeysOf is the metadata the caller declared as content for the verdicts (plumbing#124,
 // core-provider#465): its authorization annotations and labels.
 func contentKeysOf(cfg *helmconfig.UpgradeConfig) content.Keys {
+	if cfg == nil {
+		return content.Keys{}
+	}
+	return content.Keys{Annotations: cfg.ContentAnnotations, Labels: cfg.ContentLabels}
+}
+
+// rollbackContentKeysOf is RollbackConfig's declared content metadata (core-provider#465); a nil
+// config declares nothing.
+func rollbackContentKeysOf(cfg *helmconfig.RollbackConfig) content.Keys {
 	if cfg == nil {
 		return content.Keys{}
 	}

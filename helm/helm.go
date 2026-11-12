@@ -390,6 +390,12 @@ type RollbackConfig struct {
 	Force          bool // will (if true) force resource upgrade through uninstall/recreate if needed
 	CleanupOnFail  bool
 	MaxHistory     int // MaxHistory limits the maximum number of revisions saved per release
+	// ContentAnnotations and ContentLabels are what the rollback's Objects verdicts count as
+	// content, as on UpgradeConfig: the audit schema's authorization annotations and labels
+	// (core-provider#465). A rollback re-applies a previous manifest, so a child whose only change is
+	// who may do what must read as a change, not metadataOnly. Empty, none is content.
+	ContentAnnotations []string
+	ContentLabels      []string
 }
 
 type UninstallConfig struct {
