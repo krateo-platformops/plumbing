@@ -186,3 +186,56 @@ func TestEnvtest_ReconcileInstallsWhenNoReleaseIsStored(t *testing.T) {
 		t.Fatalf("the release must be stored after the first reconcile: rel=%v err=%v", rel, err)
 	}
 }
+
+// core-provider#465, on a real apiserver: a rollback whose only change to a child is an authorization
+// LABEL is specChanged when RollbackConfig declares that label, and metadataOnly when it declares
+// nothing (the control). This drives Rollback's own call sites, not only the accessor.
+func TestEnvtest_RollbackCountsDeclaredLabels(t *testing.T) {
+	hc := envtestClient(t)
+	ctx := context.Background()
+	const principal = "authn.krateo.io/principal"
+	url := serveFiles(t, map[string]string{
+		"Chart.yaml": chartYAML,
+		"templates/a.yaml": "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: rb-label\n  namespace: default\n" +
+			"  labels:\n    " + principal + ": {{ .Values.who | default \"alice\" | quote }}\ndata:\n  k: v\n",
+	})
+	if _, err := hc.Install(ctx, "rblabel", url, &helmconfig.InstallConfig{Namespace: "default"}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	upgradeTo := func(who string) {
+		t.Helper()
+		if _, err := hc.Upgrade(ctx, "rblabel", url, &helmconfig.UpgradeConfig{ActionConfig: &helmconfig.ActionConfig{Values: map[string]any{"who": who}}}); err != nil {
+			t.Fatalf("upgrade: %v", err)
+		}
+	}
+	verdictOf := func(op *helmconfig.OperationResult) helmconfig.ObjectChange {
+		t.Helper()
+		for _, v := range op.Objects {
+			if v.Name == "rb-label" {
+				return v.Change
+			}
+		}
+		t.Fatalf("no verdict for rb-label in %v", changes(op.Objects))
+		return ""
+	}
+
+	// Revision 2 (bob), then roll back to 1 (alice) with the label declared: specChanged.
+	upgradeTo("bob")
+	op, err := hc.Rollback(ctx, "rblabel", &helmconfig.RollbackConfig{ReleaseVersion: 1, ContentLabels: []string{principal}})
+	if err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	if got := verdictOf(op); got != helmconfig.ChangeSpec {
+		t.Errorf("a label-only rollback with the label declared: %q, want specChanged", got)
+	}
+
+	// Control: back to bob, then the same rollback declaring nothing: metadataOnly.
+	upgradeTo("bob")
+	op, err = hc.Rollback(ctx, "rblabel", &helmconfig.RollbackConfig{ReleaseVersion: 1})
+	if err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	if got := verdictOf(op); got != helmconfig.ChangeMetadataOnly {
+		t.Errorf("control: the same rollback declaring nothing: %q, want metadataOnly", got)
+	}
+}

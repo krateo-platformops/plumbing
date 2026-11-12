@@ -9,6 +9,10 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-12 — a rollback's verdicts count declared authorization metadata too:
+  `RollbackConfig.ContentAnnotations` / `ContentLabels`** (core-provider#465): as on `UpgradeConfig`,
+  so a rollback whose only change to a child is who may do what reads `specChanged`, not
+  `metadataOnly`. Additive.
 - **2026-11-12 — helm verdicts count declared authorization labels as content:
   `UpgradeConfig.ContentLabels`** (core-provider#465): beside `ContentAnnotations`, the Objects
   verdicts of Reconcile and Upgrade now compare with `content.DiffersWith`, so a write that changes
