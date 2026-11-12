@@ -32,8 +32,8 @@ type verdictInputs struct {
 	absent                                     map[string]bool
 	kept, notDone, unknown                     []string
 	force                                      bool
-	// contentAnnotations are the caller's UpgradeConfig.ContentAnnotations.
-	contentAnnotations []string
+	// contentKeys are the caller's UpgradeConfig.ContentAnnotations and ContentLabels.
+	contentKeys content.Keys
 }
 
 // objectVerdicts builds the uncapped per-child verdict list (plumbing#106).
@@ -103,7 +103,7 @@ func objectVerdicts(in verdictInputs) (verdicts []helmconfig.ObjectVerdict, comp
 		if !changed {
 			continue
 		}
-		contentChanged, err := content.Differs(before, info.Object, in.contentAnnotations)
+		contentChanged, err := content.DiffersWith(before, info.Object, in.contentKeys)
 		switch {
 		case err != nil:
 			out = append(out, verdictOf(info, info.Object, updateVerb, helmconfig.ChangeCompareFailed))

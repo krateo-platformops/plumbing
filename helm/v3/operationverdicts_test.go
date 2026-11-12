@@ -2,6 +2,7 @@ package helm
 
 import (
 	"errors"
+	"github.com/krateo-platformops/plumbing/kubeutil/content"
 	"testing"
 
 	helmconfig "github.com/krateo-platformops/plumbing/helm"
@@ -128,7 +129,7 @@ func TestOperationVerdictsPerWrite(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, complete, notAtt, hooks := operationVerdicts(tc.writes, nil, tc.get)
+			got, complete, notAtt, hooks := operationVerdicts(tc.writes, content.Keys{}, tc.get)
 			if g := changes(got); !equalStrings(g, tc.want) {
 				t.Errorf("verdicts = %v, want %v", g, tc.want)
 			}
@@ -218,7 +219,7 @@ func (discard) Write(p []byte) (int, error) { return len(p), nil }
 func TestWriteObserverMarksAnUnwrappableClientIncomplete(t *testing.T) {
 	var o writeObserver
 	o.attach(&action.Configuration{KubeClient: minimalKube{}})
-	if r := o.result(nil, nil, nil); r.ObjectsComplete {
+	if r := o.result(nil, content.Keys{}, nil); r.ObjectsComplete {
 		t.Error("an unobserved KubeClient must leave ObjectsComplete false")
 	}
 	// Control: a full client is wrapped and the (empty) result is complete.
@@ -228,7 +229,7 @@ func TestWriteObserverMarksAnUnwrappableClientIncomplete(t *testing.T) {
 	if _, ok := ac.KubeClient.(*kubeRecorder); !ok {
 		t.Fatal("a full KubeClient must be wrapped in a recorder")
 	}
-	if r := full.result(nil, nil, nil); !r.ObjectsComplete {
+	if r := full.result(nil, content.Keys{}, nil); !r.ObjectsComplete {
 		t.Error("a wrapped client with no writes is complete")
 	}
 }

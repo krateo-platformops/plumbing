@@ -1,6 +1,7 @@
 package helm
 
 import (
+	"github.com/krateo-platformops/plumbing/kubeutil/content"
 	"sort"
 
 	helmconfig "github.com/krateo-platformops/plumbing/helm"
@@ -25,7 +26,7 @@ import (
 //     neither.
 //
 // get reads a child's live state (getLive in production, refreshing the info).
-func operationVerdicts(writes []kubeWrite, contentAnnotations []string, get func(*resource.Info) (runtime.Object, error)) (out []helmconfig.ObjectVerdict, complete bool, notAttempted, hooks int) {
+func operationVerdicts(writes []kubeWrite, contentKeys content.Keys, get func(*resource.Info) (runtime.Object, error)) (out []helmconfig.ObjectVerdict, complete bool, notAttempted, hooks int) {
 	complete = true
 	for _, w := range writes {
 		if w.hook {
@@ -46,7 +47,7 @@ func operationVerdicts(writes []kubeWrite, contentAnnotations []string, get func
 				target: w.target, created: res.Created, updated: res.Updated, deleted: res.Deleted,
 				current: w.original, live: w.live, absent: w.absent,
 				kept: kept, notDone: notDone, unknown: unknown,
-				force: w.force, contentAnnotations: contentAnnotations,
+				force: w.force, contentKeys: contentKeys,
 			})
 			out = append(out, v...)
 			complete = complete && c

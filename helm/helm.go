@@ -359,13 +359,18 @@ type UpgradeConfig struct {
 	// Upgrade-Only Fields
 	Install    bool
 	MaxHistory int
-	// ContentAnnotations are the annotation keys Reconcile's Objects verdicts count as content
-	// (plumbing#124), on every kind: a merge that changes only one of them is specChanged, not
-	// metadataOnly. They are the annotations authorization reads, so changing one changes what an
-	// identity may do (the AUDIT-4 ruling). plumbing declares none of its own: the caller passes
-	// the audit schema's list, audit.AuthorizationAnnotations(), so the verdict and the record's
-	// content_sha256 count the same annotations. Empty, no annotation is content. Reconcile only.
+	// ContentAnnotations are the annotation keys the Objects verdicts (Reconcile's, and Upgrade's
+	// OperationResult) count as content (plumbing#124), on every kind: a write that changes only one
+	// of them is specChanged, not metadataOnly. They are the annotations authorization reads, so
+	// changing one changes what an identity may do (the AUDIT-4 ruling). plumbing declares none of
+	// its own: the caller passes the audit schema's list, audit.AuthorizationAnnotations(). Empty, no
+	// annotation is content. (audit's c1 content hash keeps a fixed key set, so it may count fewer;
+	// see kubeutil/content.)
 	ContentAnnotations []string
+	// ContentLabels are the label keys the same verdicts count as content: the labels authorization
+	// reads, audit.AuthorizationLabels() (audit v0.13.0; core-provider#465). Empty, no label is
+	// content.
+	ContentLabels []string
 	// NO ReuseValues / ResetValues / ResetThenReuseValues, deliberately (#115). They were declared
 	// here and never copied onto helm's action.Upgrade (applyUpgradeConfig), so setting one did
 	// nothing, silently. The upgrade contract is "fresh values rendered against the NEW chart's

@@ -9,6 +9,12 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-12 — helm verdicts count declared authorization labels as content:
+  `UpgradeConfig.ContentLabels`** (core-provider#465): beside `ContentAnnotations`, the Objects
+  verdicts of Reconcile and Upgrade now compare with `content.DiffersWith`, so a write that changes
+  only a declared label (audit v0.13.0's `AuthorizationLabels()`) is `specChanged`, not
+  `metadataOnly`. The `ContentAnnotations` doc no longer says "Reconcile only" (Upgrade uses it
+  too) or that the verdict and c1 hash count the same keys (c1's set is fixed). Additive.
 - **2026-11-12 — a dry run is never a write: `ApplyDryRun` / `UninstallDryRun`** (snowplow): every
   objectclient request with `DryRun` set reports op `dryRun`, created, updated, unchanged or
   refused alike, with Before/After as for the write it stood in for. A dry run was reported

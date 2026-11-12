@@ -1,6 +1,7 @@
 package helm
 
 import (
+	"github.com/krateo-platformops/plumbing/kubeutil/content"
 	"sort"
 	"sync"
 
@@ -180,12 +181,12 @@ func (o *writeObserver) attach(ac *action.Configuration) {
 
 // result builds the OperationResult. manifest is an uninstalled release's children, for the kept
 // verdicts; nil for any other operation.
-func (o *writeObserver) result(rel *helmconfig.Release, contentAnnotations []string, manifest kube.ResourceList) *helmconfig.OperationResult {
+func (o *writeObserver) result(rel *helmconfig.Release, contentKeys content.Keys, manifest kube.ResourceList) *helmconfig.OperationResult {
 	var writes []kubeWrite
 	for _, r := range o.recs {
 		writes = append(writes, r.recorded()...)
 	}
-	objs, complete, notAttempted, hooks := operationVerdicts(writes, contentAnnotations, getLive)
+	objs, complete, notAttempted, hooks := operationVerdicts(writes, contentKeys, getLive)
 	if manifest != nil {
 		objs = append(objs, keptByUninstall(manifest, writes)...)
 		sort.SliceStable(objs, func(i, j int) bool { return verdictKey(objs[i]) < verdictKey(objs[j]) })

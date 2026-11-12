@@ -466,7 +466,7 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 	result.Objects, result.ObjectsComplete, result.ObjectsNotAttempted = objectVerdicts(verdictInputs{
 		target: target, created: res.Created, updated: res.Updated, deleted: res.Deleted, current: current,
 		live: liveObj, absent: absent, kept: keptKeys, notDone: notDoneKeys, unknown: unknownKeys,
-		force: cfg.Force, contentAnnotations: cfg.ContentAnnotations,
+		force: cfg.Force, contentKeys: contentKeysOf(cfg),
 	})
 
 	// core-provider#403: a chart-changed template on a live Job is reported, never skipped silently.
