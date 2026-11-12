@@ -97,15 +97,22 @@ type ApplyResult struct {
 //
 // The result is the final attempt's. Under DryRun nothing is persisted and the resourceVersion says
 // nothing, so a dry-run Update is reported ApplyUpdated, never ApplyUnchanged.
+//
+// On error the result names the write the final attempt SENT, so a caller recording writes can
+// record a failed one (core-provider#423): Op is ApplyCreated for a Create the apiserver refused,
+// ApplyUpdated for a refused Update (with Before, the version it tried to replace), and "" when no
+// write was sent (the read failed, or FromCurrent refused). After is nil: nothing was persisted.
 func Apply(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersionResource, obj *unstructured.Unstructured, opts ApplyOptions) (ApplyResult, error) {
 	res := namespacedOrCluster(dyn, gvr, obj.GetNamespace())
 	name := obj.GetName()
 
-	var result ApplyResult
+	var result, attempted ApplyResult
 	err := retry(ctx, func(ctx context.Context) error {
+		attempted = ApplyResult{}
 		current, err := res.Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			if apierrors.IsNotFound(err) {
+				attempted = ApplyResult{Op: ApplyCreated}
 				created, err := res.Create(ctx, obj, metav1.CreateOptions{
 					DryRun:          opts.DryRun,
 					FieldManager:    opts.FieldManager,
@@ -131,6 +138,7 @@ func Apply(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersionRe
 			}
 		}
 		desired.SetResourceVersion(current.GetResourceVersion())
+		attempted = ApplyResult{Op: ApplyUpdated, Before: current}
 		updated, err := res.Update(ctx, desired, metav1.UpdateOptions{
 			DryRun:          opts.DryRun,
 			FieldManager:    opts.FieldManager,
@@ -148,7 +156,7 @@ func Apply(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersionRe
 		return nil
 	})
 	if err != nil {
-		return ApplyResult{}, err
+		return attempted, err
 	}
 	return result, nil
 }
@@ -180,11 +188,15 @@ type UninstallResult struct {
 // Uninstall deletes the object named name in namespace ns (cluster-scoped when ns is empty), and
 // reports whether it did. A missing object, whether absent before the call or removed concurrently,
 // is treated as success (UninstallAbsent).
+//
+// On error the result names the write the final attempt sent: Op is UninstallDeleted, with Before,
+// for a Delete the apiserver refused, and "" when no Delete was sent (the read failed).
 func Uninstall(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersionResource, ns, name string, opts UninstallOptions) (UninstallResult, error) {
 	res := namespacedOrCluster(dyn, gvr, ns)
 
-	var result UninstallResult
+	var result, attempted UninstallResult
 	err := retry(ctx, func(ctx context.Context) error {
+		attempted = UninstallResult{}
 		current, err := res.Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			if apierrors.IsNotFound(err) {
@@ -194,6 +206,7 @@ func Uninstall(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersi
 			return err
 		}
 
+		attempted = UninstallResult{Op: UninstallDeleted, Before: current}
 		err = res.Delete(ctx, name, metav1.DeleteOptions{
 			DryRun:             opts.DryRun,
 			Preconditions:      opts.Preconditions,
@@ -211,7 +224,7 @@ func Uninstall(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersi
 		return nil
 	})
 	if err != nil {
-		return UninstallResult{}, err
+		return attempted, err
 	}
 	return result, nil
 }
