@@ -57,8 +57,33 @@ type UninstallOptions struct {
 	DryRun             []string
 }
 
+// ApplyOp is the write Apply sent, and what the apiserver made of it.
+type ApplyOp string
+
+const (
+	// ApplyCreated: no object existed, and a Create was sent.
+	ApplyCreated ApplyOp = "created"
+	// ApplyUpdated: an Update was sent, and the apiserver persisted a change (resourceVersion moved).
+	ApplyUpdated ApplyOp = "updated"
+	// ApplyUnchanged: an Update was sent, and the apiserver persisted nothing (resourceVersion
+	// unmoved). The apiserver short-circuits an Update whose result equals the stored object, so the
+	// cluster keeps no trace of it: a caller recording changes records none here.
+	ApplyUnchanged ApplyOp = "unchanged"
+)
+
+// ApplyResult is what Apply did (core-provider#423: a caller writing one audit record per real
+// change must know which write happened, and what it changed).
+type ApplyResult struct {
+	Op ApplyOp
+	// Before is the object as read just before the write, the version the Update replaced. nil when
+	// Op is ApplyCreated.
+	Before *unstructured.Unstructured
+	// After is the object the apiserver returned, the same content Apply writes back into obj.
+	After *unstructured.Unstructured
+}
+
 // Apply creates obj if no object with its namespace/name exists yet, or updates it (carrying over the
-// current resourceVersion) if one does. It retries on any transient error other than context
+// current resourceVersion) if one does, and reports which (ApplyResult). It retries on any transient error other than context
 // cancellation, since the read-then-write is not atomic and can race a concurrent writer.
 //
 // On success obj is REPLACED IN PLACE with the object the apiserver returned — i.e. the fully
@@ -69,11 +94,15 @@ type UninstallOptions struct {
 // pre-apply render, so an apply-then-hash digest could never equal a get-then-hash digest of the same
 // object (core-provider CompositionDefinition Observe deployed-digest gate never converged, so the CD
 // never reached Available).
-func Apply(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersionResource, obj *unstructured.Unstructured, opts ApplyOptions) error {
+//
+// The result is the final attempt's. Under DryRun nothing is persisted and the resourceVersion says
+// nothing, so a dry-run Update is reported ApplyUpdated, never ApplyUnchanged.
+func Apply(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersionResource, obj *unstructured.Unstructured, opts ApplyOptions) (ApplyResult, error) {
 	res := namespacedOrCluster(dyn, gvr, obj.GetNamespace())
 	name := obj.GetName()
 
-	return retry(ctx, func(ctx context.Context) error {
+	var result ApplyResult
+	err := retry(ctx, func(ctx context.Context) error {
 		current, err := res.Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			if apierrors.IsNotFound(err) {
@@ -85,6 +114,7 @@ func Apply(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersionRe
 				if err != nil {
 					return err
 				}
+				result = ApplyResult{Op: ApplyCreated, After: created.DeepCopy()}
 				obj.SetUnstructuredContent(created.UnstructuredContent())
 				return nil
 			}
@@ -109,9 +139,18 @@ func Apply(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersionRe
 		if err != nil {
 			return err
 		}
+		op := ApplyUpdated
+		if len(opts.DryRun) == 0 && updated.GetResourceVersion() == current.GetResourceVersion() {
+			op = ApplyUnchanged
+		}
+		result = ApplyResult{Op: op, Before: current, After: updated.DeepCopy()}
 		obj.SetUnstructuredContent(updated.UnstructuredContent())
 		return nil
 	})
+	if err != nil {
+		return ApplyResult{}, err
+	}
+	return result, nil
 }
 
 // Get reads the object named name in namespace ns (cluster-scoped when ns is empty).
@@ -119,15 +158,37 @@ func Get(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersionReso
 	return namespacedOrCluster(dyn, gvr, ns).Get(ctx, name, metav1.GetOptions{})
 }
 
-// Uninstall deletes the object named name in namespace ns (cluster-scoped when ns is empty). A missing
-// object, whether absent before the call or removed concurrently, is treated as success.
-func Uninstall(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersionResource, ns, name string, opts UninstallOptions) error {
+// UninstallOp is what Uninstall found and did.
+type UninstallOp string
+
+const (
+	// UninstallDeleted: the object existed and the apiserver accepted its Delete. An object with
+	// finalizers is then terminating, not yet gone.
+	UninstallDeleted UninstallOp = "deleted"
+	// UninstallAbsent: there was nothing to delete, absent before the call or removed concurrently
+	// (the Delete answered NotFound). Not a write of this caller's.
+	UninstallAbsent UninstallOp = "absent"
+)
+
+// UninstallResult is what Uninstall did.
+type UninstallResult struct {
+	Op UninstallOp
+	// Before is the object as read just before the Delete; nil when Op is UninstallAbsent.
+	Before *unstructured.Unstructured
+}
+
+// Uninstall deletes the object named name in namespace ns (cluster-scoped when ns is empty), and
+// reports whether it did. A missing object, whether absent before the call or removed concurrently,
+// is treated as success (UninstallAbsent).
+func Uninstall(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersionResource, ns, name string, opts UninstallOptions) (UninstallResult, error) {
 	res := namespacedOrCluster(dyn, gvr, ns)
 
-	return retry(ctx, func(ctx context.Context) error {
-		_, err := res.Get(ctx, name, metav1.GetOptions{})
+	var result UninstallResult
+	err := retry(ctx, func(ctx context.Context) error {
+		current, err := res.Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			if apierrors.IsNotFound(err) {
+				result = UninstallResult{Op: UninstallAbsent}
 				return nil
 			}
 			return err
@@ -139,11 +200,20 @@ func Uninstall(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersi
 			PropagationPolicy:  opts.PropagationPolicy,
 			GracePeriodSeconds: opts.GracePeriodSeconds,
 		})
-		if err != nil && !apierrors.IsNotFound(err) {
+		if apierrors.IsNotFound(err) {
+			result = UninstallResult{Op: UninstallAbsent}
+			return nil
+		}
+		if err != nil {
 			return err
 		}
+		result = UninstallResult{Op: UninstallDeleted, Before: current}
 		return nil
 	})
+	if err != nil {
+		return UninstallResult{}, err
+	}
+	return result, nil
 }
 
 func namespacedOrCluster(dyn dynamic.Interface, gvr schema.GroupVersionResource, ns string) dynamic.ResourceInterface {

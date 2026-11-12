@@ -78,7 +78,7 @@ func TestApplyThroughDynamicClient(t *testing.T) {
 		t.Fatalf("expected TypeMeta to survive unstructured conversion, got kind=%q apiVersion=%q", u.GetKind(), u.GetAPIVersion())
 	}
 
-	if err := objectclient.Apply(context.Background(), dyn, roleGVR, u, objectclient.ApplyOptions{}); err != nil {
+	if _, err := objectclient.Apply(context.Background(), dyn, roleGVR, u, objectclient.ApplyOptions{}); err != nil {
 		t.Fatalf("Apply failed — likely a missing-TypeMeta regression: %v", err)
 	}
 }
