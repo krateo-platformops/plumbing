@@ -139,10 +139,14 @@ func Dialer() *net.Dialer {
 
 // Transport returns an *http.Transport whose DialContext is guarded, with the pooling settings the
 // existing sites shared. Callers that need to vary a field mutate the result.
+//
+// On js/wasm (a program running in a browser) it has no DialContext, so its requests go through
+// the browser's fetch and the policy does not apply: transport_dial_js.go says why. There fetch
+// also follows redirects itself, so a client built on it must send through RoundTripper.
 func Transport() *http.Transport {
 	return &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           Dialer().DialContext,
+		DialContext:           transportDial(),
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
@@ -154,5 +158,5 @@ func Transport() *http.Transport {
 // Client returns an *http.Client with a guarded transport. Exists so no caller has to reach for
 // http.DefaultClient, which has an unguarded transport and is shared process-wide.
 func Client(timeout time.Duration) *http.Client {
-	return &http.Client{Transport: Transport(), Timeout: timeout}
+	return &http.Client{Transport: RoundTripper(Transport()), Timeout: timeout}
 }

@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/Masterminds/semver/v3"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -30,17 +29,11 @@ const (
 
 // Shared Transport to enable Connection Pooling.
 //
-// The dialer is dialguard's (core-provider#306 / snowplow#1131): the OCI path carries a chart URL
-// from a CompositionDefinition's spec, so it is one of the destinations a user influences.
-var sharedTransport = &http.Transport{
-	Proxy:                 http.ProxyFromEnvironment,
-	DialContext:           dialguard.Dialer().DialContext,
-	ForceAttemptHTTP2:     true,
-	MaxIdleConns:          100,
-	IdleConnTimeout:       90 * time.Second,
-	TLSHandshakeTimeout:   10 * time.Second,
-	ExpectContinueTimeout: 1 * time.Second,
-}
+// It is dialguard's Transport (core-provider#306 / snowplow#1131): the OCI path carries a chart URL
+// from a CompositionDefinition's spec, so it is one of the destinations a user influences. Built by
+// dialguard.Transport rather than as a literal with dialguard's dialer, so that on js/wasm it has no
+// dial function and requests go through fetch (plumbing#138), as on every other plumbing client.
+var sharedTransport = dialguard.Transport()
 
 type ociGetter struct{}
 
@@ -85,7 +78,9 @@ func (g *ociGetter) Get(ctx context.Context, opts GetOptions) (io.Reader, string
 	// 3. Configure Auth Client FIRST (before any registry operations)
 	authClient := &auth.Client{
 		Client: &http.Client{
-			Transport: getTransport(opts.InsecureSkipVerifyTLS),
+			// On js/wasm, fetch would follow a redirect Go never sees; RoundTripper refuses it there
+			// (dialguard).
+			Transport: dialguard.RoundTripper(getTransport(opts.InsecureSkipVerifyTLS)),
 			Timeout:   opts.Timeout,
 		},
 		Cache: auth.NewCache(),

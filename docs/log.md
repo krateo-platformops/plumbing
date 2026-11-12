@@ -9,6 +9,25 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-12 — dialguard on js/wasm: requests go through fetch, and redirects are refused**
+  (snowplow#1359, for the Agentiko sandbox):
+  - **The bug:** on js/wasm, net/http uses the browser's fetch only for a Transport with no dial
+    function. `dialguard.Transport()` always set one, so every plumbing client dialled Go's
+    in-process network instead, which refuses a dialer carrying a Control hook. The JWKS never
+    loaded and every token was a 503.
+  - **Transport:** on js/wasm it now has no dial function, from snowplow's patch. The server
+    build is unchanged, and `Dialer`/`Control` are unchanged. On js the destination policy and
+    TLS client certificates don't apply, and the docs say so.
+  - **Redirects:** fetch follows redirects itself, so `CheckRedirect` and the origin guards of
+    `http/request` and `helm/getter` would never see a hop, and a JWKS fetch could be bounced
+    anywhere. The new `dialguard.RoundTripper` sets fetch's redirect mode to `error` wherever
+    net/http uses fetch, mirroring its choice (`jsFetchDisabled`: not under Node), and is the
+    identity elsewhere. `Client`, `http/request` and both `helm/getter` paths (HTTP and OCI)
+    use it. The OCI getter had its own transport literal with dialguard's dialer, so on js it
+    could never use fetch; it's now built by `dialguard.Transport()`, which is the same on
+    servers (core-provider's review).
+  - **Proof:** the js tests run in CI under Node's real fetch and Go's network, against a
+    redirecting server whose target must never be reached.
 - **2026-11-11 — the CSR cleanup is bounded, and a failed create cleans up too** (plumbing#129,
   from the review of authn#123):
   - **Context:** the `certs` helpers take a `context.Context` first (a signature change, Diego), and

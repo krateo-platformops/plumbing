@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/krateo-platformops/plumbing/dialguard"
 	"github.com/krateo-platformops/plumbing/endpoints"
 )
 
@@ -12,7 +13,7 @@ func HTTPClientForEndpoint(ep *endpoints.Endpoint, ex *RequestInfo) (*http.Clien
 	rt, err := tlsConfigFor(ep)
 	if err != nil {
 		return &http.Client{
-			Transport: &traceIdRoundTripper{defaultTransport()},
+			Transport: dialguard.RoundTripper(&traceIdRoundTripper{defaultTransport()}),
 		}, err
 	}
 	rt = &traceIdRoundTripper{rt}
@@ -106,7 +107,9 @@ func HTTPClientForEndpoint(ep *endpoints.Endpoint, ex *RequestInfo) (*http.Clien
 	// the header. The origin-aware guard in each of them is the real fix; this covers the header a
 	// caller set, which no round-tripper knows about.
 	return &http.Client{
-		Transport: rt,
+		// On js/wasm, fetch follows a redirect without this CheckRedirect or the round-trippers'
+		// origin guards; RoundTripper refuses it there (dialguard).
+		Transport: dialguard.RoundTripper(rt),
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if passOnRedirect || len(via) == 0 {
 				return nil

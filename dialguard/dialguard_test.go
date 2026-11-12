@@ -124,10 +124,6 @@ func TestConstructorsInstallTheHook(t *testing.T) {
 		t.Error("Dialer() returned a dialer with a nil Control: every dial through it is unchecked, " +
 			"and the policy tests above would still pass")
 	}
-	if Transport().DialContext == nil {
-		t.Error("Transport() returned a transport with a nil DialContext, so it falls back to the " +
-			"zero-value dialer and the hook is bypassed")
-	}
 	c := Client(0)
 	if c.Transport == nil {
 		t.Error("Client() returned a client with a nil Transport, which means http.DefaultTransport " +
