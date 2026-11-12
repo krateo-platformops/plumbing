@@ -420,7 +420,7 @@ func TestRollback(t *testing.T) {
 
 			// Rollback to revision 1
 			t.Log("Rolling back to revision 1")
-			rel, err = cli.Rollback(
+			op, err := cli.Rollback(
 				ctx,
 				releaseName,
 				&helmconfig.RollbackConfig{
@@ -428,7 +428,18 @@ func TestRollback(t *testing.T) {
 				},
 			)
 			require.NoError(t, err)
-			assert.Equal(t, 3, rel.Revision) // Rollback creates a new revision
+			require.NotNil(t, op.Release)
+			assert.Equal(t, 3, op.Release.Revision) // Rollback creates a new revision
+			// plumbing#139: the rollback's writes are reported. Going back from 3 replicas to 1
+			// changes the Deployment's spec, so its verdict is specChanged.
+			assert.True(t, op.ObjectsComplete, "the rollback must be fully observed")
+			var deploy []helmconfig.ObjectChange
+			for _, v := range op.Objects {
+				if v.Kind == "Deployment" {
+					deploy = append(deploy, v.Change)
+				}
+			}
+			assert.Equal(t, []helmconfig.ObjectChange{helmconfig.ChangeSpec}, deploy, "the rolled-back Deployment's verdict")
 
 			// Cleanup
 			_, err = cli.Uninstall(ctx, releaseName, &helmconfig.UninstallConfig{})

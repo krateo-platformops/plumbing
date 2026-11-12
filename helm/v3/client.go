@@ -421,12 +421,18 @@ func (c *client) Uninstall(ctx context.Context, releaseName string, cfg *helmcon
 	return obs.result(wrapped, nil, manifest), err
 }
 
-func (c *client) Rollback(ctx context.Context, releaseName string, cfg *helmconfig.RollbackConfig) (*helmconfig.Release, error) {
+func (c *client) Rollback(ctx context.Context, releaseName string, cfg *helmconfig.RollbackConfig) (*helmconfig.OperationResult, error) {
 	// Rollback re-applies a previous revision's manifest, so it resolves kinds and can hit a stale
 	// mapper. A rollback failing on a mapping miss is the worst place for it: it is what someone
 	// reaches for when an upgrade has already gone wrong.
+	//
+	// Its writes are observed like Upgrade's (plumbing#139): a rollback re-applies a manifest, so it
+	// creates, patches and deletes children, and a caller recording one audit record per child write
+	// must see them.
+	var obs writeObserver
 	err := c.retryOnStaleMapping(ctx, "rollback", c.namespace, c.restConfig, nil,
 		func(ac *action.Configuration) error {
+			obs.attach(ac)
 			rollbackClient := action.NewRollback(ac)
 			applyRollbackConfig(rollbackClient, cfg)
 			if e := rollbackClient.Run(releaseName); e != nil {
@@ -435,15 +441,18 @@ func (c *client) Rollback(ctx context.Context, releaseName string, cfg *helmconf
 			return nil
 		})
 	if err != nil {
-		return nil, err
+		// A failed rollback still returns what it wrote: helm's update continues past per-object
+		// errors, so some children may have changed.
+		return obs.result(nil, nil, nil), err
 	}
 
 	rel, err := c.GetRelease(ctx, releaseName, &helmconfig.GetConfig{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to get release after rollback: %w", err)
+		// The rollback's writes happened; only the re-read of the release failed.
+		return obs.result(nil, nil, nil), fmt.Errorf("failed to get release after rollback: %w", err)
 	}
 
-	return rel, nil
+	return obs.result(rel, nil, nil), nil
 }
 
 func (c *client) install(ctx context.Context, namespace, releaseName, chartRef string, cfg *helmconfig.InstallConfig, actionConfig *action.Configuration) (*helmconfig.Release, error) {

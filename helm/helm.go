@@ -206,9 +206,8 @@ type ReconcileResult struct {
 	Objects []ObjectVerdict
 	// ObjectsComplete is false when Objects may not name every child the merge changed:
 	//
-	//   - the release did not exist yet and Reconcile installed it through Upgrade, which reports
-	//     no per-object outcome. Objects is empty, and a caller that records creates must derive
-	//     them from the installed release's manifest.
+	//   - a write went through a KubeClient this package could not observe (the first install with
+	//     no stored release, or the real Upgrade after a detected change, both folded in here).
 	//   - an intended deletion could not be resolved to the object it names. Objects lists the
 	//     rest.
 	//
@@ -221,6 +220,10 @@ type ReconcileResult struct {
 	// no request, no verdict and no audit record. The count makes their absence visible, for a
 	// reconcile-level failure record to state in a closed-set field. Zero on a clean apply.
 	ObjectsNotAttempted int
+	// HooksExcluded counts the hook writes of the real Upgrade Reconcile ran (an install with no
+	// stored release, or step 7 after a detected change), as OperationResult.HooksExcluded. The
+	// self-heal merge itself sends no hook (plumbing#139).
+	HooksExcluded int
 }
 
 // ObjectVerdict is one child's outcome in a Reconcile (plumbing#106).
@@ -302,8 +305,8 @@ var ErrJobTemplateChanged = errors.New("the chart changed the pod template of a 
 // what each returned. Hook objects (helm.sh/hook) are not release children; they are left out of
 // Objects and counted in HooksExcluded.
 type OperationResult struct {
-	// Release is the release the operation left: the installed or upgraded revision, or the
-	// uninstalled release's last revision. nil when the operation failed before helm returned one.
+	// Release is the release the operation left: the installed, upgraded or rolled-back revision, or
+	// the uninstalled release's last revision. nil when the operation failed before helm returned one.
 	Release *Release
 	// Objects is the per-child verdict, sorted by identity, uncapped, as ReconcileResult.Objects.
 	// On an Uninstall, a child the release named that helm did not delete because it carries
@@ -334,7 +337,9 @@ type Client interface {
 	// exact change-detection semantics.
 	Reconcile(ctx context.Context, releaseName string, chartRef string, config *UpgradeConfig) (*ReconcileResult, error)
 	Uninstall(ctx context.Context, releaseName string, config *UninstallConfig) (*OperationResult, error)
-	Rollback(ctx context.Context, releaseName string, config *RollbackConfig) (*Release, error)
+	// Rollback re-applies a previous revision and reports its per-child verdicts, as Upgrade does
+	// (plumbing#139).
+	Rollback(ctx context.Context, releaseName string, config *RollbackConfig) (*OperationResult, error)
 	GetRelease(ctx context.Context, releaseName string, config *GetConfig) (*Release, error)
 	ListReleases(ctx context.Context, config *ListConfig) ([]*Release, error)
 	Close() error
