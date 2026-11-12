@@ -127,7 +127,7 @@ func TestContentAnnotations(t *testing.T) {
 	} {
 		t.Run("verdicts, "+tc.name, func(t *testing.T) {
 			got, _, _ := objectVerdicts(verdictInputs{target: list, updated: list, live: live,
-				absent: map[string]bool{}, contentAnnotations: tc.keys})
+				absent: map[string]bool{}, contentKeys: content.Keys{Annotations: tc.keys}})
 			if len(got) != len(tc.want) {
 				t.Fatalf("got %d verdicts %+v, want %d (the unchanged child must be absent)", len(got), got, len(tc.want))
 			}
@@ -335,5 +335,52 @@ func TestPendingDeletions(t *testing.T) {
 	}
 	if reads != 4 {
 		t.Fatalf("%d reads, want 4: one per object not deleted", reads)
+	}
+}
+
+// core-provider#465: the verdicts count the caller's declared authorization LABELS as content too
+// (UpgradeConfig.ContentLabels). Through objectVerdicts, a merge that changed only a declared label is
+// specChanged, one that changed only an undeclared label stays metadataOnly, and with no labels
+// declared the same declared-label change is metadataOnly (the control).
+func TestContentLabels(t *testing.T) {
+	const principal = "authn.krateo.io/principal"
+	authz := vinfo(stored(withLabels(cm("authz", "blue"), map[string]string{principal: "bob"})), "configmaps")
+	other := vinfo(stored(withLabels(cm("other", "blue"), map[string]string{"app.kubernetes.io/part-of": "b"})), "configmaps")
+	live := map[string]runtime.Object{
+		infoKey(authz): withLabels(cm("authz", "blue"), map[string]string{principal: "alice"}),
+		infoKey(other): withLabels(cm("other", "blue"), map[string]string{"app.kubernetes.io/part-of": "a"}),
+	}
+	list := kube.ResourceList{authz, other}
+	for _, tc := range []struct {
+		name string
+		keys content.Keys
+		want map[string]helmconfig.ObjectChange
+	}{
+		{"declared", content.Keys{Labels: []string{principal}}, map[string]helmconfig.ObjectChange{"authz": helmconfig.ChangeSpec, "other": helmconfig.ChangeMetadataOnly}},
+		{"none declared (control)", content.Keys{}, map[string]helmconfig.ObjectChange{"authz": helmconfig.ChangeMetadataOnly, "other": helmconfig.ChangeMetadataOnly}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, _, _ := objectVerdicts(verdictInputs{target: list, updated: list, live: live, absent: map[string]bool{}, contentKeys: tc.keys})
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %d verdicts %+v, want %d", len(got), got, len(tc.want))
+			}
+			for _, v := range got {
+				if w := tc.want[v.Name]; v.Change != w {
+					t.Errorf("%s: change %q, want %q", v.Name, v.Change, w)
+				}
+			}
+		})
+	}
+}
+
+// contentKeysOf carries both declared lists from the caller's config to the verdicts; a nil config
+// declares nothing.
+func TestContentKeysOf(t *testing.T) {
+	got := contentKeysOf(&helmconfig.UpgradeConfig{ContentAnnotations: []string{"a"}, ContentLabels: []string{"l"}})
+	if len(got.Annotations) != 1 || got.Annotations[0] != "a" || len(got.Labels) != 1 || got.Labels[0] != "l" {
+		t.Errorf("contentKeysOf = %+v, want both lists", got)
+	}
+	if k := contentKeysOf(nil); len(k.Annotations) != 0 || len(k.Labels) != 0 {
+		t.Errorf("contentKeysOf(nil) = %+v, want empty", k)
 	}
 }

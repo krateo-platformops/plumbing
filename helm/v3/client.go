@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/krateo-platformops/plumbing/kubeutil/content"
 	"log/slog"
 	"net/http"
 	"os"
@@ -268,7 +269,7 @@ func (c *client) Install(ctx context.Context, releaseName string, chartRef strin
 			rel, e = c.install(ctx, namespace, releaseName, chartRef, cfg, ac)
 			return e
 		})
-	return obs.result(rel, nil, nil), err
+	return obs.result(rel, content.Keys{}, nil), err
 }
 
 // retryOnStaleMapping builds an action.Configuration, runs op, and — if op fails because the REST
@@ -385,7 +386,7 @@ func (c *client) Upgrade(ctx context.Context, releaseName, chartRef string, cfg 
 	}
 	// A failed upgrade still returns what it wrote: helm's update continues past per-object errors,
 	// so some children may have changed even though the operation failed.
-	return obs.result(wrapped, cfg.ContentAnnotations, nil), err
+	return obs.result(wrapped, contentKeysOf(cfg), nil), err
 }
 
 func (c *client) Uninstall(ctx context.Context, releaseName string, cfg *helmconfig.UninstallConfig) (*helmconfig.OperationResult, error) {
@@ -418,7 +419,7 @@ func (c *client) Uninstall(ctx context.Context, releaseName string, cfg *helmcon
 	if rel != nil {
 		wrapped = toWrapperRelease(rel)
 	}
-	return obs.result(wrapped, nil, manifest), err
+	return obs.result(wrapped, content.Keys{}, manifest), err
 }
 
 func (c *client) Rollback(ctx context.Context, releaseName string, cfg *helmconfig.RollbackConfig) (*helmconfig.OperationResult, error) {
@@ -443,16 +444,16 @@ func (c *client) Rollback(ctx context.Context, releaseName string, cfg *helmconf
 	if err != nil {
 		// A failed rollback still returns what it wrote: helm's update continues past per-object
 		// errors, so some children may have changed.
-		return obs.result(nil, nil, nil), err
+		return obs.result(nil, content.Keys{}, nil), err
 	}
 
 	rel, err := c.GetRelease(ctx, releaseName, &helmconfig.GetConfig{})
 	if err != nil {
 		// The rollback's writes happened; only the re-read of the release failed.
-		return obs.result(nil, nil, nil), fmt.Errorf("failed to get release after rollback: %w", err)
+		return obs.result(nil, content.Keys{}, nil), fmt.Errorf("failed to get release after rollback: %w", err)
 	}
 
-	return obs.result(rel, nil, nil), nil
+	return obs.result(rel, content.Keys{}, nil), nil
 }
 
 func (c *client) install(ctx context.Context, namespace, releaseName, chartRef string, cfg *helmconfig.InstallConfig, actionConfig *action.Configuration) (*helmconfig.Release, error) {
@@ -580,4 +581,13 @@ func (c *client) ListReleases(ctx context.Context, cfg *helmconfig.ListConfig) (
 	}
 
 	return releases, nil
+}
+
+// contentKeysOf is the metadata the caller declared as content for the verdicts (plumbing#124,
+// core-provider#465): its authorization annotations and labels.
+func contentKeysOf(cfg *helmconfig.UpgradeConfig) content.Keys {
+	if cfg == nil {
+		return content.Keys{}
+	}
+	return content.Keys{Annotations: cfg.ContentAnnotations, Labels: cfg.ContentLabels}
 }
