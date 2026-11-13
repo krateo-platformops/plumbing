@@ -52,7 +52,7 @@ var ErrKeyNotPublished = errors.New("token signing key is not published")
 // set its latest attempt fetched successfully, at asOf. On its own it is ErrKeyUnavailable:
 // only the token's issue time can tell a retired key (issued before asOf) from
 // a new key the cached set predates (issued after it). ValidateWithKeySource
-// makes that call; see notPublished.
+// makes that call; see NotPublished.
 type errKidAbsent struct {
 	url  string
 	kid  string
