@@ -18,28 +18,39 @@ var (
 // expiry and for telling a retired key from a new one.
 const validationLeeway = 5 * time.Second
 
-// notPublished turns a kid absent from a successfully fetched key set into
-// ErrKeyNotPublished when the token was issued before that set was fetched (by
-// more than the leeway). authn publishes a key from the moment it signs with
-// it, so that key was retired. A token issued later, or without an issue time,
-// may carry a key the set predates: it stays ErrKeyUnavailable, and the next
-// refetch finds the key. The issue time is read before the signature is
-// checked, which is safe: the token fails either way, and it only picks 401 or
-// 503. Every other error passes through unchanged.
-func notPublished(err error, token *jwt.Token) error {
+// NotPublished turns a kid absent from a successfully fetched key set
+// (JWKSKeySource.PublicKey's error) into ErrKeyNotPublished when the token was
+// issued before that set was fetched, by more than the leeway: its issuer
+// publishes a key from the moment it signs with it, so that key was retired,
+// or never the issuer's, and no retry will make the token verify (401). A
+// token issued later, or with no issue time (the zero time), may carry a key
+// the set predates: the error stays ErrKeyUnavailable, and the next refetch
+// finds the key (503). Every other error passes through unchanged.
+//
+// It is for any caller verifying a token against a JWKSKeySource, whatever
+// the token's claims: authn's own tokens (ValidateWithKeySource), or an
+// identity provider's (authn#155). issuedAt may be read before the signature
+// is checked, which is safe: the token fails either way, and it only picks
+// 401 or 503.
+func NotPublished(err error, issuedAt time.Time) error {
 	var absent errKidAbsent
-	if !errors.As(err, &absent) {
+	if !errors.As(err, &absent) || issuedAt.IsZero() {
 		return err
 	}
+	if !issuedAt.Add(validationLeeway).Before(absent.asOf) {
+		return err
+	}
+	return fmt.Errorf("%w: %s; the token was issued at %s",
+		ErrKeyNotPublished, absent.Error(), issuedAt.UTC().Format(time.RFC3339))
+}
+
+// notPublished is NotPublished for an authn token being parsed.
+func notPublished(err error, token *jwt.Token) error {
 	claims, ok := token.Claims.(*KrateoClaims)
 	if !ok || claims.IssuedAt == nil {
 		return err
 	}
-	if !claims.IssuedAt.Add(validationLeeway).Before(absent.asOf) {
-		return err
-	}
-	return fmt.Errorf("%w: %s; the token was issued at %s",
-		ErrKeyNotPublished, absent.Error(), claims.IssuedAt.UTC().Format(time.RFC3339))
+	return NotPublished(err, claims.IssuedAt.Time)
 }
 
 // Validate parses and verifies the given bearer token against the supplied
