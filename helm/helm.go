@@ -370,6 +370,16 @@ type UpgradeConfig struct {
 	// Upgrade-Only Fields
 	Install    bool
 	MaxHistory int
+	// BeforeRevision, when set, is called by Reconcile immediately before it writes a helm revision
+	// (step 7's real Upgrade), and never on a reconcile that writes none. It lets a caller record that
+	// an operation is starting, which can leave the release locked pending-upgrade if the process
+	// dies mid-flight, without writing anything on the steady-state reconciles that change nothing
+	// (core-provider#461). It cannot abort the reconcile, deliberately: step 5's merge has already
+	// converged the live objects by then, so skipping the revision would leave a release whose
+	// stored manifest and values never catch up (the next reconcile sees nothing to change). A
+	// recording the caller fails to make must be best-effort on the caller's side.
+	// Upgrade itself does not call it: a caller of Upgrade already knows it is about to write.
+	BeforeRevision func(ctx context.Context) `json:"-"`
 	// ContentAnnotations are the annotation keys the Objects verdicts (Reconcile's, and Upgrade's
 	// OperationResult) count as content (plumbing#124), on every kind: a write that changes only one
 	// of them is specChanged, not metadataOnly. They are the annotations authorization reads, so

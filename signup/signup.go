@@ -3,8 +3,10 @@ package signup
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"hash/fnv"
@@ -20,6 +22,7 @@ import (
 	"github.com/krateo-platformops/plumbing/kubeutil"
 	certv1 "k8s.io/api/certificates/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
@@ -136,13 +139,45 @@ func cleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), csrCleanupTimeout)
 }
 
+// csrSuffixLen is the length of the random hex suffix that makes each
+// signup's CSR name its own: 40 bits.
+const csrSuffixLen = 10
+
+// newCSRSuffix returns csrSuffixLen random hex digits. A variable so a test
+// can force a collision.
+var newCSRSuffix = func() (string, error) {
+	b := make([]byte, csrSuffixLen/2)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generating the CSR name: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// csrName names one signup's CSR: username, a dash and csrSuffixLen random
+// hex digits, so two signups for the same user never share a name
+// (plumbing#137). The name is chosen before the create rather than by the
+// apiserver (generateName), so a create whose answer is lost after the
+// apiserver stored it can still be cleaned up by name (plumbing#129).
+// username is cut so the name stays a DNS-1123 subdomain of at most 253
+// characters, and a cut never leaves a trailing '.' or '-' before the dash.
+func csrName(username string) (string, error) {
+	suffix, err := newCSRSuffix()
+	if err != nil {
+		return "", err
+	}
+	if max := validation.DNS1123SubdomainMaxLength - 1 - csrSuffixLen; len(username) > max {
+		username = strings.TrimRight(username[:max], ".-")
+	}
+	return username + "-" + suffix, nil
+}
+
 // deleteOwnCSR is the cleanup delete of the CSR named after csr, and only if
-// it is provably this signup's (plumbing#134 review). Its name is the user's,
-// so another signup for the same user may hold it by now: a CSR whose
-// spec.request isn't csr's (another key) is left alone, and the one delete
-// carries a UID precondition, so a CSR re-created between the read and the
-// delete isn't touched either. NotFound, or a precondition that no longer
-// holds, means there is nothing of ours to delete. It runs on cleanupContext.
+// it is provably this signup's (plumbing#134 review). The name is this
+// signup's own (csrName), but the checks stay: a CSR whose spec.request isn't
+// csr's (another key) is left alone, and the one delete carries a UID
+// precondition, so a CSR re-created between the read and the delete isn't
+// touched either. NotFound, or a precondition that no longer holds, means
+// there is nothing of ours to delete. It runs on cleanupContext.
 func deleteOwnCSR(ctx context.Context, client kubernetes.Interface, csr *certv1.CertificateSigningRequest) error {
 	cctx, cancel := cleanupContext(ctx)
 	defer cancel()
@@ -179,27 +214,25 @@ func generateClientCertAndKey(ctx context.Context, client kubernetes.Interface, 
 		CSR: req, Duration: o.duration,
 		UserID: o.userID, Username: o.username,
 	})
+	// The CSR's name is this signup's own, never just the user's: another
+	// signup for the same user, in flight or stale, holds another name, so
+	// nothing here ever deletes or replaces it (plumbing#137). A create answered
+	// AlreadyExists (a 40-bit collision) is an error like any other, and the
+	// existing CSR, whose request isn't ours, is left alone.
+	if csr.Name, err = csrName(o.username); err != nil {
+		return "", "", err
+	}
 
-	err = certs.CreateCertificateSigningRequests(ctx, client, csr)
-	if err != nil {
-		if !errors.IsAlreadyExists(err) {
-			return "", "", createFailed(ctx, client, csr, err)
-		}
-
-		if err := certs.DeleteCertificateSigningRequest(ctx, client, csr.Name); err != nil {
-			return "", "", fmt.Errorf("deleting existing CSR kubernetes object: %w", err)
-		}
-
-		if err := certs.CreateCertificateSigningRequests(ctx, client, csr); err != nil {
-			return "", "", createFailed(ctx, client, csr, err)
-		}
+	if err = certs.CreateCertificateSigningRequests(ctx, client, csr); err != nil {
+		return "", "", createFailed(ctx, client, csr, err)
 	}
 
 	// The CSR is single-use, and an approved one is an attack surface: delete
 	// it once the certificate is read, and on every way out after its create,
-	// rather than leave it under its fixed name until the apiserver's garbage
-	// collection. A stale one left by an earlier version is reconciled by the
-	// AlreadyExists path above. On success a failed delete is the result, so
+	// rather than leave it until the apiserver's garbage collection. A CSR an
+	// earlier version left under the user's bare name is never this signup's,
+	// so it is never touched: the apiserver's CSR garbage collection removes
+	// it. On success a failed delete is the result, so
 	// the caller retries and the CSR doesn't linger unnoticed; after a failure
 	// the original error is kept, joined with the delete's when that fails too.
 	defer func() {
@@ -249,8 +282,8 @@ func mkID(in string) string {
 // createFailed is the error of a create that failed. The apiserver may have
 // stored this CSR anyway (a timeout after the write), so it is deleted before
 // signup returns (plumbing#129), and only if it is ours (deleteOwnCSR): a create
-// refused outright, or answered AlreadyExists because another signup won the
-// name, leaves that signup's CSR alone. A delete that fails too is joined
+// refused outright, or answered AlreadyExists because another CSR holds the
+// name, leaves that CSR alone. A delete that fails too is joined
 // after the create's error, so the CSR left behind is not hidden.
 func createFailed(ctx context.Context, client kubernetes.Interface, csr *certv1.CertificateSigningRequest, err error) error {
 	err = fmt.Errorf("creating CSR kubernetes object: %w", err)
