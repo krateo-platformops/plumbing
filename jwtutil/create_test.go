@@ -128,16 +128,20 @@ func TestCreateTokenAudience(t *testing.T) {
 	assert.False(t, ok, "no aud unless asked")
 	v, ok := audOf(t, []string{"agentiko"})
 	require.True(t, ok)
+	assert.Equal(t, "agentiko", v, "one audience is a bare string on the wire (RFC 7519 §4.1.3)")
 	got, err := jwt.MapClaims{"aud": v}.GetAudience()
 	require.NoError(t, err)
 	assert.Equal(t, jwt.ClaimStrings{"agentiko"}, got)
 	v, ok = audOf(t, []string{"agentiko", "snowplow"})
 	require.True(t, ok)
+	assert.Equal(t, []any{"agentiko", "snowplow"}, v, "several are a list")
 	got, err = jwt.MapClaims{"aud": v}.GetAudience()
 	require.NoError(t, err)
 	assert.Equal(t, jwt.ClaimStrings{"agentiko", "snowplow"}, got)
 
-	_, err = jwtutil.CreateToken(jwtutil.CreateTokenOptions{Username: "alice", Duration: time.Minute,
-		KeyID: "k", PrivateKey: privateKey, Audience: []string{""}})
-	assert.ErrorContains(t, err, "audience cannot be empty")
+	for _, aud := range [][]string{{""}, {"agentiko", ""}} {
+		_, err = jwtutil.CreateToken(jwtutil.CreateTokenOptions{Username: "alice", Duration: time.Minute,
+			KeyID: "k", PrivateKey: privateKey, Audience: aud})
+		assert.ErrorContains(t, err, "audience cannot be empty", "%q", aud)
+	}
 }
