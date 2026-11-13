@@ -179,6 +179,17 @@ type ReconcileResult struct {
 	KeptDeletions []string
 	// KeptDeletionsOmitted is how many kept identities exceeded the cap and were not listed.
 	KeptDeletionsOmitted int
+	// StaleManifestVersions names the children the stored manifest records at a different apiVersion
+	// than this render emits them at, as "Kind namespace/name: old -> new" (plumbing#155). helm
+	// matches stored to rendered version-independently, so such a child merges to identical content
+	// and nothing else here counts it; without this the stored manifest would keep naming a version
+	// the render left behind (and core-provider would keep that version served, since a stored
+	// manifest names it) until an unrelated change forced a revision. Each one counts toward Changed,
+	// so the real Upgrade writes a revision naming the rendered version. The child's own Objects
+	// verdict is unaffected: its content did not change.
+	StaleManifestVersions []string
+	// StaleManifestVersionsOmitted is how many stale entries exceeded the cap and were not listed.
+	StaleManifestVersionsOmitted int
 	// ChangedJobTemplates names the live Jobs (namespace/name) whose pod template the CHART changed
 	// between the stored release and this render (core-provider#403). A Job's spec.template is
 	// immutable, so such a release cannot be applied; Reconcile returns ErrJobTemplateChanged

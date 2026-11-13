@@ -9,6 +9,12 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-13 — Reconcile writes a revision when a child's rendered apiVersion moved:
+  `ReconcileResult.StaleManifestVersions`** (plumbing#155, osh-049a): helm matches stored to
+  rendered children version-independently, so a render whose only change is a child's apiVersion
+  merged to identical content and read `Changed` false; the stored manifest kept naming the old
+  version (and core-provider kept it served) until an unrelated change. A matched child at another
+  apiVersion now counts toward `Changed`; the child's own verdict is unaffected.
 - **2026-11-12 — a rollback's verdicts count declared authorization metadata too:
   `RollbackConfig.ContentAnnotations` / `ContentLabels`** (core-provider#465): as on `UpgradeConfig`,
   so a rollback whose only change to a child is who may do what reads `specChanged`, not
