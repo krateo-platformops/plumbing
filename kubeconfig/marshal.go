@@ -39,6 +39,7 @@ func Marshal(ep *endpoints.Endpoint) ([]byte, error) {
 				CertInfo: CertInfo{
 					ClientCertificateData: ep.ClientCertificateData,
 					ClientKeyData:         ep.ClientKeyData,
+					Token:                 ep.Token,
 				},
 				Name: ep.Username,
 			},

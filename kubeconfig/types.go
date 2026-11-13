@@ -31,10 +31,13 @@ type Users []struct {
 	Name     string   `json:"name"`
 }
 
-// CertInfo holds the user certificate authentication data
+// CertInfo holds the user's credentials: a client certificate and key, a bearer token, or both,
+// as a kubeconfig user carries them (clientcmd's AuthInfo: client-certificate-data, client-key-data,
+// token).
 type CertInfo struct {
 	ClientCertificateData string `json:"client-certificate-data"`
 	ClientKeyData         string `json:"client-key-data"`
+	Token                 string `json:"token,omitempty"`
 }
 
 // KubeConfig holds the necessary data for creating a new KubeConfig file
