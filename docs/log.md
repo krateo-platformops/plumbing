@@ -9,6 +9,12 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-13 — `UpgradeConfig.BeforeRevision`: Reconcile tells the caller just before it writes a
+  revision** (core-provider#461): called immediately before step 7's real Upgrade, never on a
+  reconcile that writes none, so a caller can record an operation that may leave the release locked
+  pending-upgrade without writing anything on steady-state reconciles. It cannot abort: by step 7 the
+  merge has converged the live objects, and skipping the revision would leave the stored release
+  stale for good. Additive.
 - **2026-11-13 — Reconcile writes a revision when a child's rendered apiVersion moved:
   `ReconcileResult.StaleManifestVersions`** (plumbing#155, osh-049a): helm matches stored to
   rendered children version-independently, so a render whose only change is a child's apiVersion
