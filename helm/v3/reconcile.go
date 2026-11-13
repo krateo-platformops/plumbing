@@ -281,6 +281,11 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 		current = append(current, &adopted)
 	}
 
+	// 4.8. plumbing#155: children the stored manifest records at another apiVersion than the render
+	// emits. Taken here, after the repair (1.5) and the adoption (4.7), so it compares the lists the
+	// merge receives; an adopted entry is the target itself and is never stale.
+	stale := cappedSet(staleManifestVersions(current, target), maxChangedObjects)
+
 	// 5. Self-healing merge: creates children deleted out-of-band, reverts field drift. This is the
 	// only mutation. UpdateThreeWayMerge (NOT Update) so UNSTRUCTURED/CR children get helm's
 	// three-way-with-live merge; the concrete *kube.Client implements the compat-split
@@ -439,7 +444,7 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 	keptKeys, notDoneKeys, unknownKeys := pendingDeletions(current, target, res.Deleted, getLive)
 	kept := cappedSet(keptKeys, maxChangedObjects)
 
-	changed := releaseChanged(created, deleted, patched, kept.total())
+	changed := releaseChanged(created, deleted, patched, kept.total(), stale.total())
 
 	result := &helmconfig.ReconcileResult{
 		Changed:               changed,
@@ -455,11 +460,13 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 
 		// Carried even when it equals Deleted, so a caller can always compare the two rather than
 		// having to infer that an absent field means "nothing was intended".
-		IntendedDeletions:        intended.names,
-		IntendedDeletionsOmitted: intended.omitted,
-		KeptDeletions:            kept.names,
-		KeptDeletionsOmitted:     kept.omitted,
-		ChangedJobTemplates:      jobs.templateChanged,
+		IntendedDeletions:            intended.names,
+		IntendedDeletionsOmitted:     intended.omitted,
+		KeptDeletions:                kept.names,
+		KeptDeletionsOmitted:         kept.omitted,
+		StaleManifestVersions:        stale.names,
+		StaleManifestVersionsOmitted: stale.omitted,
+		ChangedJobTemplates:          jobs.templateChanged,
 	}
 	// Uncapped, one entry per child the merge changed (plumbing#106). Built from the same
 	// before/after objects and the same deletion reads as the counts above.
@@ -1061,8 +1068,29 @@ func (s *changedObjectSet) total() int { return len(s.names) + s.omitted }
 // releaseChanged is step 6's verdict: whether the release must be re-recorded by a real Upgrade.
 // kept counts deletions helm skipped because the object is kept (keptDeletions): the cluster needs
 // nothing, the release does.
-func releaseChanged(created, deleted, patched, kept int) bool {
-	return created > 0 || deleted > 0 || patched > 0 || kept > 0
+func releaseChanged(created, deleted, patched, kept, stale int) bool {
+	return created > 0 || deleted > 0 || patched > 0 || kept > 0 || stale > 0
+}
+
+// staleManifestVersions returns, for every rendered child whose stored counterpart (matched as helm
+// matches them: group, kind, namespace, name, any version) is recorded at another apiVersion,
+// "Kind namespace/name: old -> new" (plumbing#155). A child with no stored counterpart is not stale:
+// it is created, or adopted, and counted there.
+func staleManifestVersions(current, target kube.ResourceList) []string {
+	var out []string
+	for _, t := range target {
+		c := current.Get(t)
+		if c == nil {
+			continue
+		}
+		was := c.Object.GetObjectKind().GroupVersionKind()
+		now := t.Object.GetObjectKind().GroupVersionKind()
+		if was.GroupVersion() == now.GroupVersion() {
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s %s/%s: %s -> %s", now.Kind, t.Namespace, t.Name, was.GroupVersion(), now.GroupVersion()))
+	}
+	return out
 }
 
 // maxChangedPaths caps how many changed paths a ReconcileResult names per child (plumbing#112). A

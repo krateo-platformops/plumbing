@@ -103,18 +103,19 @@ func TestKeptDeletions(t *testing.T) {
 // created, deleted or patched, four kept.
 func TestReleaseChanged(t *testing.T) {
 	for _, tc := range []struct {
-		created, deleted, patched, kept int
-		want                            bool
+		created, deleted, patched, kept, stale int
+		want                                   bool
 	}{
-		{0, 0, 0, 0, false}, // steady state: no revision
-		{0, 0, 0, 4, true},  // removal-only of kept objects (krateo-autopilot, 2026-11-08)
-		{1, 0, 0, 0, true},
-		{0, 1, 0, 0, true},
-		{0, 0, 1, 0, true},
+		{0, 0, 0, 0, 0, false}, // steady state: no revision
+		{0, 0, 0, 4, 0, true},  // removal-only of kept objects (krateo-autopilot, 2026-11-08)
+		{0, 0, 0, 0, 1, true},  // version-only render change (plumbing#155, osh-049a)
+		{1, 0, 0, 0, 0, true},
+		{0, 1, 0, 0, 0, true},
+		{0, 0, 1, 0, 0, true},
 	} {
-		if got := releaseChanged(tc.created, tc.deleted, tc.patched, tc.kept); got != tc.want {
-			t.Errorf("releaseChanged(created %d, deleted %d, patched %d, kept %d) = %v, want %v",
-				tc.created, tc.deleted, tc.patched, tc.kept, got, tc.want)
+		if got := releaseChanged(tc.created, tc.deleted, tc.patched, tc.kept, tc.stale); got != tc.want {
+			t.Errorf("releaseChanged(created %d, deleted %d, patched %d, kept %d, stale %d) = %v, want %v",
+				tc.created, tc.deleted, tc.patched, tc.kept, tc.stale, got, tc.want)
 		}
 	}
 }
