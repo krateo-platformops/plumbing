@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
@@ -86,14 +87,14 @@ func TestTheCSRIsDeletedOnEveryWayOut(t *testing.T) {
 		assert.Empty(t, csrNames(t, c), "the refused CSR is deleted too")
 	})
 
-	t.Run("a stale CSR under the name is replaced, and then deleted", func(t *testing.T) {
+	t.Run("a CSR under the user's bare name (stale, or another's) is never touched", func(t *testing.T) {
 		stale := &certv1.CertificateSigningRequest{}
 		stale.Name = opts.username
 		c := fake.NewClientset(stale)
 		signer(c)
 		_, _, err := generateClientCertAndKey(t.Context(), c, opts)
 		require.NoError(t, err)
-		assert.Empty(t, csrNames(t, c))
+		assert.Equal(t, []string{opts.username}, csrNames(t, c), "only ours, under its own name, is deleted")
 	})
 
 	// failingGet fails the nth get of a CSR (counting from 1) and serves every
@@ -226,7 +227,8 @@ func jsonClient(t *testing.T, srv *httptest.Server) kubernetes.Interface {
 	return c
 }
 
-// others is another signup's CSR for the same user: same name, its own key.
+// others is another signup's CSR for the same user, under the user's bare
+// name, with its own key.
 func others(t *testing.T) *certv1.CertificateSigningRequest {
 	t.Helper()
 	key, err := certs.NewPrivateKey()
@@ -237,9 +239,9 @@ func others(t *testing.T) *certv1.CertificateSigningRequest {
 }
 
 // The cleanup deletes only a CSR that is provably this signup's (plumbing#134
-// review): the name is the user's, so another signup for the same user may hold
-// it. One whose spec.request is another key's is never deleted, nor one
-// re-created between the cleanup's read and its delete (the UID precondition).
+// review). Its name is its own (plumbing#137), and the checks still hold: one
+// whose spec.request is another key's is never deleted, nor one re-created
+// between the cleanup's read and its delete (the UID precondition).
 func TestTheCleanupNeverDeletesAnotherSignupsCSR(t *testing.T) {
 	t.Run("a create refused outright leaves the other signup's CSR", func(t *testing.T) {
 		other := others(t)
@@ -252,44 +254,21 @@ func TestTheCleanupNeverDeletesAnotherSignupsCSR(t *testing.T) {
 		assert.Equal(t, []string{other.Name}, csrNames(t, c), "the other signup's CSR is kept")
 	})
 
-	t.Run("a re-create that loses to another signup leaves its CSR", func(t *testing.T) {
-		stale := &certv1.CertificateSigningRequest{}
-		stale.Name = opts.username
-		other := others(t)
-		c := fake.NewClientset(stale)
-		creates := 0
+	t.Run("a create answered AlreadyExists (a name collision) deletes nothing", func(t *testing.T) {
+		c := fake.NewClientset()
+		var held string
 		c.PrependReactor("create", "certificatesigningrequests", func(a k8stesting.Action) (bool, runtime.Object, error) {
-			creates++
-			if creates == 2 { // our re-create, after the stale one is gone: the other signup got there first
-				require.NoError(t, c.Tracker().Create(csrGVR, other, ""))
-				return true, nil, apierrors.NewAlreadyExists(csrGVR.GroupResource(), opts.username)
-			}
-			return false, nil, nil
+			// Another CSR, with another key, already holds the name this signup drew.
+			other := others(t)
+			other.Name = a.(k8stesting.CreateAction).GetObject().(*certv1.CertificateSigningRequest).Name
+			held = other.Name
+			require.NoError(t, c.Tracker().Create(csrGVR, other, ""))
+			return true, nil, apierrors.NewAlreadyExists(csrGVR.GroupResource(), other.Name)
 		})
 		_, _, err := generateClientCertAndKey(t.Context(), c, opts)
 		require.ErrorContains(t, err, "creating CSR kubernetes object")
-		require.Equal(t, []string{other.Name}, csrNames(t, c))
-		got, gerr := c.CertificatesV1().CertificateSigningRequests().Get(t.Context(), other.Name, metav1.GetOptions{})
-		require.NoError(t, gerr)
-		assert.Equal(t, other.Spec.Request, got.Spec.Request, "the other signup's CSR, untouched")
-	})
-
-	t.Run("a re-create stored then answered 504 is ours, and is deleted", func(t *testing.T) {
-		stale := &certv1.CertificateSigningRequest{}
-		stale.Name = opts.username
-		c := fake.NewClientset(stale)
-		creates := 0
-		c.PrependReactor("create", "certificatesigningrequests", func(a k8stesting.Action) (bool, runtime.Object, error) {
-			creates++
-			if creates == 2 {
-				require.NoError(t, c.Tracker().Create(csrGVR, a.(k8stesting.CreateAction).GetObject(), ""))
-				return true, nil, apierrors.NewTimeoutError("the write may have succeeded", 0)
-			}
-			return false, nil, nil
-		})
-		_, _, err := generateClientCertAndKey(t.Context(), c, opts)
-		require.ErrorContains(t, err, "creating CSR kubernetes object")
-		assert.Empty(t, csrNames(t, c), "the re-create's CSR is deleted (P9)")
+		require.Equal(t, []string{held}, csrNames(t, c), "the CSR holding the name is kept")
+		assert.NotContains(t, err.Error(), "whose create failed", "nothing of ours to delete")
 	})
 
 	t.Run("replaced after issuance: another key's CSR is left alone", func(t *testing.T) {
@@ -299,7 +278,8 @@ func TestTheCleanupNeverDeletesAnotherSignupsCSR(t *testing.T) {
 		issuedReads := 0
 		api.onGet = func(s *csrServer, name string) {
 			issuedReads++
-			if issuedReads == 2 { // the wait saw the certificate, signup read it: now another signup takes the name
+			if issuedReads == 2 { // the wait saw the certificate, signup read it: now another key's CSR holds the name
+				other.Name = name
 				s.put(other)
 			}
 		}
@@ -313,19 +293,22 @@ func TestTheCleanupNeverDeletesAnotherSignupsCSR(t *testing.T) {
 	t.Run("re-created between the read and the delete: the UID precondition keeps it", func(t *testing.T) {
 		api := newCSRServer(t, nil)
 		api.issue = true
-		api.onDelete = func(*http.Request) {
-			// The cleanup read ours; before its delete lands, another signup
-			// replaces it. Even with our request bytes, only the UID tells them apart.
+		var ours string
+		api.onDelete = func(r *http.Request) {
+			// The cleanup read ours; before its delete lands, it is replaced
+			// under the same name. Even with our request bytes, only the UID
+			// tells them apart.
 			api.mu.Lock()
 			defer api.mu.Unlock()
-			again := api.csrs[opts.username].DeepCopy()
+			ours = r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+			again := api.csrs[ours].DeepCopy()
 			again.Spec.Username = "other"
 			api.put(again)
 		}
 		_, _, err := generateClientCertAndKey(t.Context(), jsonClient(t, api.srv), opts)
 		require.NoError(t, err, "a precondition that no longer holds means nothing of ours is left")
 		require.Len(t, api.names(), 1, "the re-created CSR is kept")
-		assert.Equal(t, "other", api.csrs[opts.username].Spec.Username, "the other signup's, untouched")
+		assert.Equal(t, "other", api.csrs[ours].Spec.Username, "the replacement, untouched")
 	})
 }
 
@@ -366,6 +349,8 @@ type csrServer struct {
 	// before a DELETE is served and may block (it gets the request).
 	onGet    func(s *csrServer, name string)
 	onDelete func(r *http.Request)
+	// created is every CSR name a create stored, in order.
+	created []string
 }
 
 // put stores csr under a fresh UID, as the apiserver does on create.
@@ -391,6 +376,9 @@ func newCSRServer(t *testing.T, onApproval func()) *csrServer {
 		if r.Method == http.MethodDelete && s.onDelete != nil {
 			s.onDelete(r) // outside the lock: it may block
 		}
+		if r.Method == http.MethodPut && sub == "approval" && onApproval != nil {
+			onApproval() // outside the lock: it may block
+		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		write := func(code int, obj any) {
@@ -404,14 +392,12 @@ func newCSRServer(t *testing.T, onApproval func()) *csrServer {
 			var csr certv1.CertificateSigningRequest
 			require.NoError(t, json.Unmarshal(body, &csr))
 			s.put(&csr)
+			s.created = append(s.created, csr.Name)
 			if s.issue {
 				s.csrs[csr.Name].Status.Certificate = []byte("CERT")
 			}
 			write(http.StatusCreated, s.csrs[csr.Name])
 		case r.Method == http.MethodPut && sub == "approval":
-			if onApproval != nil {
-				onApproval()
-			}
 			_, _ = w.Write(body)
 		case r.Method == http.MethodGet && name != "":
 			csr, ok := s.csrs[name]
@@ -503,4 +489,78 @@ func TestAFailedCreateLeavesNoCSR(t *testing.T) {
 		assert.Contains(t, msg, "whose create failed")
 		assert.Less(t, strings.Index(msg, "creating CSR"), strings.Index(msg, "whose create failed"), "the create's error first")
 	})
+}
+
+// Each signup's CSR has its own name: the username, a dash and 10 random hex
+// digits, a DNS-1123 subdomain of at most 253 characters (plumbing#137).
+func TestCSRNameIsEachSignupsOwn(t *testing.T) {
+	a, err := csrName("alice.smith")
+	require.NoError(t, err)
+	b, err := csrName("alice.smith")
+	require.NoError(t, err)
+	assert.NotEqual(t, a, b, "two signups for one user draw different names")
+	for _, n := range []string{a, b} {
+		require.True(t, strings.HasPrefix(n, "alice.smith-"), n)
+		suffix := strings.TrimPrefix(n, "alice.smith-")
+		assert.Len(t, suffix, csrSuffixLen)
+		assert.Regexp(t, `^[0-9a-f]+$`, suffix)
+		assert.Empty(t, validation.IsDNS1123Subdomain(n))
+	}
+
+	// A username long enough to push the name past 253 is cut, never leaving a
+	// '.' or '-' before the dash.
+	long := strings.Repeat("ab.", 90) // 270 characters
+	n, err := csrName(long)
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(n), validation.DNS1123SubdomainMaxLength)
+	assert.Empty(t, validation.IsDNS1123Subdomain(n), n)
+}
+
+// Two signups for the same user, in flight together, both end with a
+// certificate, each under its own CSR, and neither CSR is deleted underneath
+// the other (plumbing#137). Both are held at their approval until both have
+// created their CSR, so both CSRs exist at once. The barrier runs outside the
+// fake apiserver's lock.
+func TestTwoSignupsForOneUserBothSucceed(t *testing.T) {
+	// A barrier with a deadline: if one signup fails before its approval (as
+	// it would if both drew the same name), the other is released rather than
+	// held forever.
+	var arrived atomic.Int32
+	both := make(chan struct{})
+	api := newCSRServer(t, func() {
+		if arrived.Add(1) == 2 {
+			close(both)
+		}
+		select {
+		case <-both:
+		case <-time.After(10 * time.Second):
+		}
+	})
+	api.issue = true
+	client := jsonClient(t, api.srv)
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() {
+			crt, _, err := generateClientCertAndKey(t.Context(), client, opts)
+			if err == nil && crt == "" {
+				err = errors.New("no certificate")
+			}
+			errs <- err
+		}()
+	}
+	for range 2 {
+		select {
+		case err := <-errs:
+			require.NoError(t, err)
+		case <-time.After(30 * time.Second):
+			t.Fatal("a signup never finished")
+		}
+	}
+	api.mu.Lock()
+	created := append([]string(nil), api.created...)
+	api.mu.Unlock()
+	require.Len(t, created, 2)
+	assert.NotEqual(t, created[0], created[1], "each signup created its own CSR")
+	assert.Empty(t, api.names(), "each deleted only its own")
+	assert.Equal(t, int32(2), api.deletes.Load(), "one delete each, each of its own CSR")
 }
