@@ -30,7 +30,7 @@ func NewClientConfig(ctx context.Context, ep endpoints.Endpoint) (*rest.Config, 
 	traceId := xcontext.TraceId(ctx, true)
 
 	if env.True("DEBUG") {
-		res.Wrap(newDebuggingRoundTripper(log, traceId, env.True("TRACE")))
+		res.Wrap(newDebuggingRoundTripper(log, traceId))
 	}
 
 	return res, nil
