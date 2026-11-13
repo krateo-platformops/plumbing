@@ -18,8 +18,8 @@ require (
 	github.com/mitchellh/copystructure v1.2.0
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1
-	github.com/stretchr/testify v1.11.1
-	go.yaml.in/yaml/v3 v3.0.4
+	github.com/stretchr/testify v1.12.1
+	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/time v0.12.0
 	// A helm bump must keep TestObjectVerdicts and the integration test
 	// TestReconcilePartialApplyVerdicts green: helm/v3/verdicts.go reads a failed write from
@@ -40,9 +40,9 @@ require (
 
 require (
 	github.com/krateo-platformops/audit v0.13.0
-	go.opentelemetry.io/otel v1.45.0
-	go.opentelemetry.io/otel/sdk v1.45.0
-	go.opentelemetry.io/otel/trace v1.45.0
+	go.opentelemetry.io/otel v1.47.0
+	go.opentelemetry.io/otel/sdk v1.47.0
+	go.opentelemetry.io/otel/trace v1.47.0
 )
 
 require (
@@ -139,8 +139,8 @@ require (
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.61.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.45.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.45.0 // indirect
-	go.opentelemetry.io/otel/log v0.21.0 // indirect
-	go.opentelemetry.io/otel/metric v1.45.0 // indirect
+	go.opentelemetry.io/otel/log v1.47.0 // indirect
+	go.opentelemetry.io/otel/metric v1.47.0 // indirect
 	go.opentelemetry.io/otel/sdk/log v0.21.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
