@@ -102,3 +102,42 @@ func TestCreateTokenValidation(t *testing.T) {
 		})
 	}
 }
+
+// A token carries "aud" only when asked: one audience as a string, several as
+// a list, none at all by default. The package's validators, which don't check
+// it, accept a token carrying one exactly as they accept one without.
+func TestCreateTokenAudience(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	audOf := func(t *testing.T, aud []string) (any, bool) {
+		t.Helper()
+		tokenStr, err := jwtutil.CreateToken(jwtutil.CreateTokenOptions{Username: "alice", Duration: time.Minute,
+			KeyID: "k", PrivateKey: privateKey, Audience: aud})
+		require.NoError(t, err)
+		info, err := jwtutil.Validate(&privateKey.PublicKey, tokenStr)
+		require.NoError(t, err, "a token with or without aud validates alike")
+		assert.Equal(t, "alice", info.Username)
+		claims := jwt.MapClaims{}
+		_, _, err = jwt.NewParser().ParseUnverified(tokenStr, claims)
+		require.NoError(t, err)
+		v, ok := claims["aud"]
+		return v, ok
+	}
+
+	_, ok := audOf(t, nil)
+	assert.False(t, ok, "no aud unless asked")
+	v, ok := audOf(t, []string{"agentiko"})
+	require.True(t, ok)
+	got, err := jwt.MapClaims{"aud": v}.GetAudience()
+	require.NoError(t, err)
+	assert.Equal(t, jwt.ClaimStrings{"agentiko"}, got)
+	v, ok = audOf(t, []string{"agentiko", "snowplow"})
+	require.True(t, ok)
+	got, err = jwt.MapClaims{"aud": v}.GetAudience()
+	require.NoError(t, err)
+	assert.Equal(t, jwt.ClaimStrings{"agentiko", "snowplow"}, got)
+
+	_, err = jwtutil.CreateToken(jwtutil.CreateTokenOptions{Username: "alice", Duration: time.Minute,
+		KeyID: "k", PrivateKey: privateKey, Audience: []string{""}})
+	assert.ErrorContains(t, err, "audience cannot be empty")
+}

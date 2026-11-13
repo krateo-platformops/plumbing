@@ -88,6 +88,12 @@ type CreateTokenOptions struct {
 	// Principal is the kind of identity Username is. Empty leaves the claim
 	// out, as before it existed.
 	Principal Principal
+	// Audience is the token's "aud" (RFC 7519 §4.1.3): the recipients it is
+	// meant for, such as "agentiko" for a token exchanged for one service.
+	// Empty leaves the claim out, as before it existed. The validators here
+	// don't check it, so a token carrying one is accepted everywhere a token
+	// without one is; a recipient opts into checking it.
+	Audience []string
 }
 
 // CreateToken generates a signed JWT token using the provided
@@ -134,6 +140,14 @@ func CreateToken(opts CreateTokenOptions) (string, error) {
 			NotBefore: jwt.NewNumericDate(now),
 			Subject:   opts.Username,
 		},
+	}
+	if len(opts.Audience) > 0 {
+		for _, a := range opts.Audience {
+			if a == "" {
+				return "", fmt.Errorf("an audience cannot be empty")
+			}
+		}
+		claims.Audience = jwt.ClaimStrings(opts.Audience)
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
