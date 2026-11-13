@@ -60,8 +60,8 @@ func csrNames(t *testing.T, c *fake.Clientset) []string {
 var opts = generateClientCertAndKeyOpts{userID: "id", username: "authn", groups: []string{"authn"}}
 
 // The CSR is single-use: none is left once the certificate is read, nor when
-// a step after its create fails. An approved CSR left under its fixed name is
-// an attack surface (authn#119 review).
+// a step after its create fails. An approved CSR left behind is an attack
+// surface (authn#119 review).
 func TestTheCSRIsDeletedOnEveryWayOut(t *testing.T) {
 	t.Run("issued", func(t *testing.T) {
 		c := fake.NewClientset()
@@ -243,8 +243,14 @@ func others(t *testing.T) *certv1.CertificateSigningRequest {
 // whose spec.request is another key's is never deleted, nor one re-created
 // between the cleanup's read and its delete (the UID precondition).
 func TestTheCleanupNeverDeletesAnotherSignupsCSR(t *testing.T) {
-	t.Run("a create refused outright leaves the other signup's CSR", func(t *testing.T) {
+	t.Run("a create refused outright leaves another key's CSR under the same name", func(t *testing.T) {
+		// Pin the suffix so another key's CSR sits under exactly the name this
+		// signup draws: the cleanup's spec.request check is what keeps it.
+		old := newCSRSuffix
+		newCSRSuffix = func() (string, error) { return "0123456789", nil }
+		t.Cleanup(func() { newCSRSuffix = old })
 		other := others(t)
+		other.Name = opts.username + "-0123456789"
 		c := fake.NewClientset(other)
 		c.PrependReactor("create", "certificatesigningrequests", func(k8stesting.Action) (bool, runtime.Object, error) {
 			return true, nil, apierrors.NewForbidden(csrGVR.GroupResource(), "authn", errors.New("no create"))
@@ -507,13 +513,16 @@ func TestCSRNameIsEachSignupsOwn(t *testing.T) {
 		assert.Empty(t, validation.IsDNS1123Subdomain(n))
 	}
 
-	// A username long enough to push the name past 253 is cut, never leaving a
-	// '.' or '-' before the dash.
-	long := strings.Repeat("ab.", 90) // 270 characters
+	// A username long enough to push the name past 253 is cut. The cut lands
+	// right after a '.', which is trimmed, so no '.' or '-' precedes the dash.
+	max := validation.DNS1123SubdomainMaxLength - 1 - csrSuffixLen // 242
+	long := strings.Repeat("a", max-1) + "." + strings.Repeat("b", 20)
+	require.Equal(t, byte('.'), long[max-1], "the premise: the cut ends in '.'")
 	n, err := csrName(long)
 	require.NoError(t, err)
 	assert.LessOrEqual(t, len(n), validation.DNS1123SubdomainMaxLength)
 	assert.Empty(t, validation.IsDNS1123Subdomain(n), n)
+	assert.True(t, strings.HasPrefix(n, strings.Repeat("a", max-1)+"-"), "the trailing '.' is trimmed before the dash")
 }
 
 // Two signups for the same user, in flight together, both end with a
