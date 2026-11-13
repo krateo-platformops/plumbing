@@ -515,6 +515,12 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 
 	// 7. A real change happened. Run ONE real Upgrade to persist a revision and run hooks with
 	// correct ordering + delete-policy. Step 5 already converged the cluster, so this is a near-no-op.
+	//
+	// core-provider#461: the caller learns here, and only here, that a revision is about to be
+	// written, so it can record the operation before helm takes the pending-upgrade lock.
+	if cfg.BeforeRevision != nil {
+		cfg.BeforeRevision(ctx)
+	}
 	op, err := c.Upgrade(ctx, releaseName, chartRef, cfg)
 	// The upgrade's own writes join the merge's, on both outcomes (plumbing#139). After a converged
 	// merge they are few, but on the retryFailed path the merge read changed=false and the upgrade
