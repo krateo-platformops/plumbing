@@ -13,7 +13,7 @@ func TestDebuggingRoundTripper(t *testing.T) {
 	mockLogger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
 	traceID := "test-trace"
 
-	roundTripper := newDebuggingRoundTripper(mockLogger, traceID, true)(mockTransport)
+	roundTripper := newDebuggingRoundTripper(mockLogger, traceID)(mockTransport)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

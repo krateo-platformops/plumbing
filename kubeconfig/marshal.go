@@ -19,6 +19,7 @@ func Marshal(ep *endpoints.Endpoint) ([]byte, error) {
 			0: {
 				Cluster: ClusterInfo{
 					CertificateAuthorityData: ep.CertificateAuthorityData,
+					ProxyURL:                 ep.ProxyURL,
 					Server:                   ep.ServerURL,
 				},
 				Name: defaultClusterName,

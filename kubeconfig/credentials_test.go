@@ -35,7 +35,7 @@ func TestNewClientConfig_CarriesTheEndpointsCredentials(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rc, err := NewClientConfig(context.Background(), tc.ep)
 			if err != nil {
-				t.Fatalf("NewClientConfig: %v", err)
+				t.Fatalf("NewClientConfig: an error of type %T (its text is not printed: clientcmd's can quote the kubeconfig)", err)
 			}
 			if tc.wantToken {
 				if rc.BearerToken != token {
