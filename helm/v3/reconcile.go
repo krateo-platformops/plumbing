@@ -1167,15 +1167,32 @@ func joinPath(prefix, key string) string {
 }
 
 // foldOperation adds the writes of an operation Reconcile ran itself (the real Upgrade) to its
-// result (plumbing#139). Each verdict is one write, so a child the merge changed and the upgrade
-// changed again appears twice. The list stays sorted by verdictKey, which includes the change, so
-// two entries for one child sort by change; for the same change the sort is stable and the
-// merge's entry, already in place, comes first. A nil op wrote nothing.
+// result (plumbing#139). Each write verdict is one write, so a child the merge changed and the
+// upgrade changed again appears twice. The list stays sorted by verdictKey, which includes the
+// change, so two entries for one child sort by change; for the same change the sort is stable and
+// the merge's entry, already in place, comes first. A nil op wrote nothing.
+//
+// A KEPT verdict is not a write: helm declined the delete because the live object carries
+// helm.sh/resource-policy: keep, and no request was sent. The merge and the upgrade read the same
+// live object and reach the same decision, so folding the upgrade's would record one decision
+// twice (core-provider#423: two identical kept_resource_policy audit records from one reconcile).
+// An upgrade's kept verdict is folded only for a child the merge did not already report kept.
 func foldOperation(r *helmconfig.ReconcileResult, op *helmconfig.OperationResult) {
 	if op == nil {
 		return
 	}
-	r.Objects = append(r.Objects, op.Objects...)
+	keptByMerge := map[string]bool{}
+	for _, v := range r.Objects {
+		if v.Change == helmconfig.ChangeKept {
+			keptByMerge[verdictKey(v)] = true
+		}
+	}
+	for _, v := range op.Objects {
+		if v.Change == helmconfig.ChangeKept && keptByMerge[verdictKey(v)] {
+			continue
+		}
+		r.Objects = append(r.Objects, v)
+	}
 	sort.SliceStable(r.Objects, func(i, j int) bool { return verdictKey(r.Objects[i]) < verdictKey(r.Objects[j]) })
 	r.ObjectsComplete = r.ObjectsComplete && op.ObjectsComplete
 	r.ObjectsNotAttempted += op.ObjectsNotAttempted
