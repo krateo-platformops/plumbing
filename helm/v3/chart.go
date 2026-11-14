@@ -67,6 +67,7 @@ func toWrapperRelease(rel *release.Release) *helmconfig.Release {
 	}
 	if rel.Info != nil {
 		r.Updated = rel.Info.LastDeployed.Time // helm's pkg/time.Time -> stdlib time.Time
+		r.Deleted = rel.Info.Deleted.Time      // the uninstall's start (core-provider#497)
 	}
 	// Hooks are carried because helm keeps them OUT of Manifest, so a consumer reading only
 	// Manifest cannot see them (core-provider#311: no RBAC was ever generated for a hook object,

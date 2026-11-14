@@ -25,7 +25,15 @@ type Release struct {
 	// pending) revision record was written. For a pending-install/upgrade/rollback status,
 	// time.Since(Updated) is how long the operation has been in flight, which callers use to
 	// tell a legitimately in-progress operation from a genuinely stuck one.
+	//
+	// NOT for an uninstall: helm's uninstall marks the revision uninstalling and stamps Deleted,
+	// leaving LastDeployed at the revision's deploy time. Use Deleted for StatusUninstalling.
 	Updated time.Time
+	// Deleted is helm's Info.Deleted: when an uninstall of this revision BEGAN. helm stamps it
+	// together with StatusUninstalling (helm v3 pkg/action/uninstall.go). Zero for a revision that
+	// was never uninstalled. For StatusUninstalling, time.Since(Deleted) is how long the uninstall
+	// has been in flight; Updated would measure from the deploy instead (core-provider#497).
+	Deleted time.Time
 
 	// Hooks are the release's lifecycle hooks. helm keeps them OUT of Manifest by construction —
 	// releaseutil.SortManifests splits them into their own slice — so a consumer that reads only
