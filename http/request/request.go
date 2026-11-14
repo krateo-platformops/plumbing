@@ -1,8 +1,10 @@
 package request
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -101,9 +103,15 @@ func Do(ctx context.Context, opts RequestOptions) *response.Status {
 
 	statusOK := respo.StatusCode >= 200 && respo.StatusCode < 300
 	if !statusOK {
-		dat, err := io.ReadAll(io.LimitReader(respo.Body, maxUnstructuredResponseTextBytes))
+		// One byte past the limit tells a body that was cut from one that
+		// fits; only the limit's worth is ever kept.
+		dat, err := io.ReadAll(io.LimitReader(respo.Body, maxUnstructuredResponseTextBytes+1))
 		if err != nil {
 			return response.New(http.StatusInternalServerError, err)
+		}
+		truncated := len(dat) > maxUnstructuredResponseTextBytes
+		if truncated {
+			dat = dat[:maxUnstructuredResponseTextBytes]
 		}
 
 		// The upstream's error envelope, read as Do has always read it: its
@@ -124,7 +132,7 @@ func Do(ctx context.Context, opts RequestOptions) *response.Status {
 		// (plumbing#174). It is reported like any other body that isn't a
 		// Status, under the response's own code.
 		if err := json.Unmarshal(dat, &envelope); err != nil || envelope.Code == 0 {
-			return response.New(respo.StatusCode, fmt.Errorf("%s", string(dat)))
+			return response.New(respo.StatusCode, errors.New(upstreamErrorText(respo.StatusCode, dat, truncated)))
 		}
 
 		return &envelope.Status
@@ -142,4 +150,31 @@ func Do(ctx context.Context, opts RequestOptions) *response.Status {
 	}
 
 	return response.New(http.StatusNoContent, nil)
+}
+
+// upstreamErrorText is the message for an upstream's error body that isn't a
+// Status (plumbing#175). A body that is JSON is never echoed raw: an upstream's
+// JSON can carry what Do drops from a Status, such as an object's uid, and
+// anything else beside its message. A JSON object answers its "message" when
+// that is a non-empty string ({"message":"Bad credentials"}, which makes a
+// third-party failure fixable); every other JSON body answers
+// "upstream answered <code>". A body that isn't JSON (plain text, HTML) is the
+// upstream's own words and is echoed, already cut to the size limit. A body cut
+// at the limit no longer parses, so one that starts like JSON is taken for
+// JSON: an object or array cut short still carries what it carried.
+func upstreamErrorText(code int, body []byte, truncated bool) string {
+	trimmed := bytes.TrimSpace(body)
+	isJSON := json.Valid(trimmed) ||
+		truncated && len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[')
+	if !isJSON {
+		return string(body)
+	}
+	var object map[string]json.RawMessage
+	if json.Unmarshal(trimmed, &object) == nil {
+		var message string
+		if raw, ok := object["message"]; ok && json.Unmarshal(raw, &message) == nil && message != "" {
+			return message
+		}
+	}
+	return fmt.Sprintf("upstream answered %d", code)
 }

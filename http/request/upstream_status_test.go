@@ -72,13 +72,30 @@ func TestDo_AnUpstreamErrorBodyIsReturnedWithoutItsDetails(t *testing.T) {
 			name: "json_that_is_not_a_status",
 			code: http.StatusUnprocessableEntity,
 			body: `{"error":"boom"}`,
-			want: `{"kind":"Status","apiVersion":"v1","status":"Failure","message":"{\"error\":\"boom\"}","reason":"UnprocessableEntity","code":422}`,
+			want: `{"kind":"Status","apiVersion":"v1","status":"Failure","message":"upstream answered 422","reason":"UnprocessableEntity","code":422}`,
 		},
 		{
 			name: "json_null",
 			code: http.StatusUnprocessableEntity,
 			body: `null`,
-			want: `{"kind":"Status","apiVersion":"v1","status":"Failure","message":"null","reason":"UnprocessableEntity","code":422}`,
+			want: `{"kind":"Status","apiVersion":"v1","status":"Failure","message":"upstream answered 422","reason":"UnprocessableEntity","code":422}`,
+		},
+		{
+			// A Status-shaped body that fails to decode (a string code) is
+			// JSON, so it is never echoed raw: its details, uid included,
+			// stay out (plumbing#175).
+			name: "status_shaped_but_undecodable",
+			code: http.StatusUnprocessableEntity,
+			body: `{"status":"Failure","code":"x","details":{"uid":"SECRET"}}`,
+			want: `{"kind":"Status","apiVersion":"v1","status":"Failure","message":"upstream answered 422","reason":"UnprocessableEntity","code":422}`,
+		},
+		{
+			// A third-party API's JSON error: its own message, which makes
+			// the failure fixable, and nothing beside it.
+			name: "third_party_json_message",
+			code: http.StatusUnauthorized,
+			body: `{"message":"Bad credentials","documentation_url":"https://docs.example/rest","uid":"SECRET"}`,
+			want: `{"kind":"Status","apiVersion":"v1","status":"Failure","message":"Bad credentials","reason":"Unauthorized","code":401}`,
 		},
 		{
 			// Not JSON at all: the raw text under the response's code, as before.
