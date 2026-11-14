@@ -49,7 +49,7 @@ var ErrKeyUnavailable = errKeyUnavailable{}
 var ErrKeyNotPublished = errors.New("token signing key is not published")
 
 // errKidAbsent is what JWKSKeySource returns when a kid is absent from the key
-// set its latest attempt fetched successfully, at asOf. On its own it is ErrKeyUnavailable:
+// set its latest attempt fetched successfully, in a fetch started at asOf. On its own it is ErrKeyUnavailable:
 // only the token's issue time can tell a retired key (issued before asOf) from
 // a new key the cached set predates (issued after it). ValidateWithKeySource
 // makes that call; see NotPublished.
@@ -158,7 +158,11 @@ type JWKSKeySource struct {
 	// HTTP round trip is deliberate: it single-flights concurrent misses into
 	// one request. The wait is bounded by the client's timeout.
 	mu          sync.Mutex
-	keys        map[string]*rsa.PublicKey
+	keys map[string]*rsa.PublicKey
+	// fetchedAt is when the fetch that produced keys was started, not when
+	// it completed: the set reflects the issuer at some moment in between,
+	// so the start is the only time the set certainly doesn't postdate. A
+	// key the issuer published during the round trip may be missing from it.
 	fetchedAt   time.Time
 	lastAttempt time.Time
 	// lastFailed is set while the latest fetch attempt has failed. An absent
@@ -339,7 +343,7 @@ func (s *JWKSKeySource) refreshLocked() error {
 	}
 
 	s.keys = keys
-	s.fetchedAt = s.now()
+	s.fetchedAt = s.lastAttempt
 	s.lastFailed = false
 	return nil
 }
