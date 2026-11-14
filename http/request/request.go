@@ -118,7 +118,12 @@ func Do(ctx context.Context, opts RequestOptions) *response.Status {
 			response.Status
 			Details json.RawMessage `json:"details,omitempty"`
 		}
-		if err := json.Unmarshal(dat, &envelope); err != nil {
+		// A body is a Status only if it decodes AND carries a code: valid
+		// JSON that isn't one ({"error":"boom"}, null) would otherwise come
+		// back as an empty Status with code 0, which reads like success
+		// (plumbing#174). It is reported like any other body that isn't a
+		// Status, under the response's own code.
+		if err := json.Unmarshal(dat, &envelope); err != nil || envelope.Code == 0 {
 			return response.New(respo.StatusCode, fmt.Errorf("%s", string(dat)))
 		}
 
