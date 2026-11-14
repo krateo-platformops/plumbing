@@ -1,0 +1,69 @@
+New(422,nil)	{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"UnprocessableEntity","code":422}
+New(422,err)	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","reason":"UnprocessableEntity","code":422}
+New(401,nil)	{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"Unauthorized","code":401}
+New(401,err)	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","reason":"Unauthorized","code":401}
+New(403,nil)	{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"Forbidden","code":403}
+New(403,err)	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","reason":"Forbidden","code":403}
+New(404,nil)	{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"NotFound","code":404}
+New(404,err)	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","reason":"NotFound","code":404}
+New(409,nil)	{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"Conflict","code":409}
+New(409,err)	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","reason":"Conflict","code":409}
+New(410,nil)	{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"Gone","code":410}
+New(410,err)	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","reason":"Gone","code":410}
+New(501,nil)	{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"Invalid","code":501}
+New(501,err)	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","reason":"Invalid","code":501}
+New(400,nil)	{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"BadRequest","code":400}
+New(400,err)	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","reason":"BadRequest","code":400}
+New(503,nil)	{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"ServiceUnavailable","code":503}
+New(503,err)	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","reason":"ServiceUnavailable","code":503}
+New(406,nil)	{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"NotAcceptable","code":406}
+New(406,err)	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","reason":"NotAcceptable","code":406}
+New(405,nil)	{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"MethodNotAllowed","code":405}
+New(405,err)	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","reason":"MethodNotAllowed","code":405}
+New(500,nil)	{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"InternalError","code":500}
+New(500,err)	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","reason":"InternalError","code":500}
+New(413,nil)	{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"RequestEntityTooLarge","code":413}
+New(413,err)	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","reason":"RequestEntityTooLarge","code":413}
+New(415,nil)	{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"UnsupportedMediaType","code":415}
+New(415,err)	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","reason":"UnsupportedMediaType","code":415}
+New(0,nil)	{"kind":"Status","apiVersion":"v1","status":"Success"}
+New(0,err)	{"kind":"Status","apiVersion":"v1","status":"Success","message":"boom \"quoted\" \u003ctag\u003e \u0026 more"}
+New(200,nil)	{"kind":"Status","apiVersion":"v1","status":"Success","code":200}
+New(200,err)	{"kind":"Status","apiVersion":"v1","status":"Success","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","code":200}
+New(201,nil)	{"kind":"Status","apiVersion":"v1","status":"Success","code":201}
+New(201,err)	{"kind":"Status","apiVersion":"v1","status":"Success","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","code":201}
+New(204,nil)	{"kind":"Status","apiVersion":"v1","status":"Success","code":204}
+New(204,err)	{"kind":"Status","apiVersion":"v1","status":"Success","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","code":204}
+New(302,nil)	{"kind":"Status","apiVersion":"v1","status":"Success","code":302}
+New(302,err)	{"kind":"Status","apiVersion":"v1","status":"Success","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","code":302}
+New(418,nil)	{"kind":"Status","apiVersion":"v1","status":"Success","code":418}
+New(418,err)	{"kind":"Status","apiVersion":"v1","status":"Success","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","code":418}
+New(424,nil)	{"kind":"Status","apiVersion":"v1","status":"Success","code":424}
+New(424,err)	{"kind":"Status","apiVersion":"v1","status":"Success","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","code":424}
+New(429,nil)	{"kind":"Status","apiVersion":"v1","status":"Success","code":429}
+New(429,err)	{"kind":"Status","apiVersion":"v1","status":"Success","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","code":429}
+New(502,nil)	{"kind":"Status","apiVersion":"v1","status":"Success","code":502}
+New(502,err)	{"kind":"Status","apiVersion":"v1","status":"Success","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","code":502}
+New(504,nil)	{"kind":"Status","apiVersion":"v1","status":"Success","code":504}
+New(504,err)	{"kind":"Status","apiVersion":"v1","status":"Success","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","code":504}
+Unauthorized(err=false) 401 application/json	{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"Unauthorized","code":401}
+Unauthorized(err=true) 401 application/json	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"the reason","reason":"Unauthorized","code":401}
+InternalError(err=false) 500 application/json	{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"InternalError","code":500}
+InternalError(err=true) 500 application/json	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"the reason","reason":"InternalError","code":500}
+ServiceUnavailable(err=false) 503 application/json	{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"ServiceUnavailable","code":503}
+ServiceUnavailable(err=true) 503 application/json	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"the reason","reason":"ServiceUnavailable","code":503}
+BadRequest(err=false) 400 application/json	{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"BadRequest","code":400}
+BadRequest(err=true) 400 application/json	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"the reason","reason":"BadRequest","code":400}
+NotAcceptable(err=false) 406 application/json	{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"NotAcceptable","code":406}
+NotAcceptable(err=true) 406 application/json	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"the reason","reason":"NotAcceptable","code":406}
+MethodNotAllowed(err=false) 405 application/json	{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"MethodNotAllowed","code":405}
+MethodNotAllowed(err=true) 405 application/json	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"the reason","reason":"MethodNotAllowed","code":405}
+NotFound(err=false) 404 application/json	{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"NotFound","code":404}
+NotFound(err=true) 404 application/json	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"the reason","reason":"NotFound","code":404}
+Forbidden(err=false) 403 application/json	{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"Forbidden","code":403}
+Forbidden(err=true) 403 application/json	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"the reason","reason":"Forbidden","code":403}
+Encode(hand-built) 424 application/json	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"a dependency is missing","reason":"FailedDependency","code":424}
+Marshal(Status{})	{}
+Marshal(partial)	{"status":"Failure","code":500}
+AsMap(hand-built)	{"apiVersion":"v1","code":424,"kind":"Status","message":"a dependency is missing","reason":"FailedDependency","status":"Failure"}
+AsMap(Status{})	{}

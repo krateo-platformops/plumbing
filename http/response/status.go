@@ -109,8 +109,65 @@ type Status struct {
 	// is no information available. A Reason clarifies an HTTP status
 	// code but does not override it.
 	Reason StatusReason `json:"reason,omitempty"`
+	// Extended data associated with the reason. Each reason may define its
+	// own extended details. It is optional: nil unless a caller sets it, and
+	// a nil Details is omitted from the body, so a Status without Details
+	// encodes exactly as it did before the field existed. New never sets it.
+	// It sits between reason and code, where metav1.Status has it.
+	Details *StatusDetails `json:"details,omitempty"`
 	// Suggested HTTP return code for this status, 0 if not set.
 	Code int `json:"code,omitempty"`
+}
+
+// StatusDetails is a set of additional properties that MAY be set by the
+// server to provide additional information about a response. The Reason field
+// of a Status object defines what attributes will be set.
+//
+// It mirrors k8s.io/apimachinery's metav1.StatusDetails field for field and
+// JSON tag for JSON tag (details_test.go asserts it by reflection), so a body
+// carrying it decodes as a metav1.Status in a client-go reader, and a
+// metav1.Status body decodes here without loss.
+type StatusDetails struct {
+	// The name attribute of the resource associated with the status
+	// StatusReason (when there is a single name which can be described).
+	Name string `json:"name,omitempty"`
+	// The group attribute of the resource associated with the status
+	// StatusReason.
+	Group string `json:"group,omitempty"`
+	// The kind attribute of the resource associated with the status
+	// StatusReason. On some operations may differ from the requested resource
+	// Kind.
+	Kind string `json:"kind,omitempty"`
+	// UID of the resource (when there is a single resource which can be
+	// described).
+	UID string `json:"uid,omitempty"`
+	// The Causes array includes more details associated with the StatusReason
+	// failure. Not all StatusReasons may provide detailed causes.
+	Causes []StatusCause `json:"causes,omitempty"`
+	// If specified, the time in seconds before the operation should be
+	// retried.
+	RetryAfterSeconds int32 `json:"retryAfterSeconds,omitempty"`
+}
+
+// CauseType is a machine readable value providing more detail about what
+// occurred in a status response. An operation may have multiple causes for a
+// status (whether Failure or Success).
+type CauseType string
+
+// StatusCause provides more information about a Status failure, including
+// cases when multiple errors are encountered. It mirrors metav1.StatusCause.
+type StatusCause struct {
+	// A machine-readable description of the cause of the error. If this value
+	// is empty there is no information available. Its JSON name is "reason",
+	// as in metav1.StatusCause.
+	Type CauseType `json:"reason,omitempty"`
+	// A human-readable description of the cause of the error. This field may
+	// be presented as-is to a reader.
+	Message string `json:"message,omitempty"`
+	// The field of the resource that has caused this error, as named by its
+	// JSON serialization. May include dot and postfix notation for nested
+	// attributes.
+	Field string `json:"field,omitempty"`
 }
 
 func New(code int, err error) *Status {
