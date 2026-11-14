@@ -44,6 +44,31 @@ func NotPublished(err error, issuedAt time.Time) error {
 		ErrKeyNotPublished, absent.Error(), issuedAt.UTC().Format(time.RFC3339))
 }
 
+// NotPublishedSince turns a kid absent from a key set fetched at or after
+// receivedAt into ErrKeyNotPublished. receivedAt is when the caller received
+// the token, read from the clock the key source reads (time.Now). A token can't
+// be issued after it was received, and its issuer publishes a key from the
+// moment it signs with it, so a set fetched since then that lacks the kid
+// proves the key isn't published, whatever the token claims. Unlike
+// NotPublished it needs no issue time, which an identity provider's token
+// carries unsigned until it verifies (authn#155), and no leeway, since both
+// times come from the caller's clock.
+//
+// Every other error passes through unchanged, including a kid absent from a
+// set fetched before receivedAt (the source's refresh floor kept it from
+// refetching). A caller may then still apply NotPublished, which decides from
+// the issue time:
+//
+//	err = jwtutil.NotPublished(jwtutil.NotPublishedSince(err, receivedAt), issuedAt)
+func NotPublishedSince(err error, receivedAt time.Time) error {
+	var absent errKidAbsent
+	if !errors.As(err, &absent) || receivedAt.IsZero() || absent.asOf.Before(receivedAt) {
+		return err
+	}
+	return fmt.Errorf("%w: %s; the token was received at %s",
+		ErrKeyNotPublished, absent.Error(), receivedAt.UTC().Format(time.RFC3339))
+}
+
 // notPublished is NotPublished for an authn token being parsed.
 func notPublished(err error, token *jwt.Token) error {
 	claims, ok := token.Claims.(*KrateoClaims)
