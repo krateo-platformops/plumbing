@@ -66,6 +66,21 @@ func TestDo_AnUpstreamErrorBodyIsReturnedWithoutItsDetails(t *testing.T) {
 			want: `{"status":"Failure","message":"m","code":400}`,
 		},
 		{
+			// JSON that isn't a Status: never an empty Status with code 0
+			// (plumbing#174), but the response's own code, like a body that
+			// doesn't decode.
+			name: "json_that_is_not_a_status",
+			code: http.StatusUnprocessableEntity,
+			body: `{"error":"boom"}`,
+			want: `{"kind":"Status","apiVersion":"v1","status":"Failure","message":"{\"error\":\"boom\"}","reason":"UnprocessableEntity","code":422}`,
+		},
+		{
+			name: "json_null",
+			code: http.StatusUnprocessableEntity,
+			body: `null`,
+			want: `{"kind":"Status","apiVersion":"v1","status":"Failure","message":"null","reason":"UnprocessableEntity","code":422}`,
+		},
+		{
 			// Not JSON at all: the raw text under the response's code, as before.
 			name: "not_json",
 			code: http.StatusTeapot,
