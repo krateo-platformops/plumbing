@@ -51,3 +51,29 @@ const (
 	// running replica. Not "Active", which would repeat the type without saying why.
 	ReasonRunning = "Running"
 )
+
+// The terminal-by-design declaration, decided by Diego on 2026-11-14 (core-provider#498).
+//
+// A managed child that rests at Ready=False ON PURPOSE declares it with
+//
+//	Ready  False  ReasonTerminalByDesign   the message carries the instance detail
+//
+// and core-provider's composition rollup then counts that child as healthy, and never applies its
+// stall deadline to it. Example: a create that a vendor answers 202 and that must never be driven
+// again, such as an Ironic NodeProvision (driving it to "active" again wipes the disk).
+//
+// ONLY ON A CHILD, NEVER ON A COMPOSITION. A composition's own Ready never carries it: its
+// controller writes a composition's reason only from its own verdicts, and installer's dependency
+// gate would withhold a composition carrying an unrecognised reason.
+//
+// NOT A FAILURE REASON, AND NOT A SET. It is the opposite verdict to rest-dynamic-controller's
+// NoCreateVerbDeclared and CreateUnreachable, which the rollup counts as failed: those say a
+// definition must change, this says nothing is wrong. Those specific reasons stay as they are. A
+// child that is merely waiting (Pending) must not use this: Pending means both "in flight" and
+// "resting for good", which is exactly the ambiguity this reason removes. Emit it only from an
+// explicit declaration, never inferred.
+const (
+	// ReasonTerminalByDesign is the Ready=False reason by which a child declares its not-Ready
+	// state to be its healthy end state.
+	ReasonTerminalByDesign = "TerminalByDesign"
+)
