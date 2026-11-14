@@ -45,3 +45,32 @@ func TestFoldOperation(t *testing.T) {
 		t.Error("a nil operation must leave the result unchanged")
 	}
 }
+
+// core-provider#423: a kept deletion is one decision, not a write. The merge and the real Upgrade
+// both report the same kept child (no request sent in either), and the fold keeps ONE. Writes stay
+// doubled (the control), and an upgrade's kept verdict for a child the merge did not report kept is
+// folded, so a decision only the upgrade made is not lost.
+func TestFoldOperation_AKeptChildIsOneDecision(t *testing.T) {
+	v := func(name string, c helmconfig.ObjectChange) helmconfig.ObjectVerdict {
+		return helmconfig.ObjectVerdict{Version: "v1", Resource: "configmaps", Namespace: "ns", Name: name, Verb: "delete", Change: c}
+	}
+	r := &helmconfig.ReconcileResult{
+		Objects:         []helmconfig.ObjectVerdict{v("kept", helmconfig.ChangeKept), v("written", helmconfig.ChangeSpec)},
+		ObjectsComplete: true,
+	}
+	foldOperation(r, &helmconfig.OperationResult{
+		Objects: []helmconfig.ObjectVerdict{
+			v("kept", helmconfig.ChangeKept),            // the same decision again: dropped
+			v("written", helmconfig.ChangeSpec),         // a second write: kept (#139)
+			v("onlyUpgradeKept", helmconfig.ChangeKept), // a decision only the upgrade made: kept
+		},
+		ObjectsComplete: true,
+	})
+	var got []string
+	for _, o := range r.Objects {
+		got = append(got, o.Name+":"+string(o.Change))
+	}
+	if want := []string{"kept:kept", "onlyUpgradeKept:kept", "written:specChanged", "written:specChanged"}; !equalStrings(got, want) {
+		t.Errorf("objects = %v, want %v", got, want)
+	}
+}
