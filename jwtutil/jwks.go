@@ -157,7 +157,7 @@ type JWKSKeySource struct {
 	// mu guards every field below AND serialises fetches. Holding it across the
 	// HTTP round trip is deliberate: it single-flights concurrent misses into
 	// one request. The wait is bounded by the client's timeout.
-	mu          sync.Mutex
+	mu   sync.Mutex
 	keys map[string]*rsa.PublicKey
 	// fetchedAt is when the fetch that produced keys was started, not when
 	// it completed: the set reflects the issuer at some moment in between,
