@@ -26,26 +26,26 @@ New(413,nil)	{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"Req
 New(413,err)	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","reason":"RequestEntityTooLarge","code":413}
 New(415,nil)	{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"UnsupportedMediaType","code":415}
 New(415,err)	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","reason":"UnsupportedMediaType","code":415}
-New(0,nil)	{"kind":"Status","apiVersion":"v1","status":"Success"}
-New(0,err)	{"kind":"Status","apiVersion":"v1","status":"Success","message":"boom \"quoted\" \u003ctag\u003e \u0026 more"}
+New(0,nil)	{"kind":"Status","apiVersion":"v1","status":"Failure"}
+New(0,err)	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"boom \"quoted\" \u003ctag\u003e \u0026 more"}
 New(200,nil)	{"kind":"Status","apiVersion":"v1","status":"Success","code":200}
 New(200,err)	{"kind":"Status","apiVersion":"v1","status":"Success","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","code":200}
 New(201,nil)	{"kind":"Status","apiVersion":"v1","status":"Success","code":201}
 New(201,err)	{"kind":"Status","apiVersion":"v1","status":"Success","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","code":201}
 New(204,nil)	{"kind":"Status","apiVersion":"v1","status":"Success","code":204}
 New(204,err)	{"kind":"Status","apiVersion":"v1","status":"Success","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","code":204}
-New(302,nil)	{"kind":"Status","apiVersion":"v1","status":"Success","code":302}
-New(302,err)	{"kind":"Status","apiVersion":"v1","status":"Success","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","code":302}
-New(418,nil)	{"kind":"Status","apiVersion":"v1","status":"Success","code":418}
-New(418,err)	{"kind":"Status","apiVersion":"v1","status":"Success","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","code":418}
-New(424,nil)	{"kind":"Status","apiVersion":"v1","status":"Success","code":424}
-New(424,err)	{"kind":"Status","apiVersion":"v1","status":"Success","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","code":424}
-New(429,nil)	{"kind":"Status","apiVersion":"v1","status":"Success","code":429}
-New(429,err)	{"kind":"Status","apiVersion":"v1","status":"Success","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","code":429}
-New(502,nil)	{"kind":"Status","apiVersion":"v1","status":"Success","code":502}
-New(502,err)	{"kind":"Status","apiVersion":"v1","status":"Success","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","code":502}
-New(504,nil)	{"kind":"Status","apiVersion":"v1","status":"Success","code":504}
-New(504,err)	{"kind":"Status","apiVersion":"v1","status":"Success","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","code":504}
+New(302,nil)	{"kind":"Status","apiVersion":"v1","status":"Failure","code":302}
+New(302,err)	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","code":302}
+New(418,nil)	{"kind":"Status","apiVersion":"v1","status":"Failure","code":418}
+New(418,err)	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","code":418}
+New(424,nil)	{"kind":"Status","apiVersion":"v1","status":"Failure","code":424}
+New(424,err)	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","code":424}
+New(429,nil)	{"kind":"Status","apiVersion":"v1","status":"Failure","code":429}
+New(429,err)	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","code":429}
+New(502,nil)	{"kind":"Status","apiVersion":"v1","status":"Failure","code":502}
+New(502,err)	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","code":502}
+New(504,nil)	{"kind":"Status","apiVersion":"v1","status":"Failure","code":504}
+New(504,err)	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"boom \"quoted\" \u003ctag\u003e \u0026 more","code":504}
 Unauthorized(err=false) 401 application/json	{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"Unauthorized","code":401}
 Unauthorized(err=true) 401 application/json	{"kind":"Status","apiVersion":"v1","status":"Failure","message":"the reason","reason":"Unauthorized","code":401}
 InternalError(err=false) 500 application/json	{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"InternalError","code":500}

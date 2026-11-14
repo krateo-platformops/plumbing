@@ -8,7 +8,9 @@ package response
 // testdata/bodies.golden was generated from the package as it was BEFORE Status gained the
 // Details field (commit 0012dac7e69dd4fad52e45799751de997d08a461), so this test is the proof that
 // adding the field changed no existing body. Regenerate with UPDATE_GOLDEN=1 only when a body is
-// meant to change.
+// meant to change. It was regenerated once since, for plumbing#177: New's status for codes it
+// doesn't list is Failure unless the code is 2xx, which changed exactly the 14 New rows of codes
+// 0, 302, 418, 424, 429, 502 and 504 from "Success" to "Failure", and no other byte.
 
 import (
 	"encoding/json"

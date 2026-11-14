@@ -225,7 +225,13 @@ func New(code int, err error) *Status {
 		res.Status = StatusFailure
 		res.Reason = StatusReasonUnsupportedMediaType
 	default:
-		res.Status = StatusSuccess
+		// Only a 2xx is a success: every other code a Status reports is a
+		// failure, listed above or not (plumbing#177: 418, 424, 429, 502, 504
+		// and 302 used to say Success).
+		res.Status = StatusFailure
+		if code >= 200 && code <= 299 {
+			res.Status = StatusSuccess
+		}
 	}
 
 	return res
