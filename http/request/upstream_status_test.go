@@ -67,10 +67,11 @@ func TestDo_AnUpstreamErrorBodyIsReturnedWithoutItsDetails(t *testing.T) {
 		},
 		{
 			// Not JSON at all: the raw text under the response's code, as before.
+			// A 418 is a Failure (plumbing#177; it used to say Success).
 			name: "not_json",
 			code: http.StatusTeapot,
 			body: `upstream connect error`,
-			want: `{"kind":"Status","apiVersion":"v1","status":"Success","message":"upstream connect error","code":418}`,
+			want: `{"kind":"Status","apiVersion":"v1","status":"Failure","message":"upstream connect error","code":418}`,
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
