@@ -10,6 +10,7 @@ func TestContractStrings(t *testing.T) {
 		{TypeControllerActive, "ControllerActive"},
 		{ReasonScaledToZero, "ScaledToZero"},
 		{ReasonRunning, "Running"},
+		{ReasonTerminalByDesign, "TerminalByDesign"},
 	} {
 		if c.got != c.want {
 			t.Errorf("contract string changed: %q, want %q", c.got, c.want)
