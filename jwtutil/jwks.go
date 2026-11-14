@@ -293,6 +293,23 @@ func (s *JWKSKeySource) PublicKey(kid string) (*rsa.PublicKey, error) {
 	return nil, errKidAbsent{url: s.url, kid: kid, asOf: s.fetchedAt}
 }
 
+// NextRefresh is the earliest time the source may fetch its key set again: the
+// refresh floor after its last attempt, successful or not. The zero time means
+// it may fetch now. A caller that answers ErrKeyUnavailable can send it as
+// Retry-After, because a key the issuer has published is found by the first
+// fetch from then on.
+func (s *JWKSKeySource) NextRefresh() time.Time {
+	if s == nil {
+		return time.Time{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lastAttempt.IsZero() {
+		return time.Time{}
+	}
+	return s.lastAttempt.Add(s.minRefreshInterval)
+}
+
 // lookupLocked resolves kid against the cache. Callers must hold s.mu.
 func (s *JWKSKeySource) lookupLocked(kid string) (*rsa.PublicKey, bool) {
 	if kid != "" {
