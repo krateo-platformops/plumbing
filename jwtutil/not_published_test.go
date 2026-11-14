@@ -3,6 +3,10 @@ package jwtutil
 import (
 	"crypto/rsa"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -121,4 +125,30 @@ func TestNextRefresh(t *testing.T) {
 
 	var none *JWKSKeySource
 	assert.True(t, none.NextRefresh().IsZero())
+}
+
+// A key set reflects the issuer at some moment during its fetch, so its time
+// is when the fetch started. A token received while the fetch was in flight,
+// signed with a key the issuer published during it, is not proven unpublished
+// by that set: it stays undecided, never 401.
+func TestKeySetTimeIsWhenItsFetchStarted(t *testing.T) {
+	key := rsaKey(t)
+	start := time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)
+	var clock atomic.Int64
+	clock.Store(start.UnixNano())
+	body := jwksBody(t, map[string]*rsa.PublicKey{"key-1": &key.PublicKey})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		clock.Add(int64(3 * time.Second)) // a slow round trip
+		fmt.Fprint(w, body)
+	}))
+	t.Cleanup(srv.Close)
+
+	src := NewJWKSKeySource(JWKSURL(srv.URL))
+	src.now = func() time.Time { return time.Unix(0, clock.Load()).UTC() }
+	_, err := src.PublicKey("key-2")
+	require.ErrorIs(t, err, ErrKeyUnavailable)
+
+	assert.Equal(t, err, NotPublishedSince(err, start.Add(time.Second)), "received during the fetch: undecided")
+	assert.ErrorIs(t, NotPublishedSince(err, start), ErrKeyNotPublished, "received before the fetch started: 401")
+	assert.Equal(t, start.Add(defaultJWKSMinRefreshInterval), src.NextRefresh())
 }
