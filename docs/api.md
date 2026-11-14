@@ -68,7 +68,7 @@ derived from the actual package docs and code.
 | Package | What it exports |
 |---|---|
 | `http/request` | Outbound request building incl. AWS Signature v4 header computation. |
-| `http/response` | The `Status` response envelope (`Success`/`Failure`) + typed error writers (`BadRequest`, `Forbidden`, …). |
+| `http/response` | The `Status` response envelope (`Success`/`Failure`) + typed error writers (`BadRequest`, `Forbidden`, …). `Status.Details` (`StatusDetails`, `StatusCause`) is optional extended data that mirrors `metav1.StatusDetails`, so a body carrying it decodes as a `metav1.Status`; it is omitted when nil, and no constructor sets it. |
 | `http/util` | `RetryClient` — retrying, rate-limited `http.Client` wrapper. |
 | `server/probes` | `/livez` + `/readyz` handlers and a `HealthServer`. |
 | `server/use` | Middleware: access logging, CORS, trace-id propagation. |

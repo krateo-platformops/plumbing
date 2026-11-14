@@ -106,13 +106,23 @@ func Do(ctx context.Context, opts RequestOptions) *response.Status {
 			return response.New(http.StatusInternalServerError, err)
 		}
 
-		res := &response.Status{}
-		if err := json.Unmarshal(dat, res); err != nil {
-			res = response.New(respo.StatusCode, fmt.Errorf("%s", string(dat)))
-			return res
+		// The upstream's error envelope, read as Do has always read it: its
+		// kind, apiVersion, status, message, reason and code, and nothing
+		// else. response.Status has since gained Details; an upstream's
+		// "details" (an apiserver's carries the object's name and uid) is not
+		// part of what Do returns, so it is taken here by a field that
+		// shadows Status.Details, accepts any JSON value, and is dropped.
+		// Without it a body with details would start returning them, and a
+		// body whose "details" is not an object would stop decoding.
+		var envelope struct {
+			response.Status
+			Details json.RawMessage `json:"details,omitempty"`
+		}
+		if err := json.Unmarshal(dat, &envelope); err != nil {
+			return response.New(respo.StatusCode, fmt.Errorf("%s", string(dat)))
 		}
 
-		return res
+		return &envelope.Status
 	}
 
 	if ct := respo.Header.Get("Content-Type"); !strings.Contains(ct, "json") {
