@@ -96,3 +96,29 @@ func TestNotPublishedSince(t *testing.T) {
 	assert.Equal(t, other, NotPublishedSince(other, received))
 	assert.NoError(t, NotPublishedSince(nil, received))
 }
+
+// NextRefresh is when a key the cached set lacks can next be fetched: the
+// refresh floor after the last attempt, failed attempts included.
+func TestNextRefresh(t *testing.T) {
+	key := rsaKey(t)
+	issuer := &rotatingJWKS{}
+	issuer.set(t, map[string]*rsa.PublicKey{"key-1": &key.PublicKey})
+
+	clock := time.Date(2026, 11, 14, 8, 0, 0, 0, time.UTC)
+	src := NewJWKSKeySource(JWKSURL(issuer.serve(t).URL), WithJWKSMinRefreshInterval(30*time.Second))
+	src.now = func() time.Time { return clock }
+	assert.True(t, src.NextRefresh().IsZero(), "never fetched: it may fetch now")
+
+	_, err := src.PublicKey("key-1")
+	require.NoError(t, err)
+	assert.Equal(t, clock.Add(30*time.Second), src.NextRefresh())
+
+	issuer.down()
+	clock = clock.Add(40 * time.Second)
+	_, err = src.PublicKey("key-2")
+	require.ErrorIs(t, err, ErrKeyUnavailable)
+	assert.Equal(t, clock.Add(30*time.Second), src.NextRefresh(), "a failed attempt starts the floor too")
+
+	var none *JWKSKeySource
+	assert.True(t, none.NextRefresh().IsZero())
+}
