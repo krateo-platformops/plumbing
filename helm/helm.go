@@ -19,8 +19,10 @@ type Release struct {
 	Revision     int
 	ChartVersion string
 	Status       Status
-	Values       map[string]interface{}
-	Manifest     string
+	// Values are the values this revision was installed or upgraded with: helm's release Config,
+	// the user-supplied values before the chart's defaults are coalesced in.
+	Values   map[string]interface{}
+	Manifest string
 	// Updated is helm's Info.LastDeployed for this revision — when the (possibly still
 	// pending) revision record was written. For a pending-install/upgrade/rollback status,
 	// time.Since(Updated) is how long the operation has been in flight, which callers use to
@@ -98,11 +100,16 @@ func (r *Release) GetManifest() string {
 // Changed is false the cluster already matched the desired manifest and NO new
 // helm revision was written and NO hooks ran.
 type ReconcileResult struct {
-	Changed        bool
-	Created        int
-	Deleted        int
-	PatchedUpdated int
-	Release        *Release
+	// DesiredStateChange says why the render differed from the stored release, when it did (chart
+	// version, manifest or hooks): Reconcile then ran helm upgrade directly instead of merging, so
+	// pre-upgrade hooks ran before the release's objects changed (core-provider#518). "" for a pass
+	// that only healed drift, or changed nothing.
+	DesiredStateChange string
+	Changed            bool
+	Created            int
+	Deleted            int
+	PatchedUpdated     int
+	Release            *Release
 	// ChangedObjects identifies the children this reconcile created, deleted or patched, as
 	// "group/version/Kind/namespace/name". The counts above say THAT something drifted;
 	// core-provider#175's open half is that nothing said WHICH child — so an operator seeing

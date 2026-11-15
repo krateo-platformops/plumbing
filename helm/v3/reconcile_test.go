@@ -4,6 +4,7 @@
 package helm
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strings"
@@ -245,11 +246,15 @@ func TestControllerReconcile(t *testing.T) {
 			// cycle (revision++). The chart's ConfigMap now carries
 			// krateo.io/traceparent={{ .Values.traceparent }} to simulate that stamp.
 			// =========================================================
+			// The stamps come from the post-renderer, as in production (helm/utils LabelsPostRender
+			// stamps them on every render), NOT from values: values are the release's requested
+			// state, and a changed value is a requested change (core-provider#518).
 			cfgTrace := func(color, tp, ts string) *helmconfig.UpgradeConfig {
 				return &helmconfig.UpgradeConfig{
 					ActionConfig: &helmconfig.ActionConfig{
 						TakeOwnership: true,
-						Values:        map[string]interface{}{"color": color, "traceparent": tp, "tracestate": ts},
+						Values:        map[string]interface{}{"color": color},
+						PostRenderer:  traceStampRenderer{traceparent: tp, tracestate: ts},
 					},
 				}
 			}
@@ -578,4 +583,15 @@ func TestControllerReconcile(t *testing.T) {
 		Feature()
 
 	testenv.Test(t, f)
+}
+
+// traceStampRenderer stamps krateo.io/traceparent and krateo.io/tracestate the way the real
+// post-renderer does on every render, filling the empty annotations the drift-hooks ConfigMap
+// renders when no stamp is passed as a value.
+type traceStampRenderer struct{ traceparent, tracestate string }
+
+func (r traceStampRenderer) Run(in *bytes.Buffer) (*bytes.Buffer, error) {
+	out := strings.Replace(in.String(), `krateo.io/traceparent: ""`, fmt.Sprintf("krateo.io/traceparent: %q", r.traceparent), 1)
+	out = strings.Replace(out, `krateo.io/tracestate: ""`, fmt.Sprintf("krateo.io/tracestate: %q", r.tracestate), 1)
+	return bytes.NewBufferString(out), nil
 }

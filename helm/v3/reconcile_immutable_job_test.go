@@ -111,15 +111,23 @@ func TestReconcileReportsImmutableJobAndFailedRevision(t *testing.T) {
 			}
 			return ctx
 		}).
-		Assess("B: the other children still converge, and the error persists", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		// core-provider#518 (Diego, 2026-11-15) supersedes this case's original expectation (#276: the
+		// other children still converge). A changed desired state reaches objects only through helm
+		// upgrade, which can never apply a changed pod template to a live Job, so NOTHING is applied:
+		// converging the Deployment without the upgrade would put a new workload in place without its
+		// pre-upgrade hooks ever running, the hazard behind a Keystone lockout.
+		Assess("B: nothing of the change is applied while the Job blocks it, and the error persists", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 			p := newJobProbe(ctx, t, c, "b")
+			envBefore := p.deployEnv()
+			require.NotEqual(t, "changed", envBefore, "precondition: the Deployment starts without the new value")
 			vals := map[string]interface{}{"jobMessage": "v2", "deployEnv": "changed"}
 			for _, step := range []string{"r1", "r2"} {
 				res, err := p.reconcile(ctx, vals)
 				p.log(step, res, err)
 				require.Error(t, err, "%s: before the fix r2 returned nil on a failed revision", step)
 				assert.True(t, errors.Is(err, helmconfig.ErrJobTemplateChanged), "%s: err = %v", step, err)
-				assert.Equal(t, "changed", p.deployEnv(), "%s: the Deployment change must still be applied (#276)", step)
+				assert.Equal(t, envBefore, p.deployEnv(), "%s: the Deployment must not change without the upgrade (#518)", step)
+				assert.Equal(t, 1, helmRevisionCount(t, p.cs, p.ns, p.release), "%s: no revision for a release that was not applied", step)
 			}
 			return ctx
 		}).
