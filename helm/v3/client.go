@@ -373,6 +373,9 @@ func (c *client) Upgrade(ctx context.Context, releaseName, chartRef string, cfg 
 
 			r, e := upgradeClient.RunWithContext(ctx, releaseName, chart, cfg.Values)
 			if e != nil {
+				if operationInProgress(e) {
+					return fmt.Errorf("upgrade failed: %w: %w", helmconfig.ErrOperationInProgress, e)
+				}
 				// Wrapped with %w so IsRESTMappingMiss still sees the typed NoKindMatchError, and
 				// so the caller's message is unchanged from before this retry existed.
 				return fmt.Errorf("upgrade failed: %w", e)
@@ -599,4 +602,16 @@ func rollbackContentKeysOf(cfg *helmconfig.RollbackConfig) content.Keys {
 		return content.Keys{}
 	}
 	return content.Keys{Annotations: cfg.ContentAnnotations, Labels: cfg.ContentLabels}
+}
+
+// helmPendingMessage is helm's action.errPending, which helm does not export: the only signal its
+// upgrade gives that the latest revision is pending and the call refused to start.
+const helmPendingMessage = "another operation (install/upgrade/rollback) is in progress"
+
+// operationInProgress reports whether helm refused an upgrade because another operation holds the
+// release: the pending check (errPending, matched by its text, the only form helm exposes) or the
+// release-record race, where a concurrent upgrade created the next revision first and storage
+// answered ErrReleaseExists. helm calls the two together its pessimistic lock.
+func operationInProgress(err error) bool {
+	return errors.Is(err, driver.ErrReleaseExists) || strings.Contains(err.Error(), helmPendingMessage)
 }
