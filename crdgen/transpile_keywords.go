@@ -335,10 +335,9 @@ func (t *transpiler) handleUnsupported(out *apiextensionsv1.JSONSchemaProps, nod
 		t.warn(path, KindConstraintDropped, "dependentSchemas unsupported -> dropped")
 	}
 	if len(node.PrefixItems) > 0 {
+		// The array case of transpile has already set Items (the declared items, or anyValue when
+		// there are none), so "accepted as-is" holds without a fallback here (plumbing#186).
 		t.warn(path, KindConstraintDropped, "prefixItems (tuple positional typing) not representable -> items accepted as-is")
-		if out.Type == schemas.TypeNameArray && out.Items == nil {
-			out.Items = &apiextensionsv1.JSONSchemaPropsOrArray{Schema: openObject()}
-		}
 	}
 	if node.UnevaluatedProperties != nil {
 		closedFalse := node.UnevaluatedProperties.IsBool && !node.UnevaluatedProperties.Bool
