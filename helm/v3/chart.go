@@ -63,6 +63,7 @@ func toWrapperRelease(rel *release.Release) *helmconfig.Release {
 		Revision:     rel.Version,
 		ChartVersion: rel.Chart.Metadata.Version,
 		Status:       helmconfig.Status(rel.Info.Status),
+		Values:       rel.Config,
 		Manifest:     rel.Manifest,
 	}
 	if rel.Info != nil {

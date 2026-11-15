@@ -11,6 +11,9 @@ import (
 	"testing"
 
 	helmconfig "github.com/krateo-platformops/plumbing/helm"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
 
@@ -97,8 +100,8 @@ func TestEnvtest_ReconcileRunsPreUpgradeHooksBeforeAChangedRenderIsApplied(t *te
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if !res.Changed || res.DesiredStateChange != "rendered manifest" {
-		t.Fatalf("a value change: Changed=%v desiredStateChange %q, want true and \"rendered manifest\"", res.Changed, res.DesiredStateChange)
+	if !res.Changed || res.DesiredStateChange != "values" {
+		t.Fatalf("a value change: Changed=%v desiredStateChange %q, want true and \"values\"", res.Changed, res.DesiredStateChange)
 	}
 	if len(res.ChangedObjects) != 1 || res.ChangedObjects[0] != "v1/ConfigMap/default/app" {
 		t.Fatalf("changedObjects = %v, want the one changed child v1/ConfigMap/default/app", res.ChangedObjects)
@@ -130,5 +133,33 @@ func TestEnvtest_ReconcileStillHealsPureDriftWithoutAnUpgrade(t *testing.T) {
 	rel, _ = hc.GetRelease(ctx, "dr", &helmconfig.GetConfig{})
 	if res.Changed || rel.Revision != before || res.DesiredStateChange != "" {
 		t.Fatalf("an unchanged desired state: Changed=%v revision %d -> %d, desiredStateChange %q; want no change", res.Changed, before, rel.Revision, res.DesiredStateChange)
+	}
+}
+
+// A requested values change is recorded even when the live cluster already matches it: the merge
+// alone had nothing to write, so no revision was written and the release kept the old values and
+// manifest while every later reconcile reported up to date (acmp, demo, keycloak 0.4.1: an
+// out-of-band patch had already set the field the new values asked for).
+func TestEnvtest_ReconcileRecordsAValuesChangeTheClusterAlreadyMatches(t *testing.T) {
+	hc := envtestClient(t)
+	ctx := context.Background()
+	url := serveFiles(t, map[string]string{"Chart.yaml": chartYAML, "templates/cm.yaml": valuedCM("pre", "default")})
+	if _, err := hc.Install(ctx, "pre", url, &helmconfig.InstallConfig{Namespace: "default"}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	// Out of band, the live object already carries what the new values will ask for.
+	patch := []byte(`{"data":{"k":"wanted"}}`)
+	if _, err := kubernetes.NewForConfigOrDie(hc.restConfig).CoreV1().ConfigMaps("default").Patch(ctx, "pre", types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := hc.GetRelease(ctx, "pre", &helmconfig.GetConfig{})
+	res, err := hc.Reconcile(ctx, "pre", url, &helmconfig.UpgradeConfig{ActionConfig: &helmconfig.ActionConfig{Values: map[string]any{"k": "wanted"}}})
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	after, _ := hc.GetRelease(ctx, "pre", &helmconfig.GetConfig{})
+	if !res.Changed || after.Revision != before.Revision+1 || after.Values["k"] != "wanted" {
+		t.Fatalf("a values change the cluster already matched: Changed=%v revision %d -> %d, stored values %v; want a revision recording k=wanted",
+			res.Changed, before.Revision, after.Revision, after.Values)
 	}
 }

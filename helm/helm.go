@@ -19,8 +19,10 @@ type Release struct {
 	Revision     int
 	ChartVersion string
 	Status       Status
-	Values       map[string]interface{}
-	Manifest     string
+	// Values are the values this revision was installed or upgraded with: helm's release Config,
+	// the user-supplied values before the chart's defaults are coalesced in.
+	Values   map[string]interface{}
+	Manifest string
 	// Updated is helm's Info.LastDeployed for this revision — when the (possibly still
 	// pending) revision record was written. For a pending-install/upgrade/rollback status,
 	// time.Since(Updated) is how long the operation has been in flight, which callers use to

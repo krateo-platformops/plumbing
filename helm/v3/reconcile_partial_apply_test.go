@@ -71,7 +71,13 @@ func TestReconcilePartialApplyVerdicts(t *testing.T) {
 			assert.Equal(t, 0, res.Created)
 			assert.Equal(t, 2, res.PatchedUpdated, "only the confirmed patches count")
 			assert.Len(t, res.ChangedObjects, 2, "the failed child is not listed as changed: %v", res.ChangedObjects)
-			assert.Equal(t, revBefore, helmRevisionCount(t, cs, ns, release), "a partial apply writes no revision")
+			// core-provider#518: a changed value goes through helm upgrade, which records its failure
+			// as a FAILED revision (the merge path used to write none). That is helm's own record of
+			// the attempt, and Reconcile retries a failed latest revision (core-provider#403).
+			assert.Equal(t, revBefore+1, helmRevisionCount(t, cs, ns, release), "the failed upgrade is recorded as one revision")
+			latest, gerr := cli.GetRelease(ctx, release, &helmconfig.GetConfig{})
+			require.NoError(t, gerr)
+			assert.Equal(t, helmconfig.StatusFailed, latest.Status, "and that revision is failed, not deployed")
 
 			live, err := cs.CoreV1().ConfigMaps(ns).Get(ctx, release+"-frozen", metav1.GetOptions{})
 			require.NoError(t, err)

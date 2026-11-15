@@ -167,44 +167,6 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 		return nil, fmt.Errorf("reconcile: building target resource list: %w", err)
 	}
 
-	// 3.5. core-provider#518: a CHANGED desired state goes through helm upgrade, never the merge. The
-	// merge below applies whatever the render says, and the real upgrade that runs hooks came only
-	// after it (step 7), so every new chart version or value reached the release's objects BEFORE
-	// its pre-upgrade hooks. On GKE a Keystone credential's pre-upgrade Job ran three minutes after
-	// the workloads reading it had restarted on the new config, and locked the service account out
-	// (openstack-as-a-service, nova 0.3.62 -> 0.3.64, 2026-11-15). helm upgrade orders it: pre-upgrade
-	// hooks, then the objects, then post-upgrade hooks. Its three-way patch reads live state too, so
-	// drift on the fields it writes heals in the same pass, and it creates children deleted
-	// out-of-band. The merge stays for what it is for: drift against the DEPLOYED desired state.
-	change, changedKeys, derr := desiredStateChange(currentManifest, stored, rendered.Release)
-	if derr != nil {
-		return nil, fmt.Errorf("reconcile: comparing the render with the stored release: %w", derr)
-	}
-	if change != "" {
-		if cfg.BeforeRevision != nil {
-			cfg.BeforeRevision(ctx)
-		}
-		op, err := c.Upgrade(ctx, releaseName, chartRef, cfg)
-		// The same diagnostics the merge path reports: which children the change touches (from the
-		// render diff) and which the stored manifest records at an older apiVersion.
-		names := newChangedObjectSet(maxChangedObjects)
-		for _, k := range changedKeys {
-			names.add(k)
-		}
-		staleSet := cappedSet(staleManifestVersions(current, target), maxChangedObjects)
-		res := &helmconfig.ReconcileResult{
-			Changed: true, DesiredStateChange: change, ObjectsComplete: true,
-			ChangedObjects: names.names, ChangedObjectsOmitted: names.omitted,
-			StaleManifestVersions: staleSet.names, StaleManifestVersionsOmitted: staleSet.omitted,
-		}
-		foldOperation(res, op)
-		if err != nil {
-			return res, fmt.Errorf("reconcile: upgrading to a changed desired state (%s): %w", change, err)
-		}
-		res.Release = op.Release
-		return res, nil
-	}
-
 	// 4. GET each target object's live state (for the change-detection diff in step 5) and
 	//    capture its current trace-context annotations (for the copy in step 4.5).
 	//    Missing (IsNotFound) => absent, will be created by the merge.
@@ -354,6 +316,52 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 	// name is returned below as ErrJobTemplateChanged. A changed Job that is NOT live stays in the
 	// merge, which simply creates it.
 	jobs := classifyStoredJobs(current, target, liveObj)
+
+	// 4.8. core-provider#518: a CHANGED desired state goes through helm upgrade, never the merge. The
+	// merge below applies whatever the render says, and the real upgrade that runs hooks came only
+	// after it (step 7), so every new chart version or value reached the release's objects BEFORE
+	// its pre-upgrade hooks. On GKE a Keystone credential's pre-upgrade Job ran three minutes after
+	// the workloads reading it had restarted on the new config, and locked the service account out
+	// (openstack-as-a-service, nova 0.3.62 -> 0.3.64, 2026-11-15). helm upgrade orders it: pre-upgrade
+	// hooks, then the objects, then post-upgrade hooks. Its three-way patch reads live state too, so
+	// drift on the fields it writes heals in the same pass, and it creates children deleted
+	// out-of-band. The merge stays for what it is for: drift against the DEPLOYED desired state.
+	change, derr := desiredStateChange(stored, rendered.Release.ChartVersion, cfg.ActionConfig.Values)
+	if derr != nil {
+		return nil, fmt.Errorf("reconcile: comparing the request with the stored release: %w", derr)
+	}
+	if change != "" {
+		res := &helmconfig.ReconcileResult{
+			Changed: true, DesiredStateChange: change, ObjectsComplete: true,
+			StaleManifestVersions: stale.names, StaleManifestVersionsOmitted: stale.omitted,
+			ChangedJobTemplates: jobs.templateChanged,
+		}
+		// core-provider#403: helm upgrade can never apply a changed pod template to a live Job. The
+		// change is reported and NOTHING is applied, not even the other children's part of it: that
+		// would put new workloads in place without their pre-upgrade hooks ever running, the hazard
+		// this step exists to remove (Diego, 2026-11-15). It waits until the Job is renamed or deleted.
+		if len(jobs.templateChanged) > 0 {
+			res.Changed = false
+			res.Release = stored
+			return res, fmt.Errorf("reconcile: %w: %s", helmconfig.ErrJobTemplateChanged, strings.Join(jobs.templateChanged, ", "))
+		}
+		if cfg.BeforeRevision != nil {
+			cfg.BeforeRevision(ctx)
+		}
+		op, err := c.Upgrade(ctx, releaseName, chartRef, cfg)
+		foldOperation(res, op)
+		// The counts and names the merge path reports, from the upgrade's own write verdicts:
+		// confirmed writes only, so a child whose write failed is neither counted nor listed.
+		countConfirmedWrites(res)
+		if err != nil {
+			// Some children written before the failure is a partial apply, as on the merge path.
+			res.AppliedPartially = res.Created+res.Deleted+res.PatchedUpdated > 0
+			return res, fmt.Errorf("reconcile: upgrading to a changed desired state (%s): %w", change, err)
+		}
+		res.Release = op.Release
+		return res, nil
+	}
+
 	current, target = withoutKeys(current, jobs.skip), withoutKeys(target, jobs.skip)
 	if len(jobs.skip) > 0 && c.debugLog != nil {
 		c.debugLog("reconcile: self-heal is not patching %d already-live Job(s), whose pod template is immutable: %s",
@@ -768,101 +776,68 @@ func ownedJSON(obj runtime.Object, owned fieldMask) ([]byte, error) {
 	return json.Marshal(project(m, owned))
 }
 
-// desiredStateChange names what differs between the stored release and the render, or "" when the
-// render is the deployed desired state: the chart version, the manifest, or the hooks. The manifest
-// is the stored one as Reconcile will use it (after step 1.5's repair). Documents are compared as
-// objects, keyed by apiVersion, kind, namespace and name, with the per-reconcile trace annotations
-// removed: they are re-stamped on every render and are not desired state.
+// desiredStateChange names what the request changes against the stored release, or "" when it asks
+// for the deployed desired state: the chart version, or the values. These are the INPUTS of a
+// release. Its rendered output is not compared: a template may read .Release.Revision, now or a
+// random function, so a render one revision ahead differs from the stored one without anything
+// having been asked for (a hook named <release>-hook-rev-<revision> differs on every pass).
 //
-// keys are the release objects whose documents differ (added, removed or changed), sorted, in
-// infoKey's form; hooks are not release objects and are not listed.
-func desiredStateChange(storedManifest string, stored, rendered *helmconfig.Release) (reason string, keys []string, err error) {
-	keys, err = differingDocuments(storedManifest, rendered.Manifest)
+// helm reuses the stored values when an upgrade is given none (action.Upgrade.reuseValues, with
+// neither ReuseValues, ResetValues nor ResetThenReuseValues set), so an empty request asks for the
+// stored values. Values are compared as JSON, so a number typed int in the request equals the
+// float64 helm decoded from storage.
+func desiredStateChange(stored *helmconfig.Release, requestedChart string, requested map[string]interface{}) (string, error) {
+	if stored.ChartVersion != requestedChart {
+		return fmt.Sprintf("chart version %s -> %s", stored.ChartVersion, requestedChart), nil
+	}
+	if len(requested) == 0 {
+		return "", nil
+	}
+	a, err := canonicalValues(stored.Values)
 	if err != nil {
-		return "", nil, fmt.Errorf("manifest: %w", err)
+		return "", fmt.Errorf("stored values: %w", err)
 	}
-	switch {
-	case stored.ChartVersion != rendered.ChartVersion:
-		return fmt.Sprintf("chart version %s -> %s", stored.ChartVersion, rendered.ChartVersion), keys, nil
-	case len(keys) > 0:
-		return "rendered manifest", keys, nil
-	}
-	hookDiff, err := differingDocuments(hookManifests(stored.Hooks), hookManifests(rendered.Hooks))
+	b, err := canonicalValues(requested)
 	if err != nil {
-		return "", nil, fmt.Errorf("hooks: %w", err)
+		return "", fmt.Errorf("requested values: %w", err)
 	}
-	if len(hookDiff) > 0 {
-		return "rendered hooks", nil, nil
+	if a != b {
+		return "values", nil
 	}
-	return "", nil, nil
+	return "", nil
 }
 
-func hookManifests(hooks []helmconfig.Hook) string {
-	docs := make([]string, 0, len(hooks))
-	for _, h := range hooks {
-		docs = append(docs, h.Manifest)
+// canonicalValues is values as JSON, and an empty or nil map as "{}". encoding/json writes map keys
+// sorted and an integral float64 exactly as the int it equals, so two maps that hold the same
+// values marshal to the same bytes whatever Go types their numbers have.
+func canonicalValues(values map[string]interface{}) (string, error) {
+	if len(values) == 0 {
+		return "{}", nil
 	}
-	return strings.Join(docs, "\n---\n")
+	raw, err := json.Marshal(values)
+	return string(raw), err
 }
 
-// differingDocuments lists the objects two multi-document manifests disagree on, sorted.
-func differingDocuments(a, b string) ([]string, error) {
-	ma, err := canonicalDocuments(a)
-	if err != nil {
-		return nil, err
-	}
-	mb, err := canonicalDocuments(b)
-	if err != nil {
-		return nil, err
-	}
-	var out []string
-	for k, v := range ma {
-		if w, ok := mb[k]; !ok || w != v {
-			out = append(out, k)
-		}
-	}
-	for k := range mb {
-		if _, ok := ma[k]; !ok {
-			out = append(out, k)
-		}
-	}
-	sort.Strings(out)
-	return out, nil
-}
-
-// canonicalDocuments maps each object in manifest to its canonical JSON, without the volatile trace
-// annotations (and without an annotations map they leave empty).
-func canonicalDocuments(manifest string) (map[string]string, error) {
-	out := map[string]string{}
-	for _, doc := range releaseutil.SplitManifests(manifest) {
-		if strings.TrimSpace(doc) == "" {
+// countConfirmedWrites sets the result's counts and changed-object names from its write verdicts,
+// as the merge path does from its own: created, deleted, and patched (a spec or metadata change,
+// or a write whose effect could not be compared). Failed writes and kept deletions are not writes.
+func countConfirmedWrites(r *helmconfig.ReconcileResult) {
+	names := newChangedObjectSet(maxChangedObjects)
+	for _, v := range r.Objects {
+		key := schema.GroupVersion{Group: v.Group, Version: v.Version}.String() + "/" + v.Kind + "/" + v.Namespace + "/" + v.Name
+		switch v.Change {
+		case helmconfig.ChangeCreated:
+			r.Created++
+		case helmconfig.ChangeDeleted:
+			r.Deleted++
+		case helmconfig.ChangeSpec, helmconfig.ChangeMetadataOnly, helmconfig.ChangeCompareFailed:
+			r.PatchedUpdated++
+		default:
 			continue
 		}
-		var obj map[string]interface{}
-		if err := yaml.Unmarshal([]byte(doc), &obj); err != nil {
-			return nil, err
-		}
-		if obj == nil {
-			continue
-		}
-		md, _ := obj["metadata"].(map[string]interface{})
-		if ann, ok := md["annotations"].(map[string]interface{}); ok {
-			for _, k := range volatileTraceAnnotations {
-				delete(ann, k)
-			}
-			if len(ann) == 0 {
-				delete(md, "annotations")
-			}
-		}
-		raw, err := json.Marshal(obj)
-		if err != nil {
-			return nil, err
-		}
-		str := func(v interface{}) string { s, _ := v.(string); return s }
-		key := str(obj["apiVersion"]) + "/" + str(obj["kind"]) + "/" + str(md["namespace"]) + "/" + str(md["name"])
-		out[key] = string(raw)
+		names.add(key)
 	}
-	return out, nil
+	r.ChangedObjects, r.ChangedObjectsOmitted = names.names, names.omitted
 }
 
 // infoKey uniquely identifies a resource.Info across the current/target lists.
