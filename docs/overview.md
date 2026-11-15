@@ -132,8 +132,10 @@ as the charts are idempotent (e.g. `lookup`-guarded random passwords).
 
 `crdgen.Generate` transpiles a chart's `values.schema.json` directly into a
 structural OpenAPI-v3 CRD ([crdgen/transpile.go](../crdgen/transpile.go)): `$ref`s
-inlined by JSON pointer, cycles broken with `x-kubernetes-preserve-unknown-fields`,
-tractable validation keywords carried over (some as generated CEL), and the output
+inlined by JSON pointer, cycles broken with `x-kubernetes-preserve-unknown-fields`, a node
+crdgen cannot type (`{}`, an array's `items: {}`, a divergent union, an `allOf` with no object
+member) emitted as any value (preserve-unknown with no `type`, never `type: object`; only the spec
+and status roots stay objects), tractable validation keywords carried over (some as generated CEL), and the output
 gated in-process on the `k8s.io/apiextensions-apiserver` validation library — so a
 generated CRD is structurally valid by construction. Design record:
 [crdgen/docs/ref-resolution-redesign.md](../crdgen/docs/ref-resolution-redesign.md).
