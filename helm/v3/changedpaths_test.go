@@ -26,7 +26,7 @@ func TestChangedPaths(t *testing.T) {
 		after := base()
 		after["metadata"].(map[string]interface{})["annotations"].(map[string]interface{})["checksum/config"] = "bbb"
 		after["spec"].(map[string]interface{})["replicas"] = int64(3)
-		paths, omitted, err := changedPaths(uobj(base()), uobj(after), 5)
+		paths, omitted, err := changedPaths(uobj(base()), uobj(after), nil, 5)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -39,7 +39,7 @@ func TestChangedPaths(t *testing.T) {
 		after := base()
 		delete(after["spec"].(map[string]interface{}), "strategy")
 		after["spec"].(map[string]interface{})["args"] = []interface{}{"a"}
-		paths, _, err := changedPaths(uobj(base()), uobj(after), 5)
+		paths, _, err := changedPaths(uobj(base()), uobj(after), nil, 5)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -52,7 +52,7 @@ func TestChangedPaths(t *testing.T) {
 		after["metadata"].(map[string]interface{})["resourceVersion"] = "2"
 		after["metadata"].(map[string]interface{})["managedFields"] = []interface{}{map[string]interface{}{"manager": "x"}}
 		after["status"] = map[string]interface{}{"readyReplicas": int64(1)}
-		paths, omitted, err := changedPaths(uobj(base()), uobj(after), 5)
+		paths, omitted, err := changedPaths(uobj(base()), uobj(after), nil, 5)
 		if err != nil || len(paths) != 0 || omitted != 0 {
 			t.Errorf("paths=%v omitted=%d err=%v, want none: semanticallyChanged would call this unchanged", paths, omitted, err)
 		}
@@ -63,7 +63,7 @@ func TestChangedPaths(t *testing.T) {
 		for _, k := range []string{"a", "b", "c", "d", "e", "f", "g"} {
 			ann[k] = "v"
 		}
-		paths, omitted, err := changedPaths(uobj(base()), uobj(after), 5)
+		paths, omitted, err := changedPaths(uobj(base()), uobj(after), nil, 5)
 		if err != nil || len(paths) != 5 || omitted != 2 {
 			t.Errorf("paths=%d omitted=%d err=%v, want 5 and 2", len(paths), omitted, err)
 		}
@@ -81,7 +81,7 @@ func TestChangedPathsNeverCarriesAValue(t *testing.T) {
 	after := uobj(map[string]interface{}{"apiVersion": "v1", "kind": "Secret",
 		"metadata": map[string]interface{}{"name": "s", "namespace": "ns"},
 		"data":     map[string]interface{}{"token": secretValue}})
-	paths, _, err := changedPaths(before, after, 5)
+	paths, _, err := changedPaths(before, after, nil, 5)
 	if err != nil {
 		t.Fatal(err)
 	}
