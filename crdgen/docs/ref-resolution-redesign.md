@@ -32,6 +32,13 @@ This eliminates the entire failure class **by construction**, is deterministic, 
 (true unions, `not`, cross-field `dependentRequired`) degrade **explicitly and locally** to an
 open object — never by silently aliasing to a foreign type.
 
+> **plumbing#186 (2026-11-15).** A node with no type at all (`{}`, `items: {}`) is not an
+> inexpressible construct: JSON Schema's "any value" maps exactly to
+> `x-kubernetes-preserve-unknown-fields: true` with **no** `type`. Degrading it to an open object
+> (`type: object`) refused every string, number, boolean and list. The same applies to unresolved
+> `$ref`s, cycle breaks, divergent unions and an `allOf` with no object member. Only the spec and
+> status roots are still forced to objects.
+
 ---
 
 ## 2. Evidence (loft/vcluster 0.36, full pipeline)

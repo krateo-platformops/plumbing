@@ -337,7 +337,7 @@ func (t *transpiler) handleUnsupported(out *apiextensionsv1.JSONSchemaProps, nod
 	if len(node.PrefixItems) > 0 {
 		t.warn(path, KindConstraintDropped, "prefixItems (tuple positional typing) not representable -> items accepted as-is")
 		if out.Type == schemas.TypeNameArray && out.Items == nil {
-			out.Items = &apiextensionsv1.JSONSchemaPropsOrArray{Schema: openObject()}
+			out.Items = &apiextensionsv1.JSONSchemaPropsOrArray{Schema: anyValue()}
 		}
 	}
 	if node.UnevaluatedProperties != nil {

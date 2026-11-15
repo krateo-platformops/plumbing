@@ -9,6 +9,14 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-15 — crdgen: an untyped schema node is any value, not an object** (plumbing#186):
+  `{}`, an array's `items: {}`, an unresolved `$ref`, a cycle break, a divergent union and an
+  `allOf` with no object member came out as `{type: object, x-kubernetes-preserve-unknown-fields:
+  true}`, so the apiserver refused every string, number, boolean and list there ("must be of type
+  object") and nothing warned. Live case: trust-manager 0.20.0's `app.targetNamespaces`
+  (`items: {}`), refused when installer derived it as `["krateo-system"]`. Now emitted as
+  preserve-unknown with no `type`; the spec and status roots stay objects. A pure loosening: every
+  value admitted before is still admitted. CRDs regenerated from affected charts change.
 - **2026-11-13 — `UpgradeConfig.BeforeRevision`: Reconcile tells the caller just before it writes a
   revision** (core-provider#461): called immediately before step 7's real Upgrade, never on a
   reconcile that writes none, so a caller can record an operation that may leave the release locked

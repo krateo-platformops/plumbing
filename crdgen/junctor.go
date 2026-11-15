@@ -21,9 +21,10 @@ import (
 // generated CRD was refused, and the old version kept serving — silently, through every later bump.
 //
 // crdgen hit this because union members are transpiled by the normal path: a constraint-only member
-// (say `{"required": ["a"]}`) has no usable type, so transpile falls through to openObject() and
-// stamps `type: object` + `x-kubernetes-preserve-unknown-fields: true` onto it — precisely the two
-// forbidden fields, once per member.
+// (say `{"required": ["a"]}`) has no usable type, so transpile falls through to its untyped fallback
+// and stamps `type: object` + `x-kubernetes-preserve-unknown-fields: true` onto it — precisely the two
+// forbidden fields, once per member. (Since plumbing#186 that fallback is anyValue(), which still
+// carries the forbidden preserve-unknown marker.)
 //
 // sanitizeJunctorMember strips every field the apiserver forbids inside a junctor, recursively
 // (members may nest properties, items and further junctors, and the rule applies at every depth).
@@ -75,8 +76,8 @@ func sanitizeJunctorMember(s *apiextensionsv1.JSONSchemaProps) {
 // schema permits there.
 //
 // It deliberately does not reuse the main transpile path. That path is structure-first: a member with
-// no `type` — which every constraint-only member is, by definition — falls through to openObject()
-// and comes back as `{type: object, x-kubernetes-preserve-unknown-fields: true}` with its actual
+// no `type` — which every constraint-only member is, by definition — falls through to anyValue()
+// and comes back as `{x-kubernetes-preserve-unknown-fields: true}` with its actual
 // constraint DISCARDED. Stripping the forbidden fields afterwards would leave `{}`, so the union
 // would have to be dropped and `anyOf: [{required:[a]},{required:[b]}]` — a perfectly legal
 // structural schema — would be silently lost. Building the member directly keeps the constraint and
@@ -97,7 +98,7 @@ func junctorMemberSchema(node *schemas.Type) *apiextensionsv1.JSONSchemaProps {
 }
 
 // isVacuousJunctorMember reports whether a sanitized member still constrains anything. Stripping the
-// structural fields can leave a member empty (the openObject() degradation above sanitizes to `{}`),
+// structural fields can leave a member empty (the anyValue() degradation above sanitizes to `{}`),
 // and an empty member matches EVERYTHING — so an anyOf containing one is satisfied by any value at
 // all. Emitting that would be a validation no-op dressed up as a constraint; the caller drops the
 // junctor instead and warns, which is honest about what was lost.
