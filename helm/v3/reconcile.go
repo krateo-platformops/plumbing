@@ -167,6 +167,44 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 		return nil, fmt.Errorf("reconcile: building target resource list: %w", err)
 	}
 
+	// 3.5. core-provider#518: a CHANGED desired state goes through helm upgrade, never the merge. The
+	// merge below applies whatever the render says, and the real upgrade that runs hooks came only
+	// after it (step 7), so every new chart version or value reached the release's objects BEFORE
+	// its pre-upgrade hooks. On GKE a Keystone credential's pre-upgrade Job ran three minutes after
+	// the workloads reading it had restarted on the new config, and locked the service account out
+	// (openstack-as-a-service, nova 0.3.62 -> 0.3.64, 2026-11-15). helm upgrade orders it: pre-upgrade
+	// hooks, then the objects, then post-upgrade hooks. Its three-way patch reads live state too, so
+	// drift on the fields it writes heals in the same pass, and it creates children deleted
+	// out-of-band. The merge stays for what it is for: drift against the DEPLOYED desired state.
+	change, changedKeys, derr := desiredStateChange(currentManifest, stored, rendered.Release)
+	if derr != nil {
+		return nil, fmt.Errorf("reconcile: comparing the render with the stored release: %w", derr)
+	}
+	if change != "" {
+		if cfg.BeforeRevision != nil {
+			cfg.BeforeRevision(ctx)
+		}
+		op, err := c.Upgrade(ctx, releaseName, chartRef, cfg)
+		// The same diagnostics the merge path reports: which children the change touches (from the
+		// render diff) and which the stored manifest records at an older apiVersion.
+		names := newChangedObjectSet(maxChangedObjects)
+		for _, k := range changedKeys {
+			names.add(k)
+		}
+		staleSet := cappedSet(staleManifestVersions(current, target), maxChangedObjects)
+		res := &helmconfig.ReconcileResult{
+			Changed: true, DesiredStateChange: change, ObjectsComplete: true,
+			ChangedObjects: names.names, ChangedObjectsOmitted: names.omitted,
+			StaleManifestVersions: staleSet.names, StaleManifestVersionsOmitted: staleSet.omitted,
+		}
+		foldOperation(res, op)
+		if err != nil {
+			return res, fmt.Errorf("reconcile: upgrading to a changed desired state (%s): %w", change, err)
+		}
+		res.Release = op.Release
+		return res, nil
+	}
+
 	// 4. GET each target object's live state (for the change-detection diff in step 5) and
 	//    capture its current trace-context annotations (for the copy in step 4.5).
 	//    Missing (IsNotFound) => absent, will be created by the merge.
@@ -728,6 +766,103 @@ func ownedJSON(obj runtime.Object, owned fieldMask) ([]byte, error) {
 		return nil, err
 	}
 	return json.Marshal(project(m, owned))
+}
+
+// desiredStateChange names what differs between the stored release and the render, or "" when the
+// render is the deployed desired state: the chart version, the manifest, or the hooks. The manifest
+// is the stored one as Reconcile will use it (after step 1.5's repair). Documents are compared as
+// objects, keyed by apiVersion, kind, namespace and name, with the per-reconcile trace annotations
+// removed: they are re-stamped on every render and are not desired state.
+//
+// keys are the release objects whose documents differ (added, removed or changed), sorted, in
+// infoKey's form; hooks are not release objects and are not listed.
+func desiredStateChange(storedManifest string, stored, rendered *helmconfig.Release) (reason string, keys []string, err error) {
+	keys, err = differingDocuments(storedManifest, rendered.Manifest)
+	if err != nil {
+		return "", nil, fmt.Errorf("manifest: %w", err)
+	}
+	switch {
+	case stored.ChartVersion != rendered.ChartVersion:
+		return fmt.Sprintf("chart version %s -> %s", stored.ChartVersion, rendered.ChartVersion), keys, nil
+	case len(keys) > 0:
+		return "rendered manifest", keys, nil
+	}
+	hookDiff, err := differingDocuments(hookManifests(stored.Hooks), hookManifests(rendered.Hooks))
+	if err != nil {
+		return "", nil, fmt.Errorf("hooks: %w", err)
+	}
+	if len(hookDiff) > 0 {
+		return "rendered hooks", nil, nil
+	}
+	return "", nil, nil
+}
+
+func hookManifests(hooks []helmconfig.Hook) string {
+	docs := make([]string, 0, len(hooks))
+	for _, h := range hooks {
+		docs = append(docs, h.Manifest)
+	}
+	return strings.Join(docs, "\n---\n")
+}
+
+// differingDocuments lists the objects two multi-document manifests disagree on, sorted.
+func differingDocuments(a, b string) ([]string, error) {
+	ma, err := canonicalDocuments(a)
+	if err != nil {
+		return nil, err
+	}
+	mb, err := canonicalDocuments(b)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for k, v := range ma {
+		if w, ok := mb[k]; !ok || w != v {
+			out = append(out, k)
+		}
+	}
+	for k := range mb {
+		if _, ok := ma[k]; !ok {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// canonicalDocuments maps each object in manifest to its canonical JSON, without the volatile trace
+// annotations (and without an annotations map they leave empty).
+func canonicalDocuments(manifest string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, doc := range releaseutil.SplitManifests(manifest) {
+		if strings.TrimSpace(doc) == "" {
+			continue
+		}
+		var obj map[string]interface{}
+		if err := yaml.Unmarshal([]byte(doc), &obj); err != nil {
+			return nil, err
+		}
+		if obj == nil {
+			continue
+		}
+		md, _ := obj["metadata"].(map[string]interface{})
+		if ann, ok := md["annotations"].(map[string]interface{}); ok {
+			for _, k := range volatileTraceAnnotations {
+				delete(ann, k)
+			}
+			if len(ann) == 0 {
+				delete(md, "annotations")
+			}
+		}
+		raw, err := json.Marshal(obj)
+		if err != nil {
+			return nil, err
+		}
+		str := func(v interface{}) string { s, _ := v.(string); return s }
+		key := str(obj["apiVersion"]) + "/" + str(obj["kind"]) + "/" + str(md["namespace"]) + "/" + str(md["name"])
+		out[key] = string(raw)
+	}
+	return out, nil
 }
 
 // infoKey uniquely identifies a resource.Info across the current/target lists.
