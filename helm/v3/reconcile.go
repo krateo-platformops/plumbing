@@ -352,7 +352,11 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 			return res, fmt.Errorf("reconcile: %w: %s", helmconfig.ErrJobTemplateChanged, strings.Join(jobs.templateChanged, ", "))
 		}
 		if cfg.BeforeRevision != nil {
-			cfg.BeforeRevision(ctx)
+			if berr := cfg.BeforeRevision(ctx); berr != nil {
+				// core-provider#526: nothing written yet, and nothing will be.
+				res.Changed, res.Release = false, stored
+				return res, fmt.Errorf("reconcile: not upgrading, the operation could not be recorded: %w", berr)
+			}
 		}
 		op, err := c.Upgrade(ctx, releaseName, chartRef, cfg)
 		foldOperation(res, op)
@@ -576,7 +580,10 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 	// core-provider#461: the caller learns here, and only here, that a revision is about to be
 	// written, so it can record the operation before helm takes the pending-upgrade lock.
 	if cfg.BeforeRevision != nil {
-		cfg.BeforeRevision(ctx)
+		if berr := cfg.BeforeRevision(ctx); berr != nil {
+			// core-provider#526: the merge healed drift; the revision is not written unrecorded.
+			return result, fmt.Errorf("reconcile: not writing the revision, the operation could not be recorded: %w", berr)
+		}
 	}
 	op, err := c.Upgrade(ctx, releaseName, chartRef, cfg)
 	// The upgrade's own writes join the merge's, on both outcomes (plumbing#139). After a converged

@@ -396,16 +396,20 @@ type UpgradeConfig struct {
 	// Upgrade-Only Fields
 	Install    bool
 	MaxHistory int
-	// BeforeRevision, when set, is called by Reconcile immediately before it writes a helm revision
-	// (step 7's real Upgrade), and never on a reconcile that writes none. It lets a caller record that
-	// an operation is starting, which can leave the release locked pending-upgrade if the process
-	// dies mid-flight, without writing anything on the steady-state reconciles that change nothing
-	// (core-provider#461). It cannot abort the reconcile, deliberately: step 5's merge has already
-	// converged the live objects by then, so skipping the revision would leave a release whose
-	// stored manifest and values never catch up (the next reconcile sees nothing to change). A
-	// recording the caller fails to make must be best-effort on the caller's side.
-	// Upgrade itself does not call it: a caller of Upgrade already knows it is about to write.
-	BeforeRevision func(ctx context.Context) `json:"-"`
+	// BeforeRevision, when set, is called by Reconcile immediately before it writes a helm revision,
+	// and never on a reconcile that writes none. It lets a caller record that an operation is starting,
+	// which can leave the release locked pending-upgrade if the process dies mid-flight
+	// (core-provider#461), without writing anything on the steady-state reconciles that change nothing.
+	//
+	// An error ABORTS the reconcile before the revision, returned wrapped (core-provider#526). A helm
+	// operation must not start unrecorded: on krateo-057 a draining controller's record write conflicted
+	// with the new pod's status write, the upgrade ran anyway, the drain cancelled it, and the release
+	// sat pending for the full grace with nothing naming who had started it. Aborting is safe on both
+	// paths: a changed desired state (#182) calls it before ANY write, and on the merge path the merge
+	// has only healed drift against the deployed state, so the skipped revision is bookkeeping the next
+	// pass re-derives. Upgrade itself does not call it: a caller of Upgrade already knows it is about
+	// to write.
+	BeforeRevision func(ctx context.Context) error `json:"-"`
 	// HoldDesiredStateChange makes Reconcile apply NOTHING when the request changes the desired state
 	// (a different chart version or values from the stored release's): the result reports the change
 	// in DesiredStateChange, with DesiredStateHeld set, and no object or revision is written. A
