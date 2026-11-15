@@ -336,6 +336,12 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 			StaleManifestVersions: stale.names, StaleManifestVersionsOmitted: stale.omitted,
 			ChangedJobTemplates: jobs.templateChanged,
 		}
+		// core-provider#519: the caller must not move the release forward itself. Nothing is applied,
+		// not even by the merge below, which would apply the request's render.
+		if cfg.HoldDesiredStateChange {
+			res.Changed, res.DesiredStateHeld, res.Release = false, true, stored
+			return res, nil
+		}
 		// core-provider#403: helm upgrade can never apply a changed pod template to a live Job. The
 		// change is reported and NOTHING is applied, not even the other children's part of it: that
 		// would put new workloads in place without their pre-upgrade hooks ever running, the hazard

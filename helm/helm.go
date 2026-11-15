@@ -105,11 +105,14 @@ type ReconcileResult struct {
 	// pre-upgrade hooks ran before the release's objects changed (core-provider#518). "" for a pass
 	// that only healed drift, or changed nothing.
 	DesiredStateChange string
-	Changed            bool
-	Created            int
-	Deleted            int
-	PatchedUpdated     int
-	Release            *Release
+	// DesiredStateHeld is set when UpgradeConfig.HoldDesiredStateChange kept Reconcile from applying
+	// the change DesiredStateChange names: nothing was written, and the release is as stored.
+	DesiredStateHeld bool
+	Changed          bool
+	Created          int
+	Deleted          int
+	PatchedUpdated   int
+	Release          *Release
 	// ChangedObjects identifies the children this reconcile created, deleted or patched, as
 	// "group/version/Kind/namespace/name". The counts above say THAT something drifted;
 	// core-provider#175's open half is that nothing said WHICH child — so an operator seeing
@@ -403,6 +406,19 @@ type UpgradeConfig struct {
 	// recording the caller fails to make must be best-effort on the caller's side.
 	// Upgrade itself does not call it: a caller of Upgrade already knows it is about to write.
 	BeforeRevision func(ctx context.Context) `json:"-"`
+	// HoldDesiredStateChange makes Reconcile apply NOTHING when the request changes the desired state
+	// (a different chart version or values from the stored release's): the result reports the change
+	// in DesiredStateChange, with DesiredStateHeld set, and no object or revision is written. A
+	// request equal to the stored release still heals drift by the merge, as without it.
+	//
+	// For a caller that must not move the release forward itself: core-provider#519, a composition
+	// controller whose own chart version is older than its CompositionDefinition's current one is
+	// retiring, and must leave the change to the current version's controller. Without the hold it
+	// upgraded the release with its OLD chart and the NEW values, a combination nobody tests, and was
+	// then killed mid-operation (openstack-as-a-service, nova 0.3.62 -> 0.3.64; krateo-057's
+	// installer-platform the same day). Falling through to the merge would not hold anything: the
+	// merge applies the request's render.
+	HoldDesiredStateChange bool `json:"-"`
 	// ContentAnnotations are the annotation keys the Objects verdicts (Reconcile's, and Upgrade's
 	// OperationResult) count as content (plumbing#124), on every kind: a write that changes only one
 	// of them is specChanged, not metadataOnly. They are the annotations authorization reads, so
