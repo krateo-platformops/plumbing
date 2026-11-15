@@ -331,7 +331,7 @@ func (t *transpiler) transpile(node *schemas.Type, path string, stack map[string
 		if node.Items != nil {
 			out.Items = &apiextensionsv1.JSONSchemaPropsOrArray{Schema: t.transpile(node.Items, path+"[]", stack)}
 		} else {
-			out.Items = &apiextensionsv1.JSONSchemaPropsOrArray{Schema: openObject()}
+			out.Items = &apiextensionsv1.JSONSchemaPropsOrArray{Schema: anyValue()}
 		}
 		copyArrayValidation(out, node)
 
@@ -349,9 +349,9 @@ func (t *transpiler) transpile(node *schemas.Type, path string, stack map[string
 			}
 		}
 		if node.Not != nil {
-			t.warn(path, KindConstraintDropped, "not without a typed node -> open object (constraint dropped)")
+			t.warn(path, KindConstraintDropped, "not without a typed node -> any value (constraint dropped)")
 		}
-		return openObject()
+		return anyValue()
 	}
 
 	// Common keywords valid on any node.
@@ -756,6 +756,16 @@ func primaryType(tl schemas.TypeList) (string, bool) {
 
 func openObject() *apiextensionsv1.JSONSchemaProps {
 	return &apiextensionsv1.JSONSchemaProps{Type: "object", XPreserveUnknownFields: boolPtr(true)}
+}
+
+// anyValue is JSON Schema's `{}`: a node that declares no type accepts ANY value: string, number,
+// boolean, list or object. A structural schema may omit `type` on exactly such a node, provided it
+// carries x-kubernetes-preserve-unknown-fields. openObject() is NOT a substitute: its `type: object`
+// makes the apiserver refuse every non-object value ("must be of type object"), which is what an
+// untyped node and an array without `items` used to get (plumbing#186: trust-manager's
+// `targetNamespaces: {type: array, items: {}}` refused a list of namespace names).
+func anyValue() *apiextensionsv1.JSONSchemaProps {
+	return &apiextensionsv1.JSONSchemaProps{XPreserveUnknownFields: boolPtr(true)}
 }
 
 func boolPtr(b bool) *bool { return &b }
