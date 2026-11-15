@@ -314,6 +314,14 @@ const (
 // changing it (a hook with before-hook-creation, or a versioned Job name) or the Job is removed.
 var ErrJobTemplateChanged = errors.New("the chart changed the pod template of a live Job, which is immutable")
 
+// ErrOperationInProgress is returned (wrapped) by Upgrade when helm refused to start because another
+// operation holds the release: its latest revision is pending-install, pending-upgrade or
+// pending-rollback, or another upgrade created the next revision first. Nothing was applied and no
+// revision was written by this call. A caller that recorded the operation as its own before calling
+// must not treat it as started (core-provider#520: a refused upgrade erased the record of the
+// process that held the lock, so its orphaned operation waited out the full grace).
+var ErrOperationInProgress = errors.New("another helm operation is in progress on this release")
+
 // OperationResult is what an Install, Upgrade or Uninstall DID: the release it left, and one
 // verdict per child it created, changed, deleted, kept or failed on (plumbing#135). It has
 // ReconcileResult's shape, so a caller that writes one audit record per child reads every write
