@@ -72,8 +72,8 @@ func TestEnvtest_UntypedNodeFixUpgradesAnEstablishedCRD(t *testing.T) {
 	cr := func(name string, items []any) *unstructured.Unstructured {
 		return &unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": "composition.krateo.io/v1", "kind": "Probe",
-			"metadata":   map[string]any{"name": name, "namespace": "default"},
-			"spec":       map[string]any{"app": map[string]any{"targetNamespaces": items}, "anything": map[string]any{"k": "v"}},
+			"metadata": map[string]any{"name": name, "namespace": "default"},
+			"spec":     map[string]any{"app": map[string]any{"targetNamespaces": items}, "anything": map[string]any{"k": "v"}},
 		}}
 	}
 	// Wait for the pre-fix CRD to serve, then store an object it admits.
