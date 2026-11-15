@@ -30,8 +30,10 @@ type verdictInputs struct {
 	target, created, updated, deleted, current kube.ResourceList
 	live                                       map[string]runtime.Object
 	absent                                     map[string]bool
-	kept, notDone, unknown                     []string
-	force                                      bool
+	// owned is each target's fields helm can write (ownedFieldMasks); nil compares every field.
+	owned                  map[string]fieldMask
+	kept, notDone, unknown []string
+	force                  bool
 	// contentKeys are the caller's UpgradeConfig.ContentAnnotations and ContentLabels.
 	contentKeys content.Keys
 }
@@ -95,7 +97,7 @@ func objectVerdicts(in verdictInputs) (verdicts []helmconfig.ObjectVerdict, comp
 			}
 			continue
 		}
-		changed, err := semanticallyChanged(before, info.Object)
+		changed, err := semanticallyChanged(before, info.Object, in.owned[key])
 		if err != nil {
 			out = append(out, verdictOf(info, info.Object, updateVerb, helmconfig.ChangeCompareFailed))
 			continue

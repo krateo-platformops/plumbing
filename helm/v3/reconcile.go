@@ -335,6 +335,11 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 	// pass, so it reflects the lists as actually handed over rather than as first built.
 	intended := intendedDeletions(current, target, maxChangedObjects)
 
+	// The fields helm's merge can write on each child: those the stored manifest or the render sets.
+	// Captured here because the merge below refreshes every target Info's Object in place to its
+	// post-merge server state, losing the render.
+	owned := ownedFieldMasks(current, target)
+
 	tw, ok := kc.(kube.InterfaceThreeWayMerge)
 	var res *kube.Result
 	if ok {
@@ -412,7 +417,7 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 		if !writeConfirmed(info) {
 			continue // a failed or never-attempted write changed nothing; its verdict says which
 		}
-		changedChild, cerr := semanticallyChanged(liveObj[key], info.Object)
+		changedChild, cerr := semanticallyChanged(liveObj[key], info.Object, owned[key])
 		if cerr != nil {
 			// Undetermined -> fail safe by treating it as a change.
 			patched++
@@ -425,7 +430,7 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 			if changedObjects.listed(key) {
 				// Which fields (plumbing#112). Computed only for the listed children, so the cost is
 				// bounded by the same cap as the identities; an error leaves the child without paths.
-				if paths, omitted, perr := changedPaths(liveObj[key], info.Object, maxChangedPaths); perr == nil && len(paths) > 0 {
+				if paths, omitted, perr := changedPaths(liveObj[key], info.Object, owned[key], maxChangedPaths); perr == nil && len(paths) > 0 {
 					changedPathsByChild[key] = paths
 					if omitted > 0 {
 						changedPathsOmitted[key] = omitted
@@ -472,7 +477,7 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 	// before/after objects and the same deletion reads as the counts above.
 	result.Objects, result.ObjectsComplete, result.ObjectsNotAttempted = objectVerdicts(verdictInputs{
 		target: target, created: res.Created, updated: res.Updated, deleted: res.Deleted, current: current,
-		live: liveObj, absent: absent, kept: keptKeys, notDone: notDoneKeys, unknown: unknownKeys,
+		live: liveObj, absent: absent, owned: owned, kept: keptKeys, notDone: notDoneKeys, unknown: unknownKeys,
 		force: cfg.Force, contentKeys: contentKeysOf(cfg),
 	})
 
@@ -555,12 +560,21 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 // or re-forced app.kubernetes.io/managed-by leaves before == after here (both already carried the
 // server value), so it reads as no-change even though the resourceVersion bumped; a real create or
 // drift-heal leaves them different.
-func semanticallyChanged(before, after runtime.Object) (bool, error) {
-	beforeJSON, err := strippedJSON(before)
+//
+// Only the fields in owned are compared: those the stored manifest or the render sets, the only
+// fields helm's three-way merge writes. Any other field that moved between the two reads was moved
+// by another writer, not by this merge, and counting it wrote a helm revision for nothing. On
+// krateo-057 the other writer was each child composition's own controller recording
+// krateo.io/traceparent-continued as it joined the parent's fresh trace. Every revision re-stamped
+// the children, so they joined again, and the parent wrote a revision every pass after a roll, for
+// as long as one marker landed inside the window (installer-platform, 2026-11-15, ten in a row).
+// A nil owned compares everything, as before.
+func semanticallyChanged(before, after runtime.Object, owned fieldMask) (bool, error) {
+	beforeJSON, err := ownedJSON(before, owned)
 	if err != nil {
 		return false, fmt.Errorf("strip before: %w", err)
 	}
-	afterJSON, err := strippedJSON(after)
+	afterJSON, err := ownedJSON(after, owned)
 	if err != nil {
 		return false, fmt.Errorf("strip after: %w", err)
 	}
@@ -604,6 +618,116 @@ func strippedJSON(obj runtime.Object) ([]byte, error) {
 		}
 	}
 	return json.Marshal(m)
+}
+
+// fieldMask is the shape of the fields a manifest sets: a key maps to a nested fieldMask for an object
+// value, or to nil for any other value (a scalar or a list), which is compared whole.
+type fieldMask map[string]fieldMask
+
+// maskOf is obj's field shape.
+func maskOf(obj runtime.Object) (fieldMask, error) {
+	raw, err := json.Marshal(obj)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+	return shapeOf(m), nil
+}
+
+func shapeOf(m map[string]interface{}) fieldMask {
+	out := make(fieldMask, len(m))
+	for k, v := range m {
+		if sub, ok := v.(map[string]interface{}); ok {
+			out[k] = shapeOf(sub)
+			continue
+		}
+		out[k] = nil
+	}
+	return out
+}
+
+// union is the fields either mask sets. A key that is a whole value in either is a whole value.
+func union(a, b fieldMask) fieldMask {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	out := make(fieldMask, len(a)+len(b))
+	for k, av := range a {
+		out[k] = av
+	}
+	for k, bv := range b {
+		av, inA := out[k]
+		switch {
+		case !inA:
+			out[k] = bv
+		case av == nil || bv == nil:
+			out[k] = nil
+		default:
+			out[k] = union(av, bv)
+		}
+	}
+	return out
+}
+
+// project keeps only the fields of m that mask names.
+func project(m map[string]interface{}, mask fieldMask) map[string]interface{} {
+	out := make(map[string]interface{}, len(mask))
+	for k, sub := range mask {
+		v, ok := m[k]
+		if !ok {
+			continue
+		}
+		if vm, isMap := v.(map[string]interface{}); isMap && sub != nil {
+			out[k] = project(vm, sub)
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
+// ownedFieldMasks maps each target child to the fields helm's merge can write on it: the union of
+// what its stored manifest (current) and its render (target) set. A child absent from current (new
+// or adopted) is the render's alone.
+func ownedFieldMasks(current, target kube.ResourceList) map[string]fieldMask {
+	stored := make(map[string]runtime.Object, len(current))
+	for _, info := range current {
+		stored[infoKey(info)] = info.Object
+	}
+	out := make(map[string]fieldMask, len(target))
+	for _, info := range target {
+		key := infoKey(info)
+		tm, err := maskOf(info.Object)
+		if err != nil {
+			continue // no mask: compared whole, failing safe toward a change
+		}
+		if obj, ok := stored[key]; ok {
+			if cm, err := maskOf(obj); err == nil {
+				tm = union(cm, tm)
+			}
+		}
+		out[key] = tm
+	}
+	return out
+}
+
+// ownedJSON is strippedJSON restricted to the fields in owned; a nil owned keeps them all.
+func ownedJSON(obj runtime.Object, owned fieldMask) ([]byte, error) {
+	raw, err := strippedJSON(obj)
+	if err != nil || owned == nil {
+		return raw, err
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+	return json.Marshal(project(m, owned))
 }
 
 // infoKey uniquely identifies a resource.Info across the current/target lists.
@@ -1104,19 +1228,20 @@ func staleManifestVersions(current, target kube.ResourceList) []string {
 const maxChangedPaths = 5
 
 // changedPaths returns the JSON paths whose content differs between before and after, under the
-// same stripping semanticallyChanged applies (volatile and server-owned metadata, status), sorted,
+// same stripping and owned-field mask semanticallyChanged applies (volatile and server-owned
+// metadata, status, fields no manifest sets), sorted,
 // at most limit of them plus how many were omitted. PATHS ONLY: no value is ever returned, so a
 // Secret's data or a token cannot reach a log line through this.
 //
 // It reads the JSON merge patch from before to after: a leaf of the patch is a changed scalar, a
 // replaced array, a removed key (null) or an added subtree. A key containing "." or "/" (annotation
 // and label keys) is written in brackets so the path stays unambiguous: metadata.annotations[a/b].
-func changedPaths(before, after runtime.Object, limit int) ([]string, int, error) {
-	beforeJSON, err := strippedJSON(before)
+func changedPaths(before, after runtime.Object, owned fieldMask, limit int) ([]string, int, error) {
+	beforeJSON, err := ownedJSON(before, owned)
 	if err != nil {
 		return nil, 0, fmt.Errorf("strip before: %w", err)
 	}
-	afterJSON, err := strippedJSON(after)
+	afterJSON, err := ownedJSON(after, owned)
 	if err != nil {
 		return nil, 0, fmt.Errorf("strip after: %w", err)
 	}

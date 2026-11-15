@@ -45,7 +45,7 @@ func operationVerdicts(writes []kubeWrite, contentKeys content.Keys, get func(*r
 			kept, notDone, unknown := pendingDeletions(w.original, w.target, res.Deleted, get)
 			v, c, na := objectVerdicts(verdictInputs{
 				target: w.target, created: res.Created, updated: res.Updated, deleted: res.Deleted,
-				current: w.original, live: w.live, absent: w.absent,
+				current: w.original, live: w.live, absent: w.absent, owned: w.owned,
 				kept: kept, notDone: notDone, unknown: unknown,
 				force: w.force, contentKeys: contentKeys,
 			})

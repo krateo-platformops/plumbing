@@ -60,6 +60,9 @@ type kubeWrite struct {
 	// infoKey: the "before" the verdict compares against, as Reconcile's step 4 reads it.
 	live   map[string]runtime.Object
 	absent map[string]bool
+	// owned is, for an Update, the fields helm can write on each target (ownedFieldMasks), taken
+	// before the call because the call refreshes target in place.
+	owned  map[string]fieldMask
 	force  bool
 	result *kube.Result
 	err    error
@@ -98,15 +101,17 @@ func (r *kubeRecorder) Create(resources kube.ResourceList) (*kube.Result, error)
 
 func (r *kubeRecorder) Update(original, target kube.ResourceList, force bool) (*kube.Result, error) {
 	live, absent := readLive(target)
+	owned := ownedFieldMasks(original, target)
 	res, err := r.fullKube.Update(original, target, force)
-	r.record(kubeWrite{op: opUpdate, hook: allHooks(target), original: original, target: target, live: live, absent: absent, force: force, result: res, err: err})
+	r.record(kubeWrite{op: opUpdate, hook: allHooks(target), original: original, target: target, live: live, absent: absent, owned: owned, force: force, result: res, err: err})
 	return res, err
 }
 
 func (r *kubeRecorder) UpdateThreeWayMerge(original, target kube.ResourceList, force bool) (*kube.Result, error) {
 	live, absent := readLive(target)
+	owned := ownedFieldMasks(original, target)
 	res, err := r.fullKube.UpdateThreeWayMerge(original, target, force)
-	r.record(kubeWrite{op: opUpdate, hook: allHooks(target), original: original, target: target, live: live, absent: absent, force: force, result: res, err: err})
+	r.record(kubeWrite{op: opUpdate, hook: allHooks(target), original: original, target: target, live: live, absent: absent, owned: owned, force: force, result: res, err: err})
 	return res, err
 }
 
