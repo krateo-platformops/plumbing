@@ -32,6 +32,12 @@ This eliminates the entire failure class **by construction**, is deterministic, 
 (true unions, `not`, cross-field `dependentRequired`) degrade **explicitly and locally** to an
 open object — never by silently aliasing to a foreign type.
 
+> **plumbing#186 (2026-11-15).** A node with no usable type (`{}`, `items: {}`, a divergent
+> `oneOf`/`anyOf`, an `allOf` with no object member) degrades to **any value**:
+> `x-kubernetes-preserve-unknown-fields: true` with no `type`. An open object (`type: object`)
+> refused every string, number, boolean and list the source accepts. Unresolved `$ref`s and cycle
+> breaks stay open objects, with their warnings, and the spec and status roots are always objects.
+
 ---
 
 ## 2. Evidence (loft/vcluster 0.36, full pipeline)

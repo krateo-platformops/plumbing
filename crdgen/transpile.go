@@ -55,10 +55,7 @@ func generateDirect(opts Options) ([]byte, []Warning, error) {
 	tr := &transpiler{refs: map[string]*schemas.Type{}}
 	tr.collectRefs(specSchema)
 
-	specProps := tr.transpile((*schemas.Type)(specSchema.ObjectAsType), "spec", map[string]bool{})
-	if specProps == nil {
-		specProps = openObject()
-	}
+	specProps := rootObject(tr.transpile((*schemas.Type)(specSchema.ObjectAsType), "spec", map[string]bool{}))
 	// Give optional parents a `default: {}` when something beneath them is defaulted, so the
 	// apiserver materializes the parent and the nested defaults actually apply. Runs on spec only:
 	// status is written by controllers, not submitted by users, so there is no omitted-parent
@@ -85,9 +82,7 @@ func generateDirect(opts Options) ([]byte, []Warning, error) {
 		statusProps = st.transpile((*schemas.Type)(statusSchema.ObjectAsType), "status", map[string]bool{})
 		tr.warnings = append(tr.warnings, st.warnings...)
 	}
-	if statusProps == nil {
-		statusProps = openObject()
-	}
+	statusProps = rootObject(statusProps)
 	if opts.Managed {
 		tr.warnings = append(tr.warnings, mergeConditionedStatus(statusProps)...)
 	}
@@ -424,6 +419,10 @@ func (t *transpiler) fillObject(out *apiextensionsv1.JSONSchemaProps, node *sche
 func (t *transpiler) transpileAllOf(node *schemas.Type, path string, stack map[string]bool) *apiextensionsv1.JSONSchemaProps {
 	merged := &apiextensionsv1.JSONSchemaProps{Type: "object", Properties: map[string]apiextensionsv1.JSONSchemaProps{}}
 	reqSet := map[string]bool{}
+	// Whether any member requires an object. Without one the merge has no object structure to hold,
+	// and forcing `type: object` would refuse the strings, numbers and lists the members accept
+	// (plumbing#186), so the result is any value instead.
+	sawObject := false
 
 	absorb := func(n *schemas.Type) {
 		if n == nil {
@@ -437,6 +436,9 @@ func (t *transpiler) transpileAllOf(node *schemas.Type, path string, stack map[s
 			// non-object member in an allOf we can't structurally merge — widen.
 			merged.XPreserveUnknownFields = boolPtr(true)
 			return
+		}
+		if sub.Type == "object" {
+			sawObject = true
 		}
 		for k, v := range sub.Properties {
 			merged.Properties[k] = v
@@ -459,6 +461,14 @@ func (t *transpiler) transpileAllOf(node *schemas.Type, path string, stack map[s
 		absorb(m)
 	}
 
+	if !sawObject && len(merged.Properties) == 0 && len(reqSet) == 0 {
+		out := anyValue()
+		out.Description = merged.Description
+		if node.Description != "" {
+			out.Description = node.Description
+		}
+		return out
+	}
 	if len(merged.Properties) == 0 {
 		merged.Properties = nil
 		if merged.XPreserveUnknownFields == nil {
@@ -537,7 +547,8 @@ func (t *transpiler) attachUnion(out *apiextensionsv1.JSONSchemaProps, node *sch
 
 	t.warn(path, KindStructureLoosened, kind+" of divergent shapes -> degraded to preserve-unknown")
 	if out.Type == "" {
-		out.Type = "object"
+		// Any value, not `type: object`: the members may be strings, numbers or lists, and an object
+		// type would refuse every one of them (plumbing#186).
 		out.XPreserveUnknownFields = boolPtr(true)
 		return true
 	}
@@ -766,6 +777,21 @@ func openObject() *apiextensionsv1.JSONSchemaProps {
 // `targetNamespaces: {type: array, items: {}}` refused a list of namespace names).
 func anyValue() *apiextensionsv1.JSONSchemaProps {
 	return &apiextensionsv1.JSONSchemaProps{XPreserveUnknownFields: boolPtr(true)}
+}
+
+// rootObject keeps the spec and status roots objects. A Helm values root is always a map, so an
+// untyped root narrows nothing by becoming an open object, and parent defaults, conditions and
+// observedGeneration build on that shape. Explicit here because an allOf with no object member, or
+// a divergent union, now comes out as anyValue() and may sit at the root.
+func rootObject(p *apiextensionsv1.JSONSchemaProps) *apiextensionsv1.JSONSchemaProps {
+	if p == nil {
+		return openObject()
+	}
+	if p.Type == "" && !p.XIntOrString {
+		p.Type = "object"
+		p.XPreserveUnknownFields = boolPtr(true)
+	}
+	return p
 }
 
 func boolPtr(b bool) *bool { return &b }
