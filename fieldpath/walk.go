@@ -8,7 +8,9 @@ import (
 //
 // Get is the WALKER beside this package's parser. Ported from oasgen-provider
 // (feat/fieldpath-walker-for-plumbing, a2a8176), where it was staged beside rest-dynamic-controller's
-// GetNestedField and checked against it by a differential test that stays there.
+// GetNestedField. The differential test against GetNestedField lives in rest-dynamic-controller's own
+// package (go/rest-dynamic-controller/internal/tools/pathparsing/differential_test.go, merged in
+// oasgen-provider#544). Set and Remove (write.go) are its writers, in the same dialect.
 //
 // # Why the walker belongs with the parser
 //
