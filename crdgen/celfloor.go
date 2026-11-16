@@ -172,6 +172,8 @@ func celFloorErrors(root *apiextensions.JSONSchemaProps, rootPath *field.Path, t
 }
 
 // compileRules is schemacel.Compile; a variable so a test can make it fail, which no valid CRD does.
+// A test that replaces it restores it with t.Cleanup and must not call t.Parallel: every generation
+// in the package compiles through it. No crdgen test is parallel today.
 var compileRules = schemacel.Compile
 
 // compileNode compiles one node's rules at the target and reports each refusal.
