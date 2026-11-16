@@ -110,11 +110,15 @@ func TestNotScalarValidationsAreNative(t *testing.T) {
 // (which matches everything and so would reject every value).
 func TestNotStillDroppedWhereItMustBe(t *testing.T) {
 	for _, c := range []struct{ name, schema, warn string }{
-		// plumbing#110 made exclusiveMinimum expressible, so a not carrying a strict bound is emitted
-		// now (TestExclusiveBoundInsideNotIsEnforced). Draft 4's true with no minimum bounds nothing,
-		// so a not carrying only that is still empty, and must still be dropped, not become not:{}.
-		{"only a draft-4 exclusiveMinimum with no bound", `{"type":"object","properties":{"n":{"type":"number","not":{"exclusiveMinimum":true}}}}`, "not (non-trivial) unsupported"},
-		{"structured subschema", `{"type":"object","properties":{"s":{"type":"string","not":{"anyOf":[{"pattern":"a"},{"pattern":"b"}]}}}}`, "not (non-trivial subschema) unsupported"},
+		// Nothing a string can be constrained by: minItems applies to arrays only, so the not would be
+		// not:{} and refuse every value. It must be dropped, loudly.
+		{"only an array keyword on a string", `{"type":"object","properties":{"n":{"type":"string","not":{"minItems":2}}}}`, "not (non-trivial) unsupported"},
+		// A part that cannot be carried drops the whole not: leaving it out would make the not refuse
+		// more than the schema (plumbing#48).
+		{"a bound crdgen cannot express", `{"type":"object","properties":{"n":{"type":"number","not":{"exclusiveMinimum":true}}}}`, "so the not cannot be carried whole"},
+		{"a member of another type", `{"type":"object","properties":{"s":{"type":"string","not":{"anyOf":[{"type":"integer"},{"pattern":"^x"}]}}}}`, "other than the field's string"},
+		// One level of allOf/anyOf/oneOf is native since plumbing#48; a junction inside a junction is not.
+		{"structured subschema", `{"type":"object","properties":{"s":{"type":"string","not":{"anyOf":[{"anyOf":[{"pattern":"a"},{"pattern":"b"}]}]}}}}`, "not (non-trivial subschema) unsupported"},
 		{"not on an object", `{"type":"object","properties":{"o":{"type":"object","not":{"required":["x"]}}}}`, "not on non-scalar node unsupported"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
