@@ -32,10 +32,15 @@ $(LOCALBIN):
 .PHONY: setup-envtest
 setup-envtest: $(SETUP_ENVTEST) ## Install setup-envtest into ./bin.
 $(SETUP_ENVTEST): | $(LOCALBIN)
-	# Pin to the controller-runtime 0.22 line (matches sigs.k8s.io/controller-runtime v0.22.3 in
-	# go.mod). Do NOT use @latest: newer setup-envtest (v0.24+) requires go >= 1.26 and fails under
-	# this module's go 1.25 toolchain (GOTOOLCHAIN=local) with "requires go >= 1.26.0".
-	GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.22
+	# Pinned to an exact pseudo-version of the controller-runtime 0.22 line (matches
+	# sigs.k8s.io/controller-runtime v0.22.3 in go.mod): commit a19ec76a, which is the release-0.22
+	# branch head as of 2026-01-25. Do NOT use @latest: newer setup-envtest (v0.24+) requires go >=
+	# 1.26 and fails under this module's go 1.25 toolchain (GOTOOLCHAIN=local). Do NOT use the branch
+	# name either: a branch query has to be resolved through the module proxy, and on 2026-11-16 CI
+	# resolved @release-0.22 to the ROOT controller-runtime module ("does not contain package
+	# .../tools/setup-envtest") for the same commit that resolves correctly here. An exact version
+	# needs no branch lookup.
+	GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.0.0-20260125163108-a19ec76a3c5d
 
 .PHONY: test-envtest
 test-envtest: setup-envtest ## Run the envtest (real-apiserver) functional cache-staleness tests.
