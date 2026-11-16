@@ -1,0 +1,723 @@
+package compositionrbac
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+
+	"k8s.io/apimachinery/pkg/api/errors"
+
+	"reflect"
+
+	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/dynamic"
+)
+
+type RBACInstaller struct {
+	DynamicClient dynamic.Interface
+}
+
+func NewRBACInstaller(cli dynamic.Interface) *RBACInstaller {
+	return &RBACInstaller{DynamicClient: cli}
+}
+
+// SkippedObject is a namespaced RBAC object that was not applied because its namespace is being
+// deleted (#357).
+type SkippedObject struct {
+	Kind      string
+	Namespace string
+	Name      string
+}
+
+// ApplyReport says what ApplyRBAC did NOT apply, on a call that otherwise succeeded.
+type ApplyReport struct {
+	// SkippedTerminating lists the objects the apiserver refused because their namespace is
+	// terminating. A grant into a namespace that is going away is moot.
+	SkippedTerminating []SkippedObject
+
+	// Written counts the objects this apply actually changed: created, or updated where the
+	// apiserver did not treat the update as a no-op (the resourceVersion moved). Zero means the
+	// derived RBAC was already in place, which is the common case on a resync. The composition
+	// controller marks a pass acted only when something was written (Diego, 2026-11-14).
+	Written int
+}
+
+func (r *ApplyReport) count(changed bool) {
+	if changed {
+		r.Written++
+	}
+}
+
+// namespaceTerminating reports the apiserver's refusal to create content in a namespace that is
+// being deleted. The NamespaceLifecycle admission plugin returns a Forbidden StatusError carrying a
+// NamespaceTerminating CAUSE ("unable to create new content in namespace X because it is being
+// terminated"). The cause is typed, so this never matches on message text, and HasStatusCause
+// unwraps with errors.As, so it sees through the %w wrapping in ApplyRole/ApplyRoleBinding.
+func namespaceTerminating(err error) bool {
+	return errors.HasStatusCause(err, corev1.NamespaceTerminatingCause)
+}
+
+// ApplyRBAC applies the derived RBAC.
+//
+// ONE TERMINATING NAMESPACE NO LONGER FAILS THE WHOLE CALL (#357). A composition's derived RBAC can
+// put a Role into a namespace other than its own, and while that namespace terminates the apiserver
+// refuses to create anything in it. Failing on that refusal failed the composition's reconcile on
+// every pass for as long as the namespace terminated, and cascaded through the health rollup to its
+// parents (portal and installer on krateo-057, demo-system deleted by hand). Such objects are now
+// skipped and RETURNED in the report, so the caller can say so. EVERY OTHER ERROR STILL FAILS: a
+// Role that cannot be created in a namespace that is NOT terminating is a real failure.
+func (i *RBACInstaller) ApplyRBAC(rbac *RBAC) (ApplyReport, error) {
+	var report ApplyReport
+	if rbac == nil {
+		return report, fmt.Errorf("RBAC cannot be nil")
+	}
+
+	if rbac.Namespaces != nil {
+		for _, ns := range rbac.Namespaces {
+			if ns != nil {
+				var changed bool
+				_, err := i.applyNamespace(context.Background(), ns, &changed)
+				report.count(changed)
+				if err != nil {
+					return report, fmt.Errorf("failed to Apply Namespace %s: %w", ns.Name, err)
+				}
+			}
+		}
+	}
+
+	if rbac.ClusterRole != nil {
+		var changed bool
+		_, err := i.applyClusterRole(context.Background(), rbac.ClusterRole, &changed)
+		report.count(changed)
+		if err != nil {
+			return report, fmt.Errorf("failed to Apply ClusterRole: %w - name: %s", err, rbac.ClusterRole.Name)
+		}
+	}
+	if rbac.ClusterRoleBinding != nil {
+		var changed bool
+		_, err := i.applyClusterRoleBinding(context.Background(), rbac.ClusterRoleBinding, &changed)
+		report.count(changed)
+		if err != nil {
+			return report, fmt.Errorf("failed to Apply ClusterRoleBinding: %w - name: %s", err, rbac.ClusterRoleBinding.Name)
+		}
+	}
+	for _, ns := range rbac.Namespaced {
+		if ns.Role != nil {
+			var changed bool
+			_, err := i.applyRole(context.Background(), ns.Role, &changed)
+			report.count(changed)
+			if namespaceTerminating(err) {
+				report.SkippedTerminating = append(report.SkippedTerminating,
+					SkippedObject{Kind: "Role", Namespace: ns.Role.Namespace, Name: ns.Role.Name})
+			} else if err != nil {
+				return report, fmt.Errorf("failed to Apply Role: %w - name: %s", err, ns.Role.Name)
+			}
+		}
+		if ns.RoleBinding != nil {
+			var changed bool
+			_, err := i.applyRoleBinding(context.Background(), ns.RoleBinding, &changed)
+			report.count(changed)
+			if namespaceTerminating(err) {
+				report.SkippedTerminating = append(report.SkippedTerminating,
+					SkippedObject{Kind: "RoleBinding", Namespace: ns.RoleBinding.Namespace, Name: ns.RoleBinding.Name})
+			} else if err != nil {
+				return report, fmt.Errorf("failed to Apply RoleBinding: %w - name: %s", err, ns.RoleBinding.Name)
+			}
+		}
+	}
+	return report, nil
+
+}
+
+func (r *RBACInstaller) ApplyNamespace(ctx context.Context, namespace *corev1.Namespace) (*corev1.Namespace, error) {
+	return r.applyNamespace(ctx, namespace, new(bool))
+}
+
+// applyNamespace is ApplyNamespace, also reporting in changed whether it wrote: a Create, or an Update
+// the apiserver did not treat as a no-op (its resourceVersion moved).
+func (r *RBACInstaller) applyNamespace(ctx context.Context, namespace *corev1.Namespace, changed *bool) (*corev1.Namespace, error) {
+	cli := r.DynamicClient.Resource(
+		schema.GroupVersionResource{
+			Group:    "",
+			Version:  "v1",
+			Resource: "namespaces",
+		},
+	)
+
+	existingU, err := cli.Get(ctx, namespace.Name, metav1.GetOptions{})
+	if errors.IsNotFound(err) {
+		m, err := runtime.DefaultUnstructuredConverter.ToUnstructured(namespace)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert Namespace to unstructured: %w", err)
+		}
+		res, err := cli.Create(ctx, &unstructured.Unstructured{Object: m}, metav1.CreateOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to Create Namespace: %w", err)
+		}
+		*changed = true
+		namespace = &corev1.Namespace{}
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(res.Object, namespace); err != nil {
+			return nil, fmt.Errorf("failed to convert unstructured to Namespace: %w", err)
+		}
+		return namespace, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("failed to Get Namespace: %w", err)
+	}
+
+	// The Namespace already exists. It may be owned by the composition's Helm
+	// release (e.g. the portal's demo-system, declared as a chart child), in
+	// which case its metadata carries foreign labels such as the postrenderer's
+	// krateo.io/composition-* set. A blind full-PUT of our freshly-built object
+	// would replace metadata.labels and strip those, so helm re-adds them on the
+	// next reconcile — an endless label tug-of-war that bumps a helm revision
+	// every cycle. Instead merge our labels/annotations INTO the existing object
+	// (like ApplyRole does for rules) and only Update when something is missing.
+	existing := &corev1.Namespace{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(existingU.Object, existing); err != nil {
+		return nil, fmt.Errorf("failed to convert unstructured to Namespace: %w", err)
+	}
+
+	// NEVER TAKE OWNERSHIP FROM ANOTHER MANAGER (#294, second attempt).
+	//
+	// createNamespace stamps `app.kubernetes.io/managed-by: Helm` plus meta.helm.sh/* so that HELM
+	// WILL ADOPT a namespace we are about to have it manage. On a namespace somebody else already
+	// owns, writing that is not a merge — it is a claim, and it overwrites the label that records
+	// the real owner.
+	//
+	// A Kyverno-generated tenant namespace carries `managed-by: kyverno`. Our loop below writes our
+	// value wherever it differs, so it changed kyverno -> Helm, and Kyverno 1.19.2's
+	// protect-generation-labels webhook denied it: "Kyverno generate labels can only be set by
+	// Kyverno". Every tenant onboarded after that upgrade failed its RBAC install, 136 identical
+	// attempts in 22 minutes on one.
+	//
+	// MY FIRST FIX WAS WRONG AND SHIPPED. I changed the full PUT to a merge patch on the theory that
+	// the request body was what the webhook objected to. ADMISSION WEBHOOKS RECEIVE THE RESULTING
+	// OBJECT, NOT THE PATCH BODY — the apiserver applies the patch before admission runs — so the
+	// request shape was never the variable, and the patch still carried managed-by: Helm anyway. The
+	// re-test on 2.13.53 failed identically.
+	//
+	// So: if the namespace exists and declares a different manager, leave it entirely alone. We did
+	// not create it and Helm has nothing to adopt.
+	//
+	// Deliberately keyed on a DIFFERENT manager rather than on Kyverno specifically: the next
+	// controller to own a namespace we touch will not be Kyverno, and a Kyverno-shaped check would
+	// have to be written again. A namespace with NO manager is still merged into, because claiming
+	// an unowned namespace takes it from nobody.
+	if owner := existing.Labels["app.kubernetes.io/managed-by"]; owner != "" &&
+		owner != namespace.Labels["app.kubernetes.io/managed-by"] {
+		return existing, nil
+	}
+
+	modified := false
+	if len(namespace.Labels) > 0 && existing.Labels == nil {
+		existing.Labels = map[string]string{}
+	}
+	for k, v := range namespace.Labels {
+		if existing.Labels[k] != v {
+			existing.Labels[k] = v
+			modified = true
+		}
+	}
+	if len(namespace.Annotations) > 0 && existing.Annotations == nil {
+		existing.Annotations = map[string]string{}
+	}
+	for k, v := range namespace.Annotations {
+		if existing.Annotations[k] != v {
+			existing.Annotations[k] = v
+			modified = true
+		}
+	}
+
+	if !modified {
+		return existing, nil
+	}
+
+	// PATCH, not Update, and the difference is not stylistic (core-provider#294).
+	//
+	// The merge above already preserves foreign labels, so a full PUT does not STRIP anything. It
+	// still SENDS everything: a PUT body carries every field, so an admission webhook sees our
+	// ServiceAccount submitting an object that bears somebody else's labels, and it cannot tell
+	// "preserving" from "setting" because a PUT expresses no intent about which fields changed.
+	//
+	// Kyverno 1.19.2's `protect-generation-labels` webhook (failurePolicy Fail, CREATE/UPDATE on
+	// */*) denies exactly that: "Kyverno generate labels can only be set by Kyverno". A tenant
+	// namespace generated by a Kyverno policy carries generate.kyverno.io/* labels, so every PUT of
+	// it was denied and no composition could install its RBAC — no tenant onboarded after that
+	// Kyverno upgrade could get a child at all, 180 identical attempts in 30 minutes on one.
+	//
+	// A merge patch carrying ONLY the keys we add leaves foreign labels out of the request
+	// entirely, so there is nothing for such a webhook to object to. It is also the honest
+	// description of what this function wants: add our keys, touch nothing else.
+	patch := map[string]any{"metadata": map[string]any{}}
+	patchMeta := patch["metadata"].(map[string]any)
+	if len(namespace.Labels) > 0 {
+		lbl := make(map[string]any, len(namespace.Labels))
+		for k, v := range namespace.Labels {
+			lbl[k] = v
+		}
+		patchMeta["labels"] = lbl
+	}
+	if len(namespace.Annotations) > 0 {
+		ann := make(map[string]any, len(namespace.Annotations))
+		for k, v := range namespace.Annotations {
+			ann[k] = v
+		}
+		patchMeta["annotations"] = ann
+	}
+	body, err := json.Marshal(patch)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build the Namespace metadata patch: %w", err)
+	}
+	res, err := cli.Patch(ctx, namespace.Name, types.MergePatchType, body, metav1.PatchOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to Patch Namespace: %w", err)
+	}
+	namespace = &corev1.Namespace{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(res.Object, namespace); err != nil {
+		return nil, fmt.Errorf("failed to convert unstructured to Namespace: %w", err)
+	}
+	return namespace, nil
+}
+
+// helmReleaseNameAnnotation is the marker Helm stamps on every object it owns.
+const helmReleaseNameAnnotation = "meta.helm.sh/release-name"
+
+// errIfHelmOwned refuses to modify RBAC that belongs to a Helm release.
+//
+// Generated RBAC used to be named after the release, which is exactly what a chart's conventional
+// `{{ include "chart.fullname" . }}` produces — so a chart shipping its own Role/RoleBinding wrote
+// to the same object we did, and Helm won (core-provider#130). The names no longer collide (see
+// rbacgen.rbacNameSuffix), so reaching this should now be impossible.
+//
+// It is still worth failing on, because the ORIGINAL defect was invisible precisely here: unioning
+// rules into a chart-owned object succeeds, Helm reverts it on that release's next apply, and
+// neither side logs anything. The composition then fails on a permission it was granted moments
+// earlier, which reads as "generated RBAC is incomplete" rather than "generated RBAC was
+// overwritten". An error naming the release turns a silent revert into a diagnosis.
+func errIfHelmOwned(u *unstructured.Unstructured, kind string) error {
+	rel := u.GetAnnotations()[helmReleaseNameAnnotation]
+	if rel == "" {
+		return nil
+	}
+	name := u.GetName()
+	if ns := u.GetNamespace(); ns != "" {
+		name = ns + "/" + name
+	}
+	return fmt.Errorf("refusing to modify %s %s: it is owned by helm release %q, so anything written "+
+		"here would be silently reverted by that release's next apply", kind, name, rel)
+}
+
+func (i *RBACInstaller) ApplyRole(ctx context.Context, role *rbacv1.Role) (*rbacv1.Role, error) {
+	return i.applyRole(ctx, role, new(bool))
+}
+
+// applyRole is ApplyRole, also reporting in changed whether it wrote: a Create, or an Update
+// the apiserver did not treat as a no-op (its resourceVersion moved).
+func (i *RBACInstaller) applyRole(ctx context.Context, role *rbacv1.Role, changed *bool) (*rbacv1.Role, error) {
+	m, err := runtime.DefaultUnstructuredConverter.ToUnstructured(role)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert Role to unstructured: %w", err)
+	}
+	u := &unstructured.Unstructured{Object: m}
+
+	cli := i.DynamicClient.Resource(
+		schema.GroupVersionResource{
+			Group:    "rbac.authorization.k8s.io",
+			Version:  "v1",
+			Resource: "roles",
+		},
+	).Namespace(role.Namespace)
+
+	existingU, err := cli.Get(ctx, role.Name, metav1.GetOptions{})
+	if errors.IsNotFound(err) {
+		res, err := cli.Create(ctx, u, metav1.CreateOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to Create Role: %w", err)
+		}
+		*changed = true
+
+		role = &rbacv1.Role{}
+		err = runtime.DefaultUnstructuredConverter.FromUnstructured(res.Object, role)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert unstructured to Role: %w", err)
+		}
+
+		return role, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("failed to Get Role: %w", err)
+	}
+
+	if err := errIfHelmOwned(existingU, "Role"); err != nil {
+		return nil, err
+	}
+
+	existingRole := &rbacv1.Role{}
+	err = runtime.DefaultUnstructuredConverter.FromUnstructured(existingU.Object, existingRole)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert unstructured to Role: %w", err)
+	}
+
+	modified := false
+	for _, rule := range role.Rules {
+		if !ruleExists(existingRole.Rules, rule) {
+			existingRole.Rules = append(existingRole.Rules, rule)
+			modified = true
+		}
+	}
+	// #402: record the owner on an object that predates it, keeping every other owner's key.
+	if l, changed := mergeLabels(existingRole.Labels, role.Labels); changed {
+		existingRole.Labels = l
+		modified = true
+	}
+
+	if !modified {
+		return existingRole, nil
+	}
+
+	m, err = runtime.DefaultUnstructuredConverter.ToUnstructured(existingRole)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert Role to unstructured: %w", err)
+	}
+	u.Object = m
+
+	res, err := cli.Update(ctx, u, metav1.UpdateOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to Update Role: %w", err)
+	}
+	*changed = res.GetResourceVersion() != existingU.GetResourceVersion()
+
+	role = &rbacv1.Role{}
+	err = runtime.DefaultUnstructuredConverter.FromUnstructured(res.Object, role)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert unstructured to Role: %w", err)
+	}
+
+	return role, nil
+}
+
+func (i *RBACInstaller) ApplyRoleBinding(ctx context.Context, roleBinding *rbacv1.RoleBinding) (*rbacv1.RoleBinding, error) {
+	return i.applyRoleBinding(ctx, roleBinding, new(bool))
+}
+
+// applyRoleBinding is ApplyRoleBinding, also reporting in changed whether it wrote: a Create, or an Update
+// the apiserver did not treat as a no-op (its resourceVersion moved).
+func (i *RBACInstaller) applyRoleBinding(ctx context.Context, roleBinding *rbacv1.RoleBinding, changed *bool) (*rbacv1.RoleBinding, error) {
+	m, err := runtime.DefaultUnstructuredConverter.ToUnstructured(roleBinding)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert RoleBinding to unstructured: %w", err)
+	}
+	u := &unstructured.Unstructured{Object: m}
+
+	cli := i.DynamicClient.Resource(
+		schema.GroupVersionResource{
+			Group:    "rbac.authorization.k8s.io",
+			Version:  "v1",
+			Resource: "rolebindings",
+		},
+	).Namespace(roleBinding.Namespace)
+
+	existingU, err := cli.Get(ctx, roleBinding.Name, metav1.GetOptions{})
+	if errors.IsNotFound(err) {
+		res, err := cli.Create(ctx, u, metav1.CreateOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to Create RoleBinding: %w", err)
+		}
+		*changed = true
+
+		roleBinding = &rbacv1.RoleBinding{}
+		err = runtime.DefaultUnstructuredConverter.FromUnstructured(res.Object, roleBinding)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert unstructured to RoleBinding: %w", err)
+		}
+
+		return roleBinding, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("failed to Get RoleBinding: %w", err)
+	}
+
+	if err := errIfHelmOwned(existingU, "RoleBinding"); err != nil {
+		return nil, err
+	}
+	// This Update replaces the whole object, so keep the labels already there (#402: other owners'
+	// keys), with the desired ones on top.
+	merged, _ := mergeLabels(existingU.GetLabels(), u.GetLabels())
+	u.SetLabels(merged)
+
+	res, err := cli.Update(ctx, u, metav1.UpdateOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to Update RoleBinding: %w", err)
+	}
+	*changed = res.GetResourceVersion() != existingU.GetResourceVersion()
+
+	roleBinding = &rbacv1.RoleBinding{}
+	err = runtime.DefaultUnstructuredConverter.FromUnstructured(res.Object, roleBinding)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert unstructured to RoleBinding: %w", err)
+	}
+
+	return roleBinding, nil
+}
+
+func (i *RBACInstaller) ApplyClusterRole(ctx context.Context, clusterRole *rbacv1.ClusterRole) (*rbacv1.ClusterRole, error) {
+	return i.applyClusterRole(ctx, clusterRole, new(bool))
+}
+
+// applyClusterRole is ApplyClusterRole, also reporting in changed whether it wrote: a Create, or an Update
+// the apiserver did not treat as a no-op (its resourceVersion moved).
+func (i *RBACInstaller) applyClusterRole(ctx context.Context, clusterRole *rbacv1.ClusterRole, changed *bool) (*rbacv1.ClusterRole, error) {
+	m, err := runtime.DefaultUnstructuredConverter.ToUnstructured(clusterRole)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert ClusterRole to unstructured: %w", err)
+	}
+	u := &unstructured.Unstructured{Object: m}
+
+	cli := i.DynamicClient.Resource(
+		schema.GroupVersionResource{
+			Group:    "rbac.authorization.k8s.io",
+			Version:  "v1",
+			Resource: "clusterroles",
+		},
+	)
+
+	existingU, err := cli.Get(ctx, clusterRole.Name, metav1.GetOptions{})
+	if errors.IsNotFound(err) {
+		res, err := cli.Create(ctx, u, metav1.CreateOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to Create ClusterRole: %w", err)
+		}
+		*changed = true
+
+		clusterRole = &rbacv1.ClusterRole{}
+		err = runtime.DefaultUnstructuredConverter.FromUnstructured(res.Object, clusterRole)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert unstructured to ClusterRole: %w", err)
+		}
+
+		return clusterRole, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("failed to Get ClusterRole: %w", err)
+	}
+
+	if err := errIfHelmOwned(existingU, "ClusterRole"); err != nil {
+		return nil, err
+	}
+
+	existingClusterRole := &rbacv1.ClusterRole{}
+	err = runtime.DefaultUnstructuredConverter.FromUnstructured(existingU.Object, existingClusterRole)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert unstructured to ClusterRole: %w", err)
+	}
+
+	modified := false
+	for _, rule := range clusterRole.Rules {
+		if !ruleExists(existingClusterRole.Rules, rule) {
+			existingClusterRole.Rules = append(existingClusterRole.Rules, rule)
+			modified = true
+		}
+	}
+	// #402: record the owner on an object that predates it, keeping every other owner's key.
+	if l, changed := mergeLabels(existingClusterRole.Labels, clusterRole.Labels); changed {
+		existingClusterRole.Labels = l
+		modified = true
+	}
+
+	if !modified {
+		return existingClusterRole, nil
+	}
+
+	m, err = runtime.DefaultUnstructuredConverter.ToUnstructured(existingClusterRole)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert ClusterRole to unstructured: %w", err)
+	}
+	u.Object = m
+
+	res, err := cli.Update(ctx, u, metav1.UpdateOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to Update ClusterRole: %w", err)
+	}
+	*changed = res.GetResourceVersion() != existingU.GetResourceVersion()
+
+	clusterRole = &rbacv1.ClusterRole{}
+	err = runtime.DefaultUnstructuredConverter.FromUnstructured(res.Object, clusterRole)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert unstructured to ClusterRole: %w", err)
+	}
+	return clusterRole, nil
+}
+
+func (i *RBACInstaller) ApplyClusterRoleBinding(ctx context.Context, clusterRoleBinding *rbacv1.ClusterRoleBinding) (*rbacv1.ClusterRoleBinding, error) {
+	return i.applyClusterRoleBinding(ctx, clusterRoleBinding, new(bool))
+}
+
+// applyClusterRoleBinding is ApplyClusterRoleBinding, also reporting in changed whether it wrote: a Create, or an Update
+// the apiserver did not treat as a no-op (its resourceVersion moved).
+func (i *RBACInstaller) applyClusterRoleBinding(ctx context.Context, clusterRoleBinding *rbacv1.ClusterRoleBinding, changed *bool) (*rbacv1.ClusterRoleBinding, error) {
+	m, err := runtime.DefaultUnstructuredConverter.ToUnstructured(clusterRoleBinding)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert ClusterRoleBinding to unstructured: %w", err)
+	}
+	u := &unstructured.Unstructured{Object: m}
+
+	cli := i.DynamicClient.Resource(
+		schema.GroupVersionResource{
+			Group:    "rbac.authorization.k8s.io",
+			Version:  "v1",
+			Resource: "clusterrolebindings",
+		},
+	)
+
+	existingU, err := cli.Get(ctx, clusterRoleBinding.Name, metav1.GetOptions{})
+	if errors.IsNotFound(err) {
+		res, err := cli.Create(ctx, u, metav1.CreateOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to Create ClusterRoleBinding: %w", err)
+		}
+		*changed = true
+
+		clusterRoleBinding = &rbacv1.ClusterRoleBinding{}
+		err = runtime.DefaultUnstructuredConverter.FromUnstructured(res.Object, clusterRoleBinding)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert unstructured to ClusterRoleBinding: %w", err)
+		}
+
+		return clusterRoleBinding, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("failed to Get ClusterRoleBinding: %w", err)
+	}
+
+	if err := errIfHelmOwned(existingU, "ClusterRoleBinding"); err != nil {
+		return nil, err
+	}
+	// This Update replaces the whole object, so keep the labels already there (#402: other owners'
+	// keys), with the desired ones on top.
+	mergedCRB, _ := mergeLabels(existingU.GetLabels(), u.GetLabels())
+	u.SetLabels(mergedCRB)
+
+	res, err := cli.Update(ctx, u, metav1.UpdateOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to Update ClusterRoleBinding: %w", err)
+	}
+	*changed = res.GetResourceVersion() != existingU.GetResourceVersion()
+
+	clusterRoleBinding = &rbacv1.ClusterRoleBinding{}
+	err = runtime.DefaultUnstructuredConverter.FromUnstructured(res.Object, clusterRoleBinding)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert unstructured to ClusterRoleBinding: %w", err)
+	}
+
+	return clusterRoleBinding, nil
+}
+
+func (i *RBACInstaller) UninstallRBAC(rbac *RBAC) error {
+	if rbac == nil {
+		return fmt.Errorf("RBAC cannot be nil")
+	}
+	// in this case it will not delete the namespaces, only the roles and bindings because Helm should delete the namespaces itself
+
+	if rbac.ClusterRole != nil {
+		err := i.DeleteClusterRole(context.Background(), rbac.ClusterRole.Name)
+		if err != nil {
+			return fmt.Errorf("failed to Delete ClusterRole: %w", err)
+		}
+	}
+	if rbac.ClusterRoleBinding != nil {
+		err := i.DeleteClusterRoleBinding(context.Background(), rbac.ClusterRoleBinding.Name)
+		if err != nil {
+			return fmt.Errorf("failed to Delete ClusterRoleBinding: %w", err)
+		}
+	}
+	for _, ns := range rbac.Namespaced {
+		if ns.Role != nil {
+			err := i.DeleteRole(context.Background(), ns.Role.Namespace, ns.Role.Name)
+			if err != nil {
+				return fmt.Errorf("failed to Delete Role: %w", err)
+			}
+		}
+		if ns.RoleBinding != nil {
+			err := i.DeleteRoleBinding(context.Background(), ns.RoleBinding.Namespace, ns.RoleBinding.Name)
+			if err != nil {
+				return fmt.Errorf("failed to Delete RoleBinding: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+func (i *RBACInstaller) DeleteRole(ctx context.Context, namespace, name string) error {
+	cli := i.DynamicClient.Resource(
+		schema.GroupVersionResource{
+			Group:    "rbac.authorization.k8s.io",
+			Version:  "v1",
+			Resource: "roles",
+		},
+	).Namespace(namespace)
+
+	err := cli.Delete(ctx, name, metav1.DeleteOptions{})
+	if err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to Delete Role: %w", err)
+	}
+	return nil
+}
+
+func (i *RBACInstaller) DeleteRoleBinding(ctx context.Context, namespace, name string) error {
+	cli := i.DynamicClient.Resource(
+		schema.GroupVersionResource{
+			Group:    "rbac.authorization.k8s.io",
+			Version:  "v1",
+			Resource: "rolebindings",
+		},
+	).Namespace(namespace)
+
+	err := cli.Delete(ctx, name, metav1.DeleteOptions{})
+	if err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to Delete RoleBinding: %w", err)
+	}
+	return nil
+}
+
+func (i *RBACInstaller) DeleteClusterRole(ctx context.Context, name string) error {
+	cli := i.DynamicClient.Resource(
+		schema.GroupVersionResource{
+			Group:    "rbac.authorization.k8s.io",
+			Version:  "v1",
+			Resource: "clusterroles",
+		},
+	)
+
+	err := cli.Delete(ctx, name, metav1.DeleteOptions{})
+	if err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to Delete ClusterRole: %w", err)
+	}
+	return nil
+}
+
+func (i *RBACInstaller) DeleteClusterRoleBinding(ctx context.Context, name string) error {
+	cli := i.DynamicClient.Resource(
+		schema.GroupVersionResource{
+			Group:    "rbac.authorization.k8s.io",
+			Version:  "v1",
+			Resource: "clusterrolebindings",
+		},
+	)
+
+	err := cli.Delete(ctx, name, metav1.DeleteOptions{})
+	if err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to Delete ClusterRoleBinding: %w", err)
+	}
+	return nil
+}
+
+func ruleExists(rules []rbacv1.PolicyRule, target rbacv1.PolicyRule) bool {
+	for _, rule := range rules {
+		if reflect.DeepEqual(rule, target) {
+			return true
+		}
+	}
+	return false
+}
