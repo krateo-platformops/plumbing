@@ -185,7 +185,9 @@ func celFloorErrors(root *apiextensions.JSONSchemaProps, rootPath *field.Path, t
 // version whose apiserver accepts it, found by compiling at each newer compatibility version the
 // linked libraries know. rule is "" for a messageExpression, which is only reported, not searched.
 func (t celTarget) refusal(ti *validation.CELTypeInfo, rule, detail string) string {
-	msg := fmt.Sprintf("a Kubernetes %s apiserver refuses this (%s); crdgen targets Kubernetes %s (MinKubernetesVersion)", t.kube, detail, t.kube)
+	// The compiler's detail continues with a source excerpt and a caret on further lines; the first
+	// line carries the reason, and one line keeps the joined error list readable.
+	msg := fmt.Sprintf("a Kubernetes %s apiserver refuses this (%s); crdgen targets Kubernetes %s (MinKubernetesVersion)", t.kube, firstLine(detail), t.kube)
 	if rule == "" {
 		return msg
 	}

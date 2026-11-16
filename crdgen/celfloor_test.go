@@ -33,9 +33,13 @@ func TestCELFloorRefusesAFunctionNewerThanTheTarget(t *testing.T) {
 		t.Fatalf("want one refusal, got %v", errs)
 	}
 	msg := errs[0].Error()
+	if strings.Contains(msg, "\n") {
+		t.Errorf("refusal spans lines: %q", msg)
+	}
 	for _, want := range []string{
 		"spec.validation.openAPIV3Schema.properties[v].x-kubernetes-validations[0].rule",
 		"a Kubernetes 1.33 apiserver refuses this",
+		"undeclared reference to 'isSemver'",
 		"it is accepted from Kubernetes 1.34",
 	} {
 		if !strings.Contains(msg, want) {
