@@ -23,6 +23,12 @@ func TestDenyAddr_DeniedRanges(t *testing.T) {
 		// IPv4-mapped forms of the same
 		{"[::ffff:169.254.169.254]:80", "link-local"},
 		{"[::ffff:a9fe:a9fe]:80", "link-local"},
+		// the IPv6 cloud metadata addresses, inside ULA (plumbing#90), in more than one spelling:
+		// the check compares addresses, not text
+		{"[fd00:ec2::254]:80", "cloud metadata"},
+		{"[fd20:ce::254]:80", "cloud metadata"},
+		{"[fd00:ec2:0:0:0:0:0:254]:80", "cloud metadata"},
+		{"[FD20:CE::254]:443", "cloud metadata"},
 		// unspecified
 		{"0.0.0.0:8080", "unspecified"},
 		{"[::]:8080", "unspecified"},
@@ -71,6 +77,10 @@ func TestDenyAddr_AllowedRanges(t *testing.T) {
 		"127.0.0.1:5000",       // loopback — allowed by the ruling
 		"[::1]:5000",           // loopback v6
 		"[fd00::1]:443",        // ULA
+		"[fd00:ec2::253]:80",   // ULA beside AWS's metadata address: only the address is refused
+		"[fd00:ec2::1:254]:80", // ULA in AWS's metadata /64
+		"[fd20:ce::255]:80",    // ULA beside GCP's metadata address
+		"[fd20:ce::1:254]:80",  // ULA in GCP's metadata /64
 		"140.82.121.4:443",     // public (github)
 		"[2606:50c0::153]:443", // public v6
 	}
