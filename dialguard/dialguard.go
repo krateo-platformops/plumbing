@@ -6,10 +6,12 @@
 //
 //	REFUSED, on every request, with or without credentials:
 //	  169.254.0.0/16, fe80::/10   cloud metadata and link-local
+//	  fd00:ec2::254, fd20:ce::254 the IPv6 cloud metadata addresses (AWS, GCP), inside ULA
 //	  0.0.0.0, ::                 unspecified
 //	  224.0.0.0/4, ff00::/8       multicast
 //
-//	ALLOWED: loopback and private ranges (RFC-1918, ULA). In-cluster services -- including
+//	ALLOWED: loopback and private ranges (RFC-1918, ULA), except the two metadata addresses above
+//	(plumbing#90, ruled by Diego on snowplow#1216, 2026-11-06). In-cluster services -- including
 //	Krateo's own registry at *.svc.cluster.local -- and on-prem endpoints live there, so denying
 //	them would break every installation.
 //
@@ -42,6 +44,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"syscall"
 	"time"
 )
@@ -57,6 +60,31 @@ type ErrDenied struct {
 func (e *ErrDenied) Error() string {
 	return fmt.Sprintf("refusing to dial %s: %s (destination policy, snowplow#1131 / "+
 		"core-provider#306; there is no allowlist to add it to)", e.Addr, e.Reason)
+}
+
+// cloudMetadataIPv6 are the cloud metadata services' IPv6 addresses. They sit inside ULA
+// (fc00::/7), which is allowed, so they are refused one by one rather than by range (plumbing#90,
+// Diego's ruling on snowplow#1216): AWS's Instance Metadata Service and GCP's metadata server for
+// IPv6-only VMs. Each serves instance credentials the way 169.254.169.254 does. Exact addresses, not
+// their /64s: the rest of those prefixes is ordinary ULA that an on-prem network may use.
+var cloudMetadataIPv6 = []netip.Addr{
+	netip.MustParseAddr("fd00:ec2::254"), // AWS IMDS over IPv6
+	netip.MustParseAddr("fd20:ce::254"),  // GCP metadata server over IPv6
+}
+
+// isCloudMetadataIPv6 reports whether ip is one of cloudMetadataIPv6. A 4-byte or IPv4-mapped ip
+// never is: both metadata addresses are native IPv6.
+func isCloudMetadataIPv6(ip net.IP) bool {
+	a, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return false
+	}
+	for _, m := range cloudMetadataIPv6 {
+		if a == m {
+			return true
+		}
+	}
+	return false
 }
 
 // Control is the net.Dialer.Control hook. Install it on EVERY dialer that can carry a
@@ -106,6 +134,11 @@ func DenyAddr(address string) error {
 		// metadata service on AWS, GCP and Azure, and a plain GET of it can return a token.
 		return &ErrDenied{Addr: address, Reason: "a link-local address (169.254.0.0/16, fe80::/10) " +
 			"— this range holds the cloud metadata service"}
+
+	case isCloudMetadataIPv6(ip):
+		// fd00:ec2::254 (AWS) and fd20:ce::254 (GCP), the IPv6 twins of 169.254.169.254. Checked
+		// before the private-range fall-through below, which would otherwise admit them as ULA.
+		return &ErrDenied{Addr: address, Reason: "a cloud metadata address (fd00:ec2::254, fd20:ce::254)"}
 
 	case ip.IsMulticast(), ip.IsLinkLocalMulticast(), ip.IsInterfaceLocalMulticast():
 		// 224.0.0.0/4 and ff00::/8. IsMulticast covers both, and the two narrower predicates are
