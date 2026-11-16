@@ -204,6 +204,13 @@ func (t *transpiler) warn(path string, kind WarningKind, reason string) {
 	t.warnings = append(t.warnings, Warning{Path: path, Kind: kind, Message: reason})
 }
 
+// warnDropped reports each constraint copyScalarValidation could not express.
+func (t *transpiler) warnDropped(path string, reasons []string) {
+	for _, r := range reasons {
+		t.warn(path, KindConstraintDropped, r)
+	}
+}
+
 // transpile converts a schemas.Type node into a structural apiextensionsv1.JSONSchemaProps.
 // stack holds the JSON pointers currently being resolved, for cycle detection.
 func (t *transpiler) transpile(node *schemas.Type, path string, stack map[string]bool) *apiextensionsv1.JSONSchemaProps {
@@ -301,7 +308,7 @@ func (t *transpiler) transpile(node *schemas.Type, path string, stack map[string
 		// an int-or-string node is legal and enforced (the apiserver applies the string keywords to
 		// the string branch and leaves integers alone), so dropping them narrows nothing and loses
 		// the author's constraint.
-		copyScalarValidation(out, node)
+		t.warnDropped(path, copyScalarValidation(out, node))
 
 	case len(node.Properties) > 0 || (node.AdditionalProperties != nil && node.AdditionalProperties.Type != nil):
 		out.Type = "object"
@@ -334,7 +341,7 @@ func (t *transpiler) transpile(node *schemas.Type, path string, stack map[string
 		typ == schemas.TypeNameNumber, typ == schemas.TypeNameBoolean:
 		out.Type = typ
 		out.Format = node.Format
-		copyScalarValidation(out, node)
+		t.warnDropped(path, copyScalarValidation(out, node))
 
 	default:
 		// No usable type. Try a constraint-only union; else open object.
@@ -522,7 +529,8 @@ func (t *transpiler) attachUnion(out *apiextensionsv1.JSONSchemaProps, node *sch
 		var v []apiextensionsv1.JSONSchemaProps
 		vacuous := false
 		for _, m := range members {
-			sub := junctorMemberSchema(m)
+			sub, dropped := junctorMemberSchema(m)
+			t.warnDropped(path, dropped)
 			if sub == nil {
 				continue
 			}
@@ -602,11 +610,20 @@ func (t *transpiler) copyDefault(out *apiextensionsv1.JSONSchemaProps, node *sch
 	out.Default = &apiextensionsv1.JSON{Raw: raw}
 }
 
-func copyScalarValidation(out *apiextensionsv1.JSONSchemaProps, node *schemas.Type) {
+// It returns the reasons any bound could not be expressed, for the caller to warn at its own path:
+// a keyword is never dropped silently (plumbing#110).
+func copyScalarValidation(out *apiextensionsv1.JSONSchemaProps, node *schemas.Type) (dropped []string) {
 	out.Pattern = node.Pattern
-	out.Minimum = node.Minimum
-	out.Maximum = node.Maximum
 	out.MultipleOf = node.MultipleOf
+	var why string
+	out.Minimum, out.ExclusiveMinimum, why = numericBound("exclusiveMinimum", node.Minimum, node.ExclusiveMinimum, false)
+	if why != "" {
+		dropped = append(dropped, why)
+	}
+	out.Maximum, out.ExclusiveMaximum, why = numericBound("exclusiveMaximum", node.Maximum, node.ExclusiveMaximum, true)
+	if why != "" {
+		dropped = append(dropped, why)
+	}
 	if node.MinLength > 0 {
 		v := int64(node.MinLength)
 		out.MinLength = &v
@@ -615,6 +632,52 @@ func copyScalarValidation(out *apiextensionsv1.JSONSchemaProps, node *schemas.Ty
 		v := int64(node.MaxLength)
 		out.MaxLength = &v
 	}
+	return dropped
+}
+
+// numericBound folds a JSON Schema bound and its exclusive keyword into the CRD's form
+// (plumbing#110). apiextensions v1 has draft 4's shape: minimum/maximum plus a BOOLEAN
+// exclusiveMinimum/exclusiveMaximum that makes it strict. The keyword's meaning changed between
+// drafts, which is why the model parses it as `any`:
+//
+//   - draft 4, a boolean: true makes the bound strict. It means nothing without the bound, so
+//     true with no bound is reported, not emitted;
+//   - draft 6+, a number N: a strict bound of its own, independent of minimum/maximum. Both apply,
+//     so the tighter wins: for a lower bound, N when N >= minimum (x > N then implies x >= minimum),
+//     else minimum, inclusive; mirrored for an upper bound. Equal values give the strict one;
+//   - anything else is reported and dropped.
+//
+// Before this, both forms were parsed and never emitted: a draft-6 bound vanished, and a draft-4
+// strict minimum became inclusive, admitting the bound itself.
+func numericBound(keyword string, bound *float64, exclusive *any, upper bool) (*float64, bool, string) {
+	if exclusive == nil || *exclusive == nil {
+		return bound, false, ""
+	}
+	switch v := (*exclusive).(type) {
+	case bool:
+		if !v {
+			return bound, false, ""
+		}
+		if bound == nil {
+			return nil, false, fmt.Sprintf("%s: true without %s bounds nothing (draft 4) -> dropped", keyword, boundName(upper))
+		}
+		return bound, true, ""
+	case float64:
+		n := v
+		if bound == nil || (!upper && n >= *bound) || (upper && n <= *bound) {
+			return &n, true, ""
+		}
+		return bound, false, ""
+	default:
+		return bound, false, fmt.Sprintf("%s of type %T is neither a draft-4 boolean nor a draft-6 number -> dropped", keyword, v)
+	}
+}
+
+func boundName(upper bool) string {
+	if upper {
+		return "maximum"
+	}
+	return "minimum"
 }
 
 // copyObjectValidation copies the object-size constraints. It exists because they were MISSING:

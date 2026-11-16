@@ -81,19 +81,22 @@ func sanitizeJunctorMember(s *apiextensionsv1.JSONSchemaProps) {
 // would have to be dropped and `anyOf: [{required:[a]},{required:[b]}]` — a perfectly legal
 // structural schema — would be silently lost. Building the member directly keeps the constraint and
 // keeps the CRD valid.
-func junctorMemberSchema(node *schemas.Type) *apiextensionsv1.JSONSchemaProps {
+//
+// The second result is copyScalarValidation's: the bounds it could not express, for the caller to
+// warn about at its own path.
+func junctorMemberSchema(node *schemas.Type) (*apiextensionsv1.JSONSchemaProps, []string) {
 	if node == nil {
-		return nil
+		return nil, nil
 	}
 	out := &apiextensionsv1.JSONSchemaProps{}
 	if len(node.Required) > 0 {
 		out.Required = append([]string(nil), node.Required...)
 	}
-	copyScalarValidation(out, node)
+	dropped := copyScalarValidation(out, node)
 	if node.Description != "" {
 		out.Description = node.Description
 	}
-	return out
+	return out, dropped
 }
 
 // isVacuousJunctorMember reports whether a sanitized member still constrains anything. Stripping the

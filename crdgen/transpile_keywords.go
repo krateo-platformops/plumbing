@@ -205,7 +205,8 @@ func (t *transpiler) emitNot(out *apiextensionsv1.JSONSchemaProps, node *schemas
 	// The subschema is built from value validations only (junctorMemberSchema, the same mapping the
 	// main path uses for scalars, plus format), so it holds nothing a junctor forbids and needs no
 	// sanitizing: a mutant that removed a sanitizeJunctorMember call here changed no output.
-	sub := junctorMemberSchema(n)
+	sub, dropped := junctorMemberSchema(n)
+	t.warnDropped(path, dropped)
 	sub.Description = ""
 	sub.Format = n.Format
 	values := n.Enum
@@ -220,8 +221,8 @@ func (t *transpiler) emitNot(out *apiextensionsv1.JSONSchemaProps, node *schemas
 		}
 		sub.Enum = append(sub.Enum, apiextensionsv1.JSON{Raw: raw})
 	}
-	// A subschema that carries nothing the CRD can express (e.g. only exclusiveMinimum, which this
-	// transpiler does not emit anywhere) would become `not: {}`, which matches everything and so
+	// A subschema that carries nothing the CRD can express (e.g. only a draft-4 exclusiveMinimum with
+	// no minimum, which bounds nothing) would become `not: {}`, which matches everything and so
 	// REJECTS every value. Drop it instead, loudly.
 	if isVacuousJunctorMember(*sub) {
 		t.warn(path, KindConstraintDropped, "not (non-trivial) unsupported -> dropped")
