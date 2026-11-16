@@ -28,6 +28,7 @@ import (
 	"k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/validation"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"sigs.k8s.io/yaml"
 
 	"github.com/krateo-platformops/plumbing/crdgen/schemas"
@@ -46,6 +47,10 @@ const (
 
 // generateDirect is the direct-transpiler implementation of Generate.
 func generateDirect(opts Options) ([]byte, []Warning, error) {
+	target, err := resolveCELTarget(opts.MinKubernetesVersion)
+	if err != nil {
+		return nil, nil, err
+	}
 	specSchema, err := schemas.FromJSONReader(bytes.NewReader(opts.SpecSchema))
 	if err != nil {
 		// Before the transpiler exists, so there are no warnings to return — nil rather than an
@@ -140,7 +145,7 @@ func generateDirect(opts Options) ([]byte, []Warning, error) {
 		}
 	}
 
-	if err := validateCRD(crd); err != nil {
+	if err := validateCRD(crd, target); err != nil {
 		return nil, tr.warnings, fmt.Errorf("generated CRD failed the apiserver's own validation (%s): %w",
 			refusalAttribution(verdicts...), err)
 	}
@@ -1062,7 +1067,7 @@ func (t *transpiler) assembleCRD(opts Options, specProps, statusProps *apiextens
 // means the apiserver would reject the CRD, and generation fails with it. It does not say whose fault
 // that is: checkDefaults has already ruled out the input's own contradictory defaults, and
 // refusalAttribution says so (plumbing#36).
-func validateCRD(v1crd *apiextensionsv1.CustomResourceDefinition) error {
+func validateCRD(v1crd *apiextensionsv1.CustomResourceDefinition, target celTarget) error {
 	scheme := runtime.NewScheme()
 	apiextinstall.Install(scheme)
 
@@ -1079,7 +1084,20 @@ func validateCRD(v1crd *apiextensionsv1.CustomResourceDefinition) error {
 			internal.Status.StoredVersions = []string{v.Name}
 		}
 	}
-	if errs := validation.ValidateCustomResourceDefinition(context.TODO(), &internal); len(errs) > 0 {
+	errs := validation.ValidateCustomResourceDefinition(context.TODO(), &internal)
+	if len(errs) == 0 {
+		// The apiserver's own gate compiles CEL at the LINKED libraries' version; this compiles it at
+		// the target's (plumbing#70).
+		if internal.Spec.Validation != nil {
+			errs = celFloorErrors(internal.Spec.Validation.OpenAPIV3Schema, field.NewPath("spec", "validation", "openAPIV3Schema"), target)
+		}
+		for i, v := range internal.Spec.Versions {
+			if v.Schema != nil {
+				errs = append(errs, celFloorErrors(v.Schema.OpenAPIV3Schema, field.NewPath("spec", "versions").Index(i).Child("schema", "openAPIV3Schema"), target)...)
+			}
+		}
+	}
+	if len(errs) > 0 {
 		msgs := make([]string, 0, len(errs))
 		for _, e := range errs {
 			msgs = append(msgs, e.Error())
