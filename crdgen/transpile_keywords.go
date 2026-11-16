@@ -187,7 +187,7 @@ func (t *transpiler) emitNot(out *apiextensionsv1.JSONSchemaProps, node *schemas
 		return
 	}
 	n := node.Not
-	if !isScalarOnly(n) {
+	if !isScalarOnly(n) && !isScalarJunction(n) {
 		t.warn(path, KindConstraintDropped, "not (non-trivial subschema) unsupported -> dropped")
 		return
 	}
@@ -205,30 +205,104 @@ func (t *transpiler) emitNot(out *apiextensionsv1.JSONSchemaProps, node *schemas
 	// The subschema is built from value validations only (junctorMemberSchema, the same mapping the
 	// main path uses for scalars, plus format), so it holds nothing a junctor forbids and needs no
 	// sanitizing: a mutant that removed a sanitizeJunctorMember call here changed no output.
-	sub, dropped := junctorMemberSchema(n)
-	t.warnDropped(path, dropped)
-	sub.Description = ""
-	sub.Format = n.Format
-	values := n.Enum
-	if n.Const != nil {
-		values = []any{n.Const}
-	}
-	for _, v := range values {
-		raw, err := json.Marshal(v)
-		if err != nil {
-			t.warn(path, KindConstraintDropped, "not: unmarshalable value -> dropped")
-			return
+	//
+	// plumbing#48: a `not` over allOf/anyOf/oneOf of such value validations is native too, e.g.
+	// not: {anyOf: [{enum: ["*"]}, {pattern: "^system:"}]}, "refuse * and every system: group", which
+	// was dropped and left the CRD admitting exactly what the author forbade.
+	sub, reason := notValueSchema(n, out.Type)
+	if reason == "" {
+		for _, j := range []struct {
+			members []*schemas.Type
+			dst     *[]apiextensionsv1.JSONSchemaProps
+		}{{n.AllOf, &sub.AllOf}, {n.AnyOf, &sub.AnyOf}, {n.OneOf, &sub.OneOf}} {
+			for _, m := range j.members {
+				ms, r := notValueSchema(m, out.Type)
+				if r == "" && isVacuousJunctorMember(*ms) {
+					r = "a junction member carries nothing the CRD can express"
+				}
+				if r != "" {
+					reason = r
+					break
+				}
+				*j.dst = append(*j.dst, *ms)
+			}
+			if reason != "" {
+				break
+			}
 		}
-		sub.Enum = append(sub.Enum, apiextensionsv1.JSON{Raw: raw})
 	}
-	// A subschema that carries nothing the CRD can express (e.g. only a draft-4 exclusiveMinimum with
-	// no minimum, which bounds nothing) would become `not: {}`, which matches everything and so
+	if reason != "" {
+		t.warn(path, KindConstraintDropped, "not: "+reason+" -> dropped")
+		return
+	}
+	// A subschema that carries nothing the CRD can express (e.g. only minItems on a string, which
+	// constrains no string) would become `not: {}`, which matches everything and so
 	// REJECTS every value. Drop it instead, loudly.
 	if isVacuousJunctorMember(*sub) {
 		t.warn(path, KindConstraintDropped, "not (non-trivial) unsupported -> dropped")
 		return
 	}
 	out.Not = sub
+}
+
+// isScalarJunction reports whether n is value validations plus allOf/anyOf/oneOf whose members are
+// value validations only: one level, nothing structural anywhere (plumbing#48).
+func isScalarJunction(n *schemas.Type) bool {
+	if len(n.Properties) != 0 || n.Items != nil || n.Ref != "" || n.AdditionalProperties != nil || n.If != nil || n.Not != nil {
+		return false
+	}
+	if len(n.AllOf)+len(n.AnyOf)+len(n.OneOf) == 0 {
+		return false
+	}
+	for _, js := range [][]*schemas.Type{n.AllOf, n.AnyOf, n.OneOf} {
+		for _, m := range js {
+			if m == nil || !isScalarOnly(m) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// notValueSchema builds the value validations of one schema inside a `not` for a field of nodeType,
+// or says why it cannot be built FAITHFULLY. Inside a `not` every loss inverts: a part dropped from
+// the subschema makes it match more, so the `not` refuses MORE than the author wrote, and the CRD
+// rejects valid objects. So a part that cannot be carried drops the whole `not` (reported) instead:
+//
+//   - a type other than the field's own: such a member never matches the field's values, and with
+//     its type dropped it would match them (not: {type: integer, minLength: 2} on a string refuses
+//     nothing; without the type it refused every string of length 2 or more). An absent type, or
+//     the field's own type, is redundant and dropped losslessly;
+//   - a bound copyScalarValidation could not express (plumbing#110);
+//   - an enum or const value that cannot be serialised.
+//
+// Keywords that do not apply to the field's scalar values (array or object sizes) constrain
+// nothing there, so leaving them out loses nothing.
+func notValueSchema(m *schemas.Type, nodeType string) (*apiextensionsv1.JSONSchemaProps, string) {
+	if len(m.Type) > 0 {
+		pt, _ := primaryType(m.Type)
+		if len(m.Type) > 1 || pt != nodeType {
+			return nil, fmt.Sprintf("a type %v other than the field's %s", []string(m.Type), nodeType)
+		}
+	}
+	sub, dropped := junctorMemberSchema(m)
+	if len(dropped) > 0 {
+		return nil, dropped[0] + " (so the not cannot be carried whole)"
+	}
+	sub.Description = ""
+	sub.Format = m.Format
+	values := m.Enum
+	if m.Const != nil {
+		values = []any{m.Const}
+	}
+	for _, v := range values {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return nil, "unmarshalable value"
+		}
+		sub.Enum = append(sub.Enum, apiextensionsv1.JSON{Raw: raw})
+	}
+	return sub, ""
 }
 
 // emitIfThenElse maps a tractable if/then/else (conditions over property const/enum/required) to CEL.
