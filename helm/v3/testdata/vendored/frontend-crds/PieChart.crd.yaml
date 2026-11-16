@@ -1,0 +1,223 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.18.0
+  name: piecharts.widgets.templates.krateo.io
+spec:
+  group: widgets.templates.krateo.io
+  names:
+    categories:
+    - widgets
+    - krateo
+    kind: PieChart
+    listKind: PieChartList
+    plural: piecharts
+    singular: piechart
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .metadata.creationTimestamp
+      name: AGE
+      type: date
+    name: v1beta1
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              apiRef:
+                properties:
+                  name:
+                    type: string
+                  namespace:
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
+              resourcesRefs:
+                properties:
+                  items:
+                    items:
+                      properties:
+                        apiVersion:
+                          type: string
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        namespace:
+                          type: string
+                        payload:
+                          type: object
+                          x-kubernetes-preserve-unknown-fields: true
+                        resource:
+                          type: string
+                        slice:
+                          properties:
+                            continue:
+                              type: boolean
+                            offset:
+                              format: int32
+                              type: integer
+                            page:
+                              format: int32
+                              type: integer
+                            perPage:
+                              format: int32
+                              type: integer
+                          required:
+                          - perPage
+                          type: object
+                        verb:
+                          enum:
+                          - POST
+                          - PUT
+                          - PATCH
+                          - DELETE
+                          - GET
+                          type: string
+                      required:
+                      - id
+                      type: object
+                    type: array
+                  slice:
+                    properties:
+                      continue:
+                        type: boolean
+                      offset:
+                        format: int32
+                        type: integer
+                      page:
+                        format: int32
+                        type: integer
+                      perPage:
+                        format: int32
+                        type: integer
+                    required:
+                    - perPage
+                    type: object
+                required:
+                - items
+                type: object
+              resourcesRefsTemplate:
+                items:
+                  properties:
+                    iterator:
+                      type: string
+                    template:
+                      properties:
+                        apiVersion:
+                          type: string
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        namespace:
+                          type: string
+                        payload:
+                          type: object
+                          x-kubernetes-preserve-unknown-fields: true
+                        resource:
+                          type: string
+                        verb:
+                          enum:
+                          - POST
+                          - PUT
+                          - PATCH
+                          - DELETE
+                          - GET
+                          type: string
+                      type: object
+                  type: object
+                type: array
+              widgetData:
+                properties:
+                  description:
+                    description: supplementary text displayed below or near the title
+                    type: string
+                  series:
+                    description: data to be visualized in the pie chart
+                    properties:
+                      data:
+                        description: individual segments of the pie chart
+                        items:
+                          properties:
+                            color:
+                              description: color used to represent the segment
+                              enum:
+                              - blue
+                              - darkBlue
+                              - orange
+                              - gray
+                              - red
+                              - green
+                              - violet
+                              type: string
+                            label:
+                              description: label for the segment
+                              type: string
+                            value:
+                              description: numeric value for the segment
+                              format: int32
+                              type: integer
+                          required:
+                          - color
+                          - label
+                          - value
+                          type: object
+                        type: array
+                      total:
+                        description: sum of all data values, used to calculate segment
+                          sizes
+                        format: int32
+                        type: integer
+                    required:
+                    - data
+                    - total
+                    type: object
+                  title:
+                    description: title displayed above the chart
+                    type: string
+                required:
+                - title
+                type: object
+              widgetDataTemplate:
+                items:
+                  properties:
+                    expression:
+                      type: string
+                    forPath:
+                      type: string
+                  type: object
+                type: array
+            required:
+            - widgetData
+            type: object
+          status:
+            type: object
+            x-kubernetes-preserve-unknown-fields: true
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
