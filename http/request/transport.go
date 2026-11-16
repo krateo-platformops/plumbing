@@ -6,10 +6,11 @@ import (
 	"encoding/base64"
 	"fmt"
 	"github.com/krateo-platformops/plumbing/dialguard"
+	"log/slog"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
 	"strings"
+	"time"
 
 	xcontext "github.com/krateo-platformops/plumbing/context"
 	"github.com/krateo-platformops/plumbing/endpoints"
@@ -110,6 +111,16 @@ func (rt *traceIdRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 	return rt.delegatedRoundTripper.RoundTrip(req)
 }
 
+// debuggingRoundTripper logs each request an endpoint's client sends, at DEBUG, as METADATA ONLY:
+// method, host, path, status (or the error's type) and duration. It never logs a header, a query or
+// a body (#160).
+//
+// HTTPClientForEndpoint installs it UNDER the credential round trippers, so the request it sees
+// carries `Authorization: Bearer <token>` (or Basic, or the AWS signature), and the response can
+// carry Set-Cookie and a token in its body. The wire dump it used to write
+// (httputil.DumpRequestOut/DumpResponse, which print the headers whatever their body flag says)
+// put all of that in the log. Reading only these fields leaves nothing to redact and nothing to
+// forget; it is the same rule as kubeconfig's debug wrapper (#159).
 type debuggingRoundTripper struct {
 	delegatedRoundTripper http.RoundTripper
 }
@@ -117,25 +128,26 @@ type debuggingRoundTripper struct {
 func (rt *debuggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	log := xcontext.Logger(req.Context())
 
-	b, err := httputil.DumpRequestOut(req, true)
-	if err != nil {
-		return nil, err
-	}
-	log.Debug("request details", "wire", string(b))
-
+	start := time.Now()
 	resp, err := rt.delegatedRoundTripper.RoundTrip(req)
+	attrs := []any{
+		slog.String("method", req.Method),
+		slog.String("host", req.URL.Host),
+		slog.String("path", req.URL.Path),
+		slog.Int64("duration_ms", time.Since(start).Milliseconds()),
+	}
 	if err != nil {
+		log.Debug("http request: failed", append(attrs, slog.String("error_type", errorType(err)))...)
 		return resp, err
 	}
+	log.Debug("http request", append(attrs, slog.Int("status", resp.StatusCode))...)
+	return resp, nil
+}
 
-	b, err = httputil.DumpResponse(resp, req.URL.Query().Get("watch") != "true")
-	if err != nil {
-		return nil, err
-	}
-	log.Debug("response details", "wire", string(b))
-	//fmt.Fprintf(os.Stderr, "\n\n%s\n\n", b)
-
-	return resp, err
+// errorType names an error by its Go type, never its text: a transport error's text can quote the
+// request (a URL with a query).
+func errorType(err error) string {
+	return fmt.Sprintf("%T", err)
 }
 
 type basicAuthRoundTripper struct {
