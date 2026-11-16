@@ -158,7 +158,12 @@ func setAt(cur any, segs []Segment, i int, value any) (any, error) {
 			child = updated
 		}
 		if appending {
-			return append(c, child), nil
+			// A COPY, never append(c, ...): a slice from json.Unmarshal often has spare capacity, and
+			// appending in place would write into a backing array another slice header may share
+			// (core-provider's review of #207). Remove copies for the same reason.
+			out := make([]any, len(c), len(c)+1)
+			copy(out, c)
+			return append(out, child), nil
 		}
 		c[idx] = child
 		return c, nil

@@ -230,3 +230,17 @@ func TestAnEmptyPathIsRefused(t *testing.T) {
 	_, _, err = Remove(map[string]any{}, nil)
 	assert.True(t, errors.Is(err, ErrEmptyPath))
 }
+
+// An append never writes into the caller's backing array: a slice with spare capacity shared by two
+// headers must not see the element appended through one of them.
+func TestSetAppendDoesNotAlias(t *testing.T) {
+	backing := make([]any, 1, 4)
+	backing[0] = "x"
+	wider := backing[:2] // a second header over the same backing array
+	doc := map[string]any{"l": backing}
+
+	out, err := Set(doc, mustParse(t, "l[1]"), "appended")
+	require.NoError(t, err)
+	assert.Equal(t, []any{"x", "appended"}, out.(map[string]any)["l"])
+	assert.Nil(t, wider[1], "the append wrote into a backing array another slice shares")
+}
