@@ -32,6 +32,19 @@ func Get(ctx context.Context, uri string, opts ...Option) (io.Reader, string, er
 
 	key := cacheKey(o.URI, o.Repo)
 
+	// Verify is decided before the cache: a cached chart is returned only after its provenance
+	// verifies (getVerified), never straight from the plain cache read below.
+	if o.Verify {
+		if o.URI == "" {
+			return nil, "", errors.New("URI is required")
+		}
+		g, err := getterFor(o.URI)
+		if err != nil {
+			return nil, "", err
+		}
+		return getVerified(ctx, g, o, key)
+	}
+
 	// Check cache first
 	if o.Cache != nil {
 		if data, ok := o.Cache.Get(key, o.Version); ok {
@@ -42,16 +55,9 @@ func Get(ctx context.Context, uri string, opts ...Option) (io.Reader, string, er
 	if o.URI == "" {
 		return nil, "", errors.New("URI is required")
 	}
-	var err error
-	var g Getter
-	if isOCI(o.URI) {
-		g = &ociGetter{}
-	} else if isTGZ(o.URI) {
-		g = &tgzGetter{}
-	} else if isHTTP(o.URI) {
-		g = &repoGetter{}
-	} else {
-		return nil, "", fmt.Errorf("%w: uri '%s'", ErrNoHandler, o.URI)
+	g, err := getterFor(o.URI)
+	if err != nil {
+		return nil, "", err
 	}
 
 	b, resolvedURI, err := g.Get(ctx, o)
@@ -79,6 +85,19 @@ func Get(ctx context.Context, uri string, opts ...Option) (io.Reader, string, er
 	}
 
 	return b, resolvedURI, nil
+}
+
+// getterFor picks the getter for a chart URI by its scheme and shape.
+func getterFor(uri string) (Getter, error) {
+	switch {
+	case isOCI(uri):
+		return &ociGetter{}, nil
+	case isTGZ(uri):
+		return &tgzGetter{}, nil
+	case isHTTP(uri):
+		return &repoGetter{}, nil
+	}
+	return nil, fmt.Errorf("%w: uri '%s'", ErrNoHandler, uri)
 }
 
 // cacheKey combines the registry URI with the chart name (Repo) so that two

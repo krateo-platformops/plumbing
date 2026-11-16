@@ -476,23 +476,29 @@ type UninstallConfig struct {
 // ActionConfig holds all possible configuration values for Install AND Upgrade.
 // It acts as a data transfer object between your app and the specific Helm implementation.
 type ActionConfig struct {
-	ChartVersion          string
-	ChartName             string
-	Values                map[string]interface{}
-	Description           string
-	Timeout               time.Duration
-	Wait                  bool
-	WaitForJobs           bool
-	Atomic                bool
-	PostRenderer          PostRenderer // Custom interface defined below
-	Labels                map[string]string
-	Replace               bool
-	Force                 bool
-	DryRun                DryRunMode
-	TakeOwnership         bool
-	SkipSchemaValidation  bool
-	SkipCRDs              bool
-	Verify                bool
+	ChartVersion         string
+	ChartName            string
+	Values               map[string]interface{}
+	Description          string
+	Timeout              time.Duration
+	Wait                 bool
+	WaitForJobs          bool
+	Atomic               bool
+	PostRenderer         PostRenderer // Custom interface defined below
+	Labels               map[string]string
+	Replace              bool
+	Force                bool
+	DryRun               DryRunMode
+	TakeOwnership        bool
+	SkipSchemaValidation bool
+	SkipCRDs             bool
+	// Verify makes install and upgrade refuse a chart whose provenance does not verify against
+	// Keyring: its .prov (beside a tgz or repository chart, or the provenance layer of an OCI
+	// chart) must be signed by a key in the keyring and carry the chart's sha256 (plumbing#72).
+	// Verify without a Keyring is an error, never a silent skip.
+	Verify bool
+	// Keyring is the path to the keyring (public keys) Verify checks against, as helm's --keyring.
+	Keyring               string
 	NoHooks               bool
 	DependencyUpdate      bool
 	Devel                 bool

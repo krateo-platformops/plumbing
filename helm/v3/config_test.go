@@ -7,6 +7,7 @@ import (
 	"time"
 
 	helmconfig "github.com/krateo-platformops/plumbing/helm"
+	"github.com/krateo-platformops/plumbing/helm/getter"
 	"helm.sh/helm/v3/pkg/action"
 )
 
@@ -48,7 +49,8 @@ func TestEveryActionConfigFieldReachesTheHelmAction(t *testing.T) {
 		"Values":    "passed to RunWithContext, and to validateValuesSchema",
 		"Verbose":   "the action config's kube client logging (newActionConfig)",
 		"LogWriter": "the action config's kube client logging (newActionConfig)",
-		"Verify":    "plumbing#72's second half: provenance is checked in plumbing's own chart getter, which helm's ChartPathOptions.Verify never reaches",
+		"Verify":    "the chart getter's provenance check (buildGetterOpts -> getter.WithVerify); helm's own Verify acts only in LocateChart, which plumbing never calls",
+		"Keyring":   "the chart getter's provenance check, with Verify",
 	}
 	installOnly := map[string]string{
 		"Replace":     "action.Upgrade has no Replace",
@@ -116,5 +118,26 @@ func TestApplyConfig_PropagatesTheSkipSwitches(t *testing.T) {
 		if up.DisableHooks != on || up.SkipCRDs != on || up.SkipSchemaValidation != on {
 			t.Errorf("upgrade, switches %v: DisableHooks=%v SkipCRDs=%v SkipSchemaValidation=%v", on, up.DisableHooks, up.SkipCRDs, up.SkipSchemaValidation)
 		}
+	}
+}
+
+// Verify and Keyring reach the chart getter, where provenance is checked (plumbing#72); without
+// Verify, no verification is asked for.
+func TestBuildGetterOpts_CarriesVerifyAndKeyring(t *testing.T) {
+	apply := func(cfg *helmconfig.ActionConfig) getter.GetOptions {
+		var o getter.GetOptions
+		for _, opt := range (&client{}).buildGetterOpts(cfg) {
+			_ = opt(&o)
+		}
+		return o
+	}
+	if o := apply(&helmconfig.ActionConfig{Verify: true, Keyring: "/keys/pubring.gpg"}); !o.Verify || o.Keyring != "/keys/pubring.gpg" {
+		t.Errorf("Verify with a keyring: getter options Verify=%v Keyring=%q", o.Verify, o.Keyring)
+	}
+	if o := apply(&helmconfig.ActionConfig{Verify: true}); !o.Verify || o.Keyring != "" {
+		t.Errorf("Verify without a keyring must still ask for verification, so the getter refuses: Verify=%v", o.Verify)
+	}
+	if o := apply(&helmconfig.ActionConfig{Keyring: "/keys/pubring.gpg"}); o.Verify {
+		t.Error("a keyring without Verify asked for verification")
 	}
 }
