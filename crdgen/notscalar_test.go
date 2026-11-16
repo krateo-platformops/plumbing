@@ -110,7 +110,10 @@ func TestNotScalarValidationsAreNative(t *testing.T) {
 // (which matches everything and so would reject every value).
 func TestNotStillDroppedWhereItMustBe(t *testing.T) {
 	for _, c := range []struct{ name, schema, warn string }{
-		{"only exclusiveMinimum (emitted nowhere)", `{"type":"object","properties":{"n":{"type":"number","not":{"exclusiveMinimum":3}}}}`, "not (non-trivial) unsupported"},
+		// plumbing#110 made exclusiveMinimum expressible, so a not carrying a strict bound is emitted
+		// now (TestExclusiveBoundInsideNotIsEnforced). Draft 4's true with no minimum bounds nothing,
+		// so a not carrying only that is still empty, and must still be dropped, not become not:{}.
+		{"only a draft-4 exclusiveMinimum with no bound", `{"type":"object","properties":{"n":{"type":"number","not":{"exclusiveMinimum":true}}}}`, "not (non-trivial) unsupported"},
 		{"structured subschema", `{"type":"object","properties":{"s":{"type":"string","not":{"anyOf":[{"pattern":"a"},{"pattern":"b"}]}}}}`, "not (non-trivial subschema) unsupported"},
 		{"not on an object", `{"type":"object","properties":{"o":{"type":"object","not":{"required":["x"]}}}}`, "not on non-scalar node unsupported"},
 	} {
