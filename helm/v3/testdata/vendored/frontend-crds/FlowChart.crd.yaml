@@ -1,0 +1,338 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.18.0
+  name: flowcharts.widgets.templates.krateo.io
+spec:
+  group: widgets.templates.krateo.io
+  names:
+    categories:
+    - widgets
+    - krateo
+    kind: FlowChart
+    listKind: FlowChartList
+    plural: flowcharts
+    singular: flowchart
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .metadata.creationTimestamp
+      name: AGE
+      type: date
+    name: v1beta1
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              apiRef:
+                properties:
+                  name:
+                    type: string
+                  namespace:
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
+              resourcesRefs:
+                properties:
+                  items:
+                    items:
+                      properties:
+                        apiVersion:
+                          type: string
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        namespace:
+                          type: string
+                        payload:
+                          type: object
+                          x-kubernetes-preserve-unknown-fields: true
+                        resource:
+                          type: string
+                        slice:
+                          properties:
+                            continue:
+                              type: boolean
+                            offset:
+                              format: int32
+                              type: integer
+                            page:
+                              format: int32
+                              type: integer
+                            perPage:
+                              format: int32
+                              type: integer
+                          required:
+                          - perPage
+                          type: object
+                        verb:
+                          enum:
+                          - POST
+                          - PUT
+                          - PATCH
+                          - DELETE
+                          - GET
+                          type: string
+                      required:
+                      - id
+                      type: object
+                    type: array
+                  slice:
+                    properties:
+                      continue:
+                        type: boolean
+                      offset:
+                        format: int32
+                        type: integer
+                      page:
+                        format: int32
+                        type: integer
+                      perPage:
+                        format: int32
+                        type: integer
+                    required:
+                    - perPage
+                    type: object
+                required:
+                - items
+                type: object
+              resourcesRefsTemplate:
+                items:
+                  properties:
+                    iterator:
+                      type: string
+                    template:
+                      properties:
+                        apiVersion:
+                          type: string
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        namespace:
+                          type: string
+                        payload:
+                          type: object
+                          x-kubernetes-preserve-unknown-fields: true
+                        resource:
+                          type: string
+                        verb:
+                          enum:
+                          - POST
+                          - PUT
+                          - PATCH
+                          - DELETE
+                          - GET
+                          type: string
+                      type: object
+                  type: object
+                type: array
+              widgetData:
+                properties:
+                  data:
+                    description: list of kubernetes resources and their relationships
+                      to render as nodes in the flow chart
+                    items:
+                      properties:
+                        date:
+                          description: optional date value to be shown in the node,
+                            formatted as ISO 8601 string
+                          type: string
+                        icon:
+                          description: custom icon displayed for the resource node
+                          properties:
+                            color:
+                              description: CSS color value for the icon background
+                              enum:
+                              - blue
+                              - darkBlue
+                              - orange
+                              - gray
+                              - red
+                              - green
+                              - violet
+                              type: string
+                            message:
+                              description: optional tooltip message displayed on hover
+                              type: string
+                            name:
+                              description: FontAwesome icon class name (e.g. 'fa-check')
+                              type: string
+                          type: object
+                        kind:
+                          description: kubernetes resource type (e.g. Deployment,
+                            Service)
+                          type: string
+                        name:
+                          description: name of the resource
+                          type: string
+                        namespace:
+                          description: namespace in which the resource is defined
+                          type: string
+                        parentRefs:
+                          description: list of parent resources used to define graph
+                            relationships
+                          items:
+                            properties:
+                              date:
+                                description: optional date value to be shown in the
+                                  node, formatted as ISO 8601 string
+                                type: string
+                              icon:
+                                description: custom icon for the parent resource
+                                properties:
+                                  color:
+                                    description: CSS color value for the icon background
+                                    enum:
+                                    - blue
+                                    - darkBlue
+                                    - orange
+                                    - gray
+                                    - red
+                                    - green
+                                    - violet
+                                    type: string
+                                  message:
+                                    description: optional tooltip message
+                                    type: string
+                                  name:
+                                    description: FontAwesome icon class name
+                                    type: string
+                                type: object
+                              kind:
+                                description: resource type of the parent
+                                type: string
+                              name:
+                                description: name of the parent resource
+                                type: string
+                              namespace:
+                                description: namespace of the parent resource
+                                type: string
+                              parentRefs:
+                                description: nested parent references for recursive
+                                  relationships
+                                items:
+                                  type: object
+                                  x-kubernetes-preserve-unknown-fields: true
+                                type: array
+                              resourceVersion:
+                                description: internal version string of the parent
+                                  resource
+                                type: string
+                              statusIcon:
+                                description: custom status icon for the parent resource
+                                properties:
+                                  color:
+                                    description: CSS color value for the status icon
+                                      background
+                                    enum:
+                                    - blue
+                                    - darkBlue
+                                    - orange
+                                    - gray
+                                    - red
+                                    - green
+                                    - violet
+                                    type: string
+                                  message:
+                                    description: optional tooltip message
+                                    type: string
+                                  name:
+                                    description: FontAwesome icon class name
+                                    type: string
+                                type: object
+                              uid:
+                                description: unique identifier of the parent resource
+                                type: string
+                              version:
+                                description: api version of the parent resource
+                                type: string
+                            type: object
+                          type: array
+                        resourceVersion:
+                          description: internal version string of the resource
+                          type: string
+                        statusIcon:
+                          description: custom status icon displayed alongside resource
+                            info
+                          properties:
+                            color:
+                              description: CSS color value for the status icon background
+                              enum:
+                              - blue
+                              - darkBlue
+                              - orange
+                              - gray
+                              - red
+                              - green
+                              - violet
+                              type: string
+                            message:
+                              description: optional tooltip message describing the
+                                status
+                              type: string
+                            name:
+                              description: FontAwesome icon class name representing
+                                status
+                              type: string
+                          type: object
+                        uid:
+                          description: unique identifier of the resource
+                          type: string
+                        version:
+                          description: api version of the resource
+                          type: string
+                      required:
+                      - date
+                      - kind
+                      - name
+                      - namespace
+                      - resourceVersion
+                      - uid
+                      - version
+                      type: object
+                    type: array
+                type: object
+              widgetDataTemplate:
+                items:
+                  properties:
+                    expression:
+                      type: string
+                    forPath:
+                      type: string
+                  type: object
+                type: array
+            required:
+            - widgetData
+            type: object
+          status:
+            type: object
+            x-kubernetes-preserve-unknown-fields: true
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

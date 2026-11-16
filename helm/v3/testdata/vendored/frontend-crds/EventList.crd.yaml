@@ -1,0 +1,245 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.18.0
+  name: eventlists.widgets.templates.krateo.io
+spec:
+  group: widgets.templates.krateo.io
+  names:
+    categories:
+    - widgets
+    - krateo
+    kind: EventList
+    listKind: EventListList
+    plural: eventlists
+    singular: eventlist
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .metadata.creationTimestamp
+      name: AGE
+      type: date
+    name: v1beta1
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              apiRef:
+                properties:
+                  name:
+                    type: string
+                  namespace:
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
+              resourcesRefs:
+                properties:
+                  items:
+                    items:
+                      properties:
+                        apiVersion:
+                          type: string
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        namespace:
+                          type: string
+                        payload:
+                          type: object
+                          x-kubernetes-preserve-unknown-fields: true
+                        resource:
+                          type: string
+                        slice:
+                          properties:
+                            continue:
+                              type: boolean
+                            offset:
+                              format: int32
+                              type: integer
+                            page:
+                              format: int32
+                              type: integer
+                            perPage:
+                              format: int32
+                              type: integer
+                          required:
+                          - perPage
+                          type: object
+                        verb:
+                          enum:
+                          - POST
+                          - PUT
+                          - PATCH
+                          - DELETE
+                          - GET
+                          type: string
+                      required:
+                      - id
+                      type: object
+                    type: array
+                  slice:
+                    properties:
+                      continue:
+                        type: boolean
+                      offset:
+                        format: int32
+                        type: integer
+                      page:
+                        format: int32
+                        type: integer
+                      perPage:
+                        format: int32
+                        type: integer
+                    required:
+                    - perPage
+                    type: object
+                required:
+                - items
+                type: object
+              resourcesRefsTemplate:
+                items:
+                  properties:
+                    iterator:
+                      type: string
+                    template:
+                      properties:
+                        apiVersion:
+                          type: string
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        namespace:
+                          type: string
+                        payload:
+                          type: object
+                          x-kubernetes-preserve-unknown-fields: true
+                        resource:
+                          type: string
+                        verb:
+                          enum:
+                          - POST
+                          - PUT
+                          - PATCH
+                          - DELETE
+                          - GET
+                          type: string
+                      type: object
+                  type: object
+                type: array
+              widgetData:
+                properties:
+                  events:
+                    description: list of events received from a k8s cluster or server
+                      sent event
+                    items:
+                      properties:
+                        cluster_name:
+                          description: name of the cluster
+                          type: string
+                        composition_id:
+                          description: unique identifier of the composition
+                          type: string
+                        created_at:
+                          description: creation date and time of the event
+                          format: date-time
+                          type: string
+                        event_type:
+                          description: type of the event, e.g., normal or warning
+                          enum:
+                          - Normal
+                          - Warning
+                          type: string
+                        global_uid:
+                          description: unique identifier of the event
+                          type: string
+                        involved_object_uid:
+                          description: unique identifier of a resource associated
+                            to the event
+                          type: string
+                        message:
+                          description: descriptive message of the event
+                          type: string
+                        namespace:
+                          description: namespace the event belongs to
+                          type: string
+                        raw:
+                          description: raw content of the event
+                          type: string
+                        reason:
+                          description: reason or cause of the event
+                          type: string
+                        resource_kind:
+                          description: resource type involved
+                          type: string
+                        resource_name:
+                          description: unique name of the resource
+                          type: string
+                      required:
+                      - cluster_name
+                      - created_at
+                      - event_type
+                      - global_uid
+                      - message
+                      - namespace
+                      - raw
+                      - reason
+                      - resource_kind
+                      - resource_name
+                      type: object
+                    type: array
+                  prefix:
+                    description: filter prefix used to filter data
+                    type: string
+                  sseEndpoint:
+                    description: endpoint url for server sent events connection
+                    type: string
+                  sseTopic:
+                    description: subscription topic for server sent events
+                    type: string
+                required:
+                - events
+                type: object
+              widgetDataTemplate:
+                items:
+                  properties:
+                    expression:
+                      type: string
+                    forPath:
+                      type: string
+                  type: object
+                type: array
+            required:
+            - widgetData
+            type: object
+          status:
+            type: object
+            x-kubernetes-preserve-unknown-fields: true
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

@@ -243,7 +243,7 @@ func TestInstallAndUninstall_OCI(t *testing.T) {
 			defer cli.Close()
 
 			// 3. Define Chart Details - Using official Bitnami OCI registry
-			chartRef := "oci://registry-1.docker.io/bitnamicharts/nginx"
+			chartRef := vendoredOCI(t, "bitnamicharts/nginx", "nginx-25.2.14.tgz") // plumbing#96: was bitnami's registry
 			releaseName := "test-release-oci"
 
 			t.Logf("Attempting to install chart: %s", chartRef)
@@ -315,7 +315,7 @@ func TestUpgrade(t *testing.T) {
 			require.NoError(t, err)
 			defer cli.Close()
 
-			chartRef := "oci://registry-1.docker.io/bitnamicharts/nginx"
+			chartRef := vendoredOCI(t, "bitnamicharts/nginx", "nginx-25.2.14.tgz") // plumbing#96: was bitnami's registry
 			releaseName := "test-upgrade"
 
 			// Install initial version
@@ -379,7 +379,7 @@ func TestRollback(t *testing.T) {
 			require.NoError(t, err)
 			defer cli.Close()
 
-			chartRef := "oci://registry-1.docker.io/bitnamicharts/nginx"
+			chartRef := vendoredOCI(t, "bitnamicharts/nginx", "nginx-25.2.14.tgz") // plumbing#96: was bitnami's registry
 			releaseName := "test-rollback"
 
 			// Install initial version
@@ -464,7 +464,7 @@ func TestGetRelease(t *testing.T) {
 			require.NoError(t, err)
 			defer cli.Close()
 
-			chartRef := "oci://registry-1.docker.io/bitnamicharts/nginx"
+			chartRef := vendoredOCI(t, "bitnamicharts/nginx", "nginx-25.2.14.tgz") // plumbing#96: was bitnami's registry
 			releaseName := "test-get-release"
 
 			// Install a release
@@ -519,7 +519,7 @@ func TestListReleases(t *testing.T) {
 			require.NoError(t, err)
 			defer cli.Close()
 
-			chartRef := "oci://registry-1.docker.io/bitnamicharts/nginx"
+			chartRef := vendoredOCI(t, "bitnamicharts/nginx", "nginx-25.2.14.tgz") // plumbing#96: was bitnami's registry
 
 			// Install multiple releases
 			releases := []string{"test-list-1", "test-list-2"}
@@ -589,7 +589,7 @@ func TestInstallAndUninstall_Repo(t *testing.T) {
 			defer cli.Close()
 
 			// 3. Define Chart Details - Using official Kubernetes ingress-nginx repo
-			chartRef := "https://kubernetes.github.io/ingress-nginx"
+			chartRef := vendoredRepo(t) // plumbing#96: was https://kubernetes.github.io/ingress-nginx
 			releaseName := "test-release-repo"
 			chartName := "ingress-nginx"
 
@@ -644,7 +644,7 @@ func TestInstallAndUninstall_TGZ(t *testing.T) {
 
 			// 3. Define Chart Details - Direct .tgz URL
 			// Using official Kubernetes ingress-nginx chart archive
-			chartRef := "https://github.com/kubernetes/ingress-nginx/releases/download/helm-chart-4.10.0/ingress-nginx-4.10.0.tgz"
+			chartRef := vendoredTGZ(t, "ingress-nginx-4.10.0.tgz") // plumbing#96: was the GitHub release asset
 			releaseName := "test-release-tgz"
 
 			t.Logf("Attempting to install chart from tgz: %s", chartRef)
@@ -797,40 +797,39 @@ func TestFullStackAppRedisUpgrade(t *testing.T) {
 			// 0. Create demo-system namespace
 			_ = exec.Command("kubectl", "--kubeconfig", c.KubeconfigFile(), "create", "namespace", "demo-system").Run()
 
-			// 1. Install frontend-chart CRDs
-			tmpDir := t.TempDir()
-			cmd := exec.Command("git", "clone", "--depth", "1", "https://github.com/krateoplatformops/frontend-chart.git", tmpDir)
+			// 1. Install frontend-chart CRDs, vendored from krateoplatformops/frontend-chart at
+			// frontendCRDsCommit (plumbing#96: was a live git clone of its HEAD).
+			verifyVendored(t)
+			cmd := exec.Command("kubectl", "--kubeconfig", c.KubeconfigFile(), "apply", "-f", frontendCRDsDir)
 			out, err := cmd.CombinedOutput()
-			require.NoError(t, err, "failed to clone frontend-chart: %s", string(out))
-
-			crdsDir := filepath.Join(tmpDir, "crd-chart", "templates")
-			cmd = exec.Command("kubectl", "--kubeconfig", c.KubeconfigFile(), "apply", "-f", crdsDir)
-			out, err = cmd.CombinedOutput()
 			require.NoError(t, err, "failed to apply CRDs: %s", string(out))
 
-			// 2. Initialize Helm Client for Setup
+			// 2. Initialize Helm Client for Setup. Every prerequisite comes from the vendored charts,
+			// served as one chart repository (plumbing#96).
+			repoURL := vendoredRepo(t)
 			cli, err := NewClient(c.Client().RESTConfig(), WithCache())
 			require.NoError(t, err)
 			defer cli.Close()
 
 			// 3. Install Redis Operator
 			t.Log("Installing Redis Operator")
-			ensurePrerequisite(t, c, cli, ctx, "redis-operator", "ot-operators", "https://ot-container-kit.github.io/helm-charts",
+			ensurePrerequisite(t, c, cli, ctx, "redis-operator", "ot-operators", repoURL,
 				// its operator must be up to reconcile the Redis CR the subject chart creates
 				deploymentsReady,
 				&helmconfig.InstallConfig{
 					Namespace:       "ot-operators",
 					CreateNamespace: true,
 					ActionConfig: &helmconfig.ActionConfig{
-						ChartName: "redis-operator",
-						Wait:      true,
-						Timeout:   120 * time.Second,
+						ChartName:    "redis-operator",
+						ChartVersion: "0.27.0", // pinned by vendoring; it floated to the repo's latest before #96
+						Wait:         true,
+						Timeout:      120 * time.Second,
 					},
 				})
 
 			// 4. Install CNPG Operator
 			t.Log("Installing CNPG Operator")
-			ensurePrerequisite(t, c, cli, ctx, "cnpg", "", "https://cloudnative-pg.github.io/charts",
+			ensurePrerequisite(t, c, cli, ctx, "cnpg", "", repoURL,
 				// its admission webhook must answer, or the subject install fails on mcluster.cnpg.io
 				deploymentsReady,
 				&helmconfig.InstallConfig{
@@ -844,7 +843,7 @@ func TestFullStackAppRedisUpgrade(t *testing.T) {
 
 			// 5. Install PG Cluster
 			t.Log("Installing PG Cluster")
-			ensurePrerequisite(t, c, cli, ctx, "pg-cluster", "", "https://cloudnative-pg.github.io/charts",
+			ensurePrerequisite(t, c, cli, ctx, "pg-cluster", "", repoURL,
 				// a data-plane Cluster CR, not an operator: nothing here connects to the database,
 				// and CNPG manages its pods directly so there is no Deployment to wait on
 				nil,
@@ -874,7 +873,7 @@ func TestFullStackAppRedisUpgrade(t *testing.T) {
 			// showed it: a reused one still had the CRDs from a previous run, so the render kept
 			// working. "The workload is unused" is not "the release is unused".
 			t.Log("Installing Snowplow (for templates.krateo.io CRDs)")
-			ensurePrerequisite(t, c, cli, ctx, "snowplow", "", "https://charts.krateo.io",
+			ensurePrerequisite(t, c, cli, ctx, "snowplow", "", repoURL,
 				kindServed("templates.krateo.io/v1", "RESTAction"),
 				&helmconfig.InstallConfig{
 					ActionConfig: &helmconfig.ActionConfig{
@@ -895,7 +894,7 @@ func TestFullStackAppRedisUpgrade(t *testing.T) {
 			require.NoError(t, err)
 			defer cli.Close()
 
-			chartRef := "https://marketplace.krateo.io"
+			chartRef := vendoredRepo(t) // plumbing#96: was https://marketplace.krateo.io
 			chartName := "full-stack-app"
 			chartVersion := "0.0.15"
 			releaseName := "test-redis-upgrade"
