@@ -1,12 +1,18 @@
 package crdgen
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
 	apiextensions "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	structuralschema "k8s.io/apiextensions-apiserver/pkg/apiserver/schema"
+	schemacel "k8s.io/apiextensions-apiserver/pkg/apiserver/schema/cel"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/apimachinery/pkg/util/version"
+	apiservercel "k8s.io/apiserver/pkg/cel"
+	"k8s.io/apiserver/pkg/cel/environment"
 )
 
 // plumbing#70: crdgen validates CEL for the Kubernetes version it targets, not for whatever k8s.io
@@ -182,5 +188,79 @@ func TestValidateCRDAppliesTheTarget(t *testing.T) {
 	err = validateCRD(crd, celTarget{kube: version.MajorMinor(1, 33)})
 	if err == nil || !strings.Contains(err.Error(), "a Kubernetes 1.33 apiserver refuses this") {
 		t.Fatalf("want the 1.33 target to refuse the semver rule, got %v", err)
+	}
+}
+
+// The floor walk FAILS CLOSED (core-provider's review of #206): a node whose rules could not be
+// compiled at the target is an error, never a pass. None of the three is reachable from a CRD that
+// passed the apiserver's own validation, so each is forced.
+func TestCELFloorFailsClosed(t *testing.T) {
+	target := celTarget{kube: version.MajorMinor(1, 36)}
+	envSet := environment.MustBaseEnvSet(target.compat())
+	p := field.NewPath("root")
+	rule := apiextensions.ValidationRules{{Rule: "self != ''"}}
+
+	t.Run("type information fails", func(t *testing.T) {
+		// No type and no x-kubernetes-preserve-unknown-fields: no CEL declaration exists for it.
+		s := &apiextensions.JSONSchemaProps{Type: "object", Properties: map[string]apiextensions.JSONSchemaProps{"v": {XValidations: rule}}}
+		errs := celFloorErrors(s, p, target)
+		if len(errs) != 1 || errs[0].Type != field.ErrorTypeInternal || !strings.Contains(errs[0].Error(), "cannot check these rules against Kubernetes 1.36: type information:") {
+			t.Fatalf("want one internal error, got %v", errs)
+		}
+	})
+	t.Run("no type information", func(t *testing.T) {
+		s := &apiextensions.JSONSchemaProps{Type: "string", XValidations: rule}
+		errs := target.compileNode(s, nil, envSet, p)
+		if len(errs) != 1 || errs[0].Type != field.ErrorTypeInternal || !strings.Contains(errs[0].Error(), "no type information") {
+			t.Fatalf("want one internal error, got %v", errs)
+		}
+	})
+	t.Run("compilation fails", func(t *testing.T) {
+		orig := compileRules
+		t.Cleanup(func() { compileRules = orig })
+		compileRules = func(*structuralschema.Structural, *apiservercel.DeclType, uint64, *environment.EnvSet, schemacel.EnvLoader) ([]schemacel.CompilationResult, error) {
+			return nil, errors.New("forced")
+		}
+		errs := celFloorErrors(ruleSchema("self != ''"), p, target)
+		if len(errs) != 1 || errs[0].Type != field.ErrorTypeInternal || !strings.Contains(errs[0].Error(), "forced") {
+			t.Fatalf("want one internal error, got %v", errs)
+		}
+	})
+}
+
+// The walk visits properties, items and additionalProperties only, because the apiserver refuses
+// x-kubernetes-validations anywhere else. That is a fact about the linked libraries, so it is pinned
+// here: allOf is the quantifier the apiserver plans to open (AllowNestedXValidations, false by
+// default today), and this turns red on the bump that opens it, before a rule there could pass
+// generation unchecked against the floor.
+func TestRulesUnderQuantifiersAreRefusedByTheApiserver(t *testing.T) {
+	def, err := resolveCELTarget("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := apiextensionsv1.ValidationRules{{Rule: "self != ''"}}
+	member := apiextensionsv1.JSONSchemaProps{XValidations: rule}
+	for _, tc := range []struct {
+		name, at string
+		set      func(*apiextensionsv1.JSONSchemaProps)
+	}{
+		{"allOf", "allOf[0]", func(s *apiextensionsv1.JSONSchemaProps) { s.AllOf = []apiextensionsv1.JSONSchemaProps{member} }},
+		{"anyOf", "anyOf[0]", func(s *apiextensionsv1.JSONSchemaProps) { s.AnyOf = []apiextensionsv1.JSONSchemaProps{member} }},
+		{"oneOf", "oneOf[0]", func(s *apiextensionsv1.JSONSchemaProps) { s.OneOf = []apiextensionsv1.JSONSchemaProps{member} }},
+		{"not", "not", func(s *apiextensionsv1.JSONSchemaProps) { m := member; s.Not = &m }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			crd := generateV1(t, `{"type":"object","properties":{"v":{"type":"string","maxLength":64}}}`)
+			spec := crd.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"]
+			v := spec.Properties["v"]
+			tc.set(&v)
+			spec.Properties["v"] = v
+			crd.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"] = spec
+			err := validateCRD(crd, def)
+			want := "properties[v]." + tc.at + ".x-kubernetes-validations: Forbidden: must be empty to be structural"
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("the apiserver did not refuse a rule under %s (want %q), which the floor walk does not visit: %v", tc.name, want, err)
+			}
+		})
 	}
 }

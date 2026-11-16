@@ -136,7 +136,10 @@ func sameCELSurface(a, b *version.Version) bool {
 // all this adds is the question validateCRD cannot ask, because its environment is the linked
 // libraries' rather than the target's. The walk mirrors the apiserver's: x-kubernetes-validations
 // are only legal on properties, items and additionalProperties, and the type information comes from
-// the apiserver's own CEL schema contexts.
+// the apiserver's own CEL schema contexts. Rules under allOf/anyOf/oneOf/not are refused by the
+// apiserver itself today ("must be empty to be structural"); allOf is the quantifier it plans to
+// open, and TestRulesUnderQuantifiersAreRefusedByTheApiserver turns red on the bump that does, so
+// this walk is extended before a rule there can pass unchecked.
 func celFloorErrors(root *apiextensions.JSONSchemaProps, rootPath *field.Path, t celTarget) field.ErrorList {
 	if root == nil {
 		return nil
@@ -146,20 +149,7 @@ func celFloorErrors(root *apiextensions.JSONSchemaProps, rootPath *field.Path, t
 	var walk func(s *apiextensions.JSONSchemaProps, ctx *validation.CELSchemaContext, p *field.Path)
 	walk = func(s *apiextensions.JSONSchemaProps, ctx *validation.CELSchemaContext, p *field.Path) {
 		if len(s.XValidations) > 0 {
-			if ti, err := ctx.TypeInfo(); err == nil && ti != nil {
-				results, err := schemacel.Compile(ti.Schema, ti.DeclType, celconfig.PerCallLimit, envSet, schemacel.NewExpressionsEnvLoader())
-				if err == nil {
-					for i, r := range results {
-						rp := p.Child("x-kubernetes-validations").Index(i)
-						if r.Error != nil {
-							errs = append(errs, field.Invalid(rp.Child("rule"), s.XValidations[i].Rule, t.refusal(ti, s.XValidations[i].Rule, r.Error.Detail)))
-						}
-						if r.MessageExpressionError != nil {
-							errs = append(errs, field.Invalid(rp.Child("messageExpression"), s.XValidations[i].MessageExpression, t.refusal(ti, "", r.MessageExpressionError.Detail)))
-						}
-					}
-				}
-			}
+			errs = append(errs, t.compileNode(s, ctx, envSet, p)...)
 		}
 		names := make([]string, 0, len(s.Properties))
 		for name := range s.Properties {
@@ -181,6 +171,41 @@ func celFloorErrors(root *apiextensions.JSONSchemaProps, rootPath *field.Path, t
 	return errs
 }
 
+// compileRules is schemacel.Compile; a variable so a test can make it fail, which no valid CRD does.
+var compileRules = schemacel.Compile
+
+// compileNode compiles one node's rules at the target and reports each refusal.
+//
+// It FAILS CLOSED. When the node's type information or the compilation itself cannot be obtained,
+// its rules were not checked against the floor, and that is reported as an internal error rather
+// than passed: "could not check" must never read as "checked and accepted" (core-provider's review
+// of #206). The apiserver's own validation reports a missing TypeInfo the same way.
+func (t celTarget) compileNode(s *apiextensions.JSONSchemaProps, ctx *validation.CELSchemaContext, envSet *environment.EnvSet, p *field.Path) field.ErrorList {
+	vp := p.Child("x-kubernetes-validations")
+	ti, err := ctx.TypeInfo()
+	if err != nil {
+		return field.ErrorList{field.InternalError(vp, fmt.Errorf("cannot check these rules against Kubernetes %s: type information: %w", t.kube, err))}
+	}
+	if ti == nil {
+		return field.ErrorList{field.InternalError(vp, fmt.Errorf("cannot check these rules against Kubernetes %s: no type information", t.kube))}
+	}
+	results, err := compileRules(ti.Schema, ti.DeclType, celconfig.PerCallLimit, envSet, schemacel.NewExpressionsEnvLoader())
+	if err != nil {
+		return field.ErrorList{field.InternalError(vp, fmt.Errorf("cannot check these rules against Kubernetes %s: %w", t.kube, err))}
+	}
+	var errs field.ErrorList
+	for i, r := range results {
+		rp := vp.Index(i)
+		if r.Error != nil {
+			errs = append(errs, field.Invalid(rp.Child("rule"), s.XValidations[i].Rule, t.refusal(ti, s.XValidations[i].Rule, r.Error.Detail)))
+		}
+		if r.MessageExpressionError != nil {
+			errs = append(errs, field.Invalid(rp.Child("messageExpression"), s.XValidations[i].MessageExpression, t.refusal(ti, "", r.MessageExpressionError.Detail)))
+		}
+	}
+	return errs
+}
+
 // refusal explains a rule the target refuses: the compiler's own reason, and the first Kubernetes
 // version whose apiserver accepts it, found by compiling at each newer compatibility version the
 // linked libraries know. rule is "" for a messageExpression, which is only reported, not searched.
@@ -195,7 +220,7 @@ func (t celTarget) refusal(ti *validation.CELTypeInfo, rule, detail string) stri
 	for c := t.compat().AddMinor(1); !c.GreaterThan(linked); c = c.AddMinor(1) {
 		probe := *ti.Schema
 		probe.XValidations = apiextensionsv1.ValidationRules{{Rule: rule}}
-		results, err := schemacel.Compile(&probe, ti.DeclType, celconfig.PerCallLimit, environment.MustBaseEnvSet(c), schemacel.NewExpressionsEnvLoader())
+		results, err := compileRules(&probe, ti.DeclType, celconfig.PerCallLimit, environment.MustBaseEnvSet(c), schemacel.NewExpressionsEnvLoader())
 		if err == nil && len(results) == 1 && results[0].Error == nil {
 			return fmt.Sprintf("%s; it is accepted from Kubernetes %s", msg, c.AddMinor(1))
 		}
