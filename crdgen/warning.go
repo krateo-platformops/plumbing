@@ -29,6 +29,13 @@ const (
 	// when it is omitted (plumbing#84). Nothing is lost; the apiserver stores more.
 	KindParentDefaulted WarningKind = "ParentDefaulted"
 
+	// KindDefaultContradictsSchema: a `default` in the input does not satisfy the subschema it is
+	// written in, and crdgen does not carry it into the CRD, so generation proceeds (plumbing#36).
+	// Path is the default's JSON pointer in the input document ("#/properties/x/anyOf/0"), not a
+	// CRD path. A carried one fails generation with *DefaultContradictionError instead. The CRD
+	// loses nothing: the input contradicts itself.
+	KindDefaultContradictsSchema WarningKind = "DefaultContradictsSchema"
+
 	// KindConventionConflict: a convention field crdgen would declare (status.observedGeneration)
 	// is already declared with another type and was kept (plumbing#82).
 	KindConventionConflict WarningKind = "ConventionConflict"

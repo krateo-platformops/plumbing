@@ -53,7 +53,11 @@ func generateDirect(opts Options) ([]byte, []Warning, error) {
 		return nil, nil, fmt.Errorf("parsing spec schema: %w", err)
 	}
 
-	tr := &transpiler{refs: map[string]*schemas.Type{}}
+	// So a schema that contradicts itself is blamed on the schema (plumbing#36). The verdict waits
+	// for the CRD: only a default that reaches it can fail generation.
+	specCheck := checkDefaults("spec schema", opts.SpecSchema, specSchema)
+
+	tr := &transpiler{refs: map[string]*schemas.Type{}, carried: map[*apiextensionsv1.JSON]*schemas.Type{}}
 	tr.collectRefs(specSchema)
 
 	specProps := rootObject(tr.transpile((*schemas.Type)(specSchema.ObjectAsType), "spec", map[string]bool{}))
@@ -73,12 +77,14 @@ func generateDirect(opts Options) ([]byte, []Warning, error) {
 	}
 
 	var statusProps *apiextensionsv1.JSONSchemaProps
+	var statusCheck defaultCheck
 	if len(opts.StatusSchema) > 0 {
 		statusSchema, err := schemas.FromJSONReader(bytes.NewReader(opts.StatusSchema))
 		if err != nil {
 			return nil, tr.warnings, fmt.Errorf("parsing status schema: %w", err)
 		}
-		st := &transpiler{refs: map[string]*schemas.Type{}}
+		statusCheck = checkDefaults("status schema", opts.StatusSchema, statusSchema)
+		st := &transpiler{refs: map[string]*schemas.Type{}, carried: tr.carried}
 		st.collectRefs(statusSchema)
 		statusProps = st.transpile((*schemas.Type)(statusSchema.ObjectAsType), "status", map[string]bool{})
 		tr.warnings = append(tr.warnings, st.warnings...)
@@ -101,8 +107,42 @@ func generateDirect(opts Options) ([]byte, []Warning, error) {
 				"enclosing array(s) to get uniqueness enforced.", n)})
 	}
 
+	// Which input defaults reached the CRD, split by the schema they came from. Before validateCRD,
+	// so a carried contradiction is reported as the input's error rather than as the apiserver's
+	// refusal of it.
+	surviving := map[*apiextensionsv1.JSON]bool{}
+	survivingDefaults(crd.Spec.Versions[0].Schema.OpenAPIV3Schema, surviving)
+	carried := map[*schemas.Type]bool{}
+	for j := range surviving {
+		if n, ok := tr.carried[j]; ok {
+			carried[n] = true
+		}
+	}
+	var verdicts []defaultVerdict
+	for _, c := range []defaultCheck{specCheck, statusCheck} {
+		if c.schema == "" {
+			continue
+		}
+		mine := map[*schemas.Type]bool{}
+		for n := range carried {
+			if _, ok := c.pointerOf[n]; ok {
+				mine[n] = true
+			}
+		}
+		verdicts = append(verdicts, c.verdict(mine))
+	}
+	for _, v := range verdicts {
+		tr.warnings = append(tr.warnings, v.warnings...)
+	}
+	for _, v := range verdicts {
+		if v.err != nil {
+			return nil, tr.warnings, v.err
+		}
+	}
+
 	if err := validateCRD(crd); err != nil {
-		return nil, tr.warnings, fmt.Errorf("generated CRD failed the apiserver's own validation (this is a crdgen bug, not a config error): %w", err)
+		return nil, tr.warnings, fmt.Errorf("generated CRD failed the apiserver's own validation (%s): %w",
+			refusalAttribution(verdicts...), err)
 	}
 
 	out, err := yaml.Marshal(crd)
@@ -115,6 +155,9 @@ func generateDirect(opts Options) ([]byte, []Warning, error) {
 type transpiler struct {
 	refs     map[string]*schemas.Type // JSON-pointer-keyed $defs table
 	warnings []Warning
+	// carried maps each default copyDefault put into the CRD to the input node it came from, by the
+	// identity of the *JSON it allocated (plumbing#36: only a default that survives can fail).
+	carried map[*apiextensionsv1.JSON]*schemas.Type
 }
 
 // collectRefs builds the $defs table keyed by full JSON pointer. It indexes $defs at EVERY nesting
@@ -618,6 +661,9 @@ func (t *transpiler) copyDefault(out *apiextensionsv1.JSONSchemaProps, node *sch
 		return
 	}
 	out.Default = &apiextensionsv1.JSON{Raw: raw}
+	if t.carried != nil {
+		t.carried[out.Default] = node
+	}
 }
 
 // It returns the reasons any bound could not be expressed, for the caller to warn at its own path:
@@ -1013,7 +1059,9 @@ func (t *transpiler) assembleCRD(opts Options, specProps, statusProps *apiextens
 
 // validateCRD runs the generated CRD through the API server's OWN admission validation
 // (ValidateCustomResourceDefinition), converting v1 -> internal first. A non-empty error list
-// means the apiserver would reject the CRD — treated as a generator bug and returned loudly.
+// means the apiserver would reject the CRD, and generation fails with it. It does not say whose fault
+// that is: checkDefaults has already ruled out the input's own contradictory defaults, and
+// refusalAttribution says so (plumbing#36).
 func validateCRD(v1crd *apiextensionsv1.CustomResourceDefinition) error {
 	scheme := runtime.NewScheme()
 	apiextinstall.Install(scheme)
