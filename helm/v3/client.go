@@ -352,9 +352,12 @@ func (c *client) Upgrade(ctx context.Context, releaseName, chartRef string, cfg 
 	// Same classification as Install (#325), and OUTSIDE the retry on purpose: schema validation
 	// resolves nothing against the cluster, so a stale RESTMapper cannot affect its answer and
 	// re-running it per attempt would be waste. That is the same reasoning the comment above gives
-	// for keeping chart loading and validation outside the retry.
-	if err := validateValuesSchema(chart, cfg.Values); err != nil {
-		return nil, err
+	// for keeping chart loading and validation outside the retry. SkipSchemaValidation skips it
+	// with helm's own (plumbing#72): the caller asked for no values-schema check at all.
+	if !cfg.SkipSchemaValidation {
+		if err := validateValuesSchema(chart, cfg.Values); err != nil {
+			return nil, err
+		}
 	}
 
 	var rel *release.Release
@@ -486,9 +489,12 @@ func (c *client) install(ctx context.Context, namespace, releaseName, chartRef s
 	// during render and that run is the authority; this one exists only to learn the KIND of
 	// failure while chartutil's typed error still exists. Returning early means the caller gets
 	// ErrValuesSchema instead of an install failure whose cause is buried in a Status body at a
-	// status code that says "not your fault".
-	if err := validateValuesSchema(chart, cfg.Values); err != nil {
-		return nil, err
+	// status code that says "not your fault". SkipSchemaValidation skips it with helm's own
+	// (plumbing#72).
+	if !cfg.SkipSchemaValidation {
+		if err := validateValuesSchema(chart, cfg.Values); err != nil {
+			return nil, err
+		}
 	}
 
 	rel, err := installClient.RunWithContext(ctx, chart, cfg.Values)
