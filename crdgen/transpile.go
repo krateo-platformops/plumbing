@@ -53,6 +53,19 @@ func generateDirect(opts Options) ([]byte, []Warning, error) {
 		return nil, nil, fmt.Errorf("parsing spec schema: %w", err)
 	}
 
+	// Before generating, so a schema that contradicts itself is blamed on the schema (plumbing#36).
+	specCheck := checkDefaults(opts.SpecSchema)
+	if len(specCheck.contradictions) > 0 {
+		return nil, nil, &DefaultContradictionError{Schema: "spec schema", Contradictions: specCheck.contradictions}
+	}
+	var statusCheck defaultCheck
+	if len(opts.StatusSchema) > 0 {
+		statusCheck = checkDefaults(opts.StatusSchema)
+		if len(statusCheck.contradictions) > 0 {
+			return nil, nil, &DefaultContradictionError{Schema: "status schema", Contradictions: statusCheck.contradictions}
+		}
+	}
+
 	tr := &transpiler{refs: map[string]*schemas.Type{}}
 	tr.collectRefs(specSchema)
 
@@ -102,7 +115,8 @@ func generateDirect(opts Options) ([]byte, []Warning, error) {
 	}
 
 	if err := validateCRD(crd); err != nil {
-		return nil, tr.warnings, fmt.Errorf("generated CRD failed the apiserver's own validation (this is a crdgen bug, not a config error): %w", err)
+		return nil, tr.warnings, fmt.Errorf("generated CRD failed the apiserver's own validation (%s): %w",
+			refusalAttribution(specCheck, statusCheck), err)
 	}
 
 	out, err := yaml.Marshal(crd)
@@ -1013,7 +1027,9 @@ func (t *transpiler) assembleCRD(opts Options, specProps, statusProps *apiextens
 
 // validateCRD runs the generated CRD through the API server's OWN admission validation
 // (ValidateCustomResourceDefinition), converting v1 -> internal first. A non-empty error list
-// means the apiserver would reject the CRD — treated as a generator bug and returned loudly.
+// means the apiserver would reject the CRD, and generation fails with it. It does not say whose fault
+// that is: checkDefaults has already ruled out the input's own contradictory defaults, and
+// refusalAttribution says so (plumbing#36).
 func validateCRD(v1crd *apiextensionsv1.CustomResourceDefinition) error {
 	scheme := runtime.NewScheme()
 	apiextinstall.Install(scheme)
