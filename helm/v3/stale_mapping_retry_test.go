@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"slices"
 	"testing"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -52,13 +53,15 @@ func TestRetryOnStaleMapping(t *testing.T) {
 		// wantOutcome is the ONE MappingRetry the observer must receive; "" means none at all.
 		wantOutcome string
 		wantKind    string
+		// wantVersions are the searched versions the observer must see when wantKind is set.
+		wantVersions []string
 	}{
 		{
 			name:        "mapping miss is retried once and can succeed",
 			cached:      &cc,
 			errs:        []error{noKindMatch(), nil},
 			wantCalls:   2,
-			wantOutcome: MappingRetryRecovered, wantKind: "FrontendCrds",
+			wantOutcome: MappingRetryRecovered, wantKind: "FrontendCrds", wantVersions: []string{"v1-8-15"},
 		},
 		{
 			// The shipped failure: the kind really is absent, so the retry also misses. It must
@@ -70,7 +73,7 @@ func TestRetryOnStaleMapping(t *testing.T) {
 			wantErr:   true,
 			// The case the observer exists for: the reset re-read discovery and the kind is still
 			// absent, which is apiserver-side, not a stale cache.
-			wantOutcome: MappingRetryMissedAgain, wantKind: "FrontendCrds",
+			wantOutcome: MappingRetryMissedAgain, wantKind: "FrontendCrds", wantVersions: []string{"v1-8-15"},
 		},
 		{
 			name:        "a retry that gets past the mapping and fails otherwise",
@@ -78,7 +81,7 @@ func TestRetryOnStaleMapping(t *testing.T) {
 			errs:        []error{noKindMatch(), errors.New("upgrade failed: timed out")},
 			wantCalls:   2,
 			wantErr:     true,
-			wantOutcome: MappingRetryOtherError, wantKind: "FrontendCrds",
+			wantOutcome: MappingRetryOtherError, wantKind: "FrontendCrds", wantVersions: []string{"v1-8-15"},
 		},
 		{
 			// helm stringifies the miss when it surfaces through the post-renderer, which is how
@@ -87,8 +90,8 @@ func TestRetryOnStaleMapping(t *testing.T) {
 			cached:    &cc,
 			errs:      []error{errors.New(`no matches for kind "GithubProviderKog" in version "composition.krateo.io/v0-6-0"`), nil},
 			wantCalls: 2,
-			// Recognised by its text only, so the kind is unknown and reported empty, not guessed.
-			wantOutcome: MappingRetryRecovered, wantKind: "",
+			// Recognised by its text only; the kind is read back from that text (#191).
+			wantOutcome: MappingRetryRecovered, wantKind: "GithubProviderKog", wantVersions: []string{"v0-6-0"},
 		},
 		{
 			name:      "an unrelated error is NOT retried",
@@ -156,8 +159,8 @@ func TestRetryOnStaleMapping(t *testing.T) {
 			if len(seen) != 1 || seen[0].Outcome != tc.wantOutcome || seen[0].Operation != "upgrade" || seen[0].Kind != tc.wantKind {
 				t.Errorf("observer saw %+v, want one {upgrade %s kind=%q}", seen, tc.wantOutcome, tc.wantKind)
 			}
-			if tc.wantKind != "" && (len(seen) != 1 || len(seen[0].Versions) != 1 || seen[0].Versions[0] != "v1-8-15") {
-				t.Errorf("searched versions = %+v, want [v1-8-15]", seen)
+			if tc.wantKind != "" && (len(seen) != 1 || !slices.Equal(seen[0].Versions, tc.wantVersions)) {
+				t.Errorf("searched versions = %+v, want %v", seen, tc.wantVersions)
 			}
 			if len(events) != 1 || events[0] != tc.wantOutcome {
 				t.Errorf("span events %s = %v, want one with outcome %s", EventMappingRetry, events, tc.wantOutcome)
