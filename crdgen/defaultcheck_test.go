@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/krateo-platformops/plumbing/crdgen/schemas"
 )
 
 // plumbing#36: a `default` that does not satisfy the schema it is written in is the chart's error,
@@ -71,18 +73,9 @@ func TestDefaultContradictionCases(t *testing.T) {
 		{name: "legacy definitions keep their spelling",
 			schema: `{"type":"object","definitions":{"Tls":{"type":"object","default":{},"required":["cert"],"properties":{"cert":{"type":"string"}}}},"properties":{"tls":{"$ref":"#/definitions/Tls"}}}`,
 			want:   []string{"#/definitions/Tls"}, reason: "'cert'"},
-		{name: "a default beside a $ref is checked against the target",
-			schema: `{"type":"object","$defs":{"Port":{"type":"integer","maximum":65535}},"properties":{"port":{"$ref":"#/$defs/Port","default":70000}}}`,
-			want:   []string{"#/properties/port"}, reason: "want 65,535"},
 		{name: "a property named default is a schema; the default keyword's value is data",
 			schema: `{"type":"object","properties":{"default":{"type":"string","default":7},"x":{"type":"object","default":{"default":{"type":"integer","default":"not checked: this is data"}}}}}`,
 			want:   []string{"#/properties/default"}, reason: "want string"},
-		{name: "a junction member's default is checked against the member",
-			schema: `{"type":"object","properties":{"x":{"anyOf":[{"type":"string","default":5},{"type":"null"}]}}}`,
-			want:   []string{"#/properties/x/anyOf/0"}, reason: "want string"},
-		{name: "draft-7 dependencies: a schema value is descended, a name list is not",
-			schema: `{"type":"object","properties":{"a":{"type":"string"}},"dependencies":{"a":{"properties":{"b":{"type":"string","default":1}}},"c":["a"]}}`,
-			want:   []string{"#/dependencies/a/properties/b"}, reason: "want string"},
 		{name: "enum and const values are data",
 			schema: `{"type":"object","properties":{"x":{"enum":[{"default":1,"type":"string"}]},"y":{"const":{"default":"z","type":"integer"}}}}`},
 		{name: "property names are escaped in the pointer",
@@ -118,6 +111,76 @@ func TestDefaultContradictionCases(t *testing.T) {
 	}
 }
 
+// A contradicting default crdgen does NOT carry into the CRD never reached the apiserver, so the CRD
+// installed; failing generation for it would break a CRD that works today. It is a warning, with
+// the same pointer and reason, and the CRD is the one main generates (decided by Diego, 2026-11-16).
+// Each case was measured to generate on v1.89.0.
+func TestUncarriedContradictionsWarnAndGenerate(t *testing.T) {
+	for _, tc := range []struct{ name, schema, pointer, reason string }{
+		{"anyOf member",
+			`{"type":"object","properties":{"x":{"anyOf":[{"type":"string","default":5},{"type":"null"}]}}}`,
+			"#/properties/x/anyOf/0", "want string"},
+		{"oneOf member",
+			`{"type":"object","properties":{"x":{"type":"object","oneOf":[{"required":["a"],"default":{}},{"required":["b"]}],"properties":{"a":{"type":"string"},"b":{"type":"string"}}}}}`,
+			"#/properties/x/oneOf/0", "'a'"},
+		{"allOf member",
+			`{"type":"object","properties":{"x":{"allOf":[{"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"default":{}}]}}}`,
+			"#/properties/x/allOf/0", "'a'"},
+		{"a default beside a $ref, checked against the target",
+			`{"type":"object","$defs":{"Port":{"type":"integer","maximum":65535}},"properties":{"port":{"$ref":"#/$defs/Port","default":70000}}}`,
+			"#/properties/port", "want 65,535"},
+		{"patternProperties",
+			`{"type":"object","properties":{"labels":{"type":"object","patternProperties":{"^x-":{"type":"integer","default":"nope"}}}}}`,
+			"#/properties/labels/patternProperties/^x-", "want integer"},
+		{"under not",
+			`{"type":"object","properties":{"x":{"type":"string","not":{"type":"string","enum":["a"],"default":"b"}}}}`,
+			"#/properties/x/not", "value must be 'a'"},
+		{"unreferenced $defs entry",
+			`{"type":"object","$defs":{"Unused":{"type":"integer","default":"x"}},"properties":{"a":{"type":"string"}}}`,
+			"#/$defs/Unused", "want integer"},
+		{"draft-7 dependencies: a schema value is descended, a name list is not",
+			`{"type":"object","properties":{"a":{"type":"string"}},"dependencies":{"a":{"properties":{"b":{"type":"string","default":1}}},"c":["a"]}}`,
+			"#/dependencies/a/properties/b", "want string"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, warns, err := GenerateWithDiagnostics(Options{Group: "composition.krateo.io", Version: "v1", Kind: "Probe", SpecSchema: []byte(tc.schema)})
+			if err != nil {
+				t.Fatalf("an uncarried default must not fail generation: %v", err)
+			}
+			var got []Warning
+			for _, w := range warns {
+				if w.Kind == KindDefaultContradictsSchema {
+					got = append(got, w)
+				}
+			}
+			if len(got) != 1 || got[0].Path != tc.pointer || !strings.Contains(got[0].Message, tc.reason) {
+				t.Fatalf("want one DefaultContradictsSchema warning at %s mentioning %q, got %+v", tc.pointer, tc.reason, got)
+			}
+			if got[0].Kind.LosesEnforcement() {
+				t.Error("the CRD loses nothing to a self-contradicting default it does not carry")
+			}
+		})
+	}
+}
+
+// One schema with both: the error names only the carried default, and the uncarried one is still
+// reported as a warning beside it.
+func TestCarriedFailsAndUncarriedWarnsTogether(t *testing.T) {
+	_, warns, err := GenerateWithDiagnostics(Options{Group: "composition.krateo.io", Version: "v1", Kind: "Probe",
+		SpecSchema: []byte(`{"type":"object","properties":{"n":{"type":"integer","default":"x"},"o":{"anyOf":[{"type":"string","default":5},{"type":"null"}]}}}`)})
+	var dc *DefaultContradictionError
+	if !errors.As(err, &dc) || len(dc.Contradictions) != 1 || dc.Contradictions[0].Pointer != "#/properties/n" {
+		t.Fatalf("want an error naming #/properties/n only, got %v", err)
+	}
+	found := false
+	for _, w := range warns {
+		found = found || (w.Kind == KindDefaultContradictsSchema && w.Path == "#/properties/o/anyOf/0")
+	}
+	if !found {
+		t.Errorf("the uncarried contradiction is missing from the warnings: %+v", warns)
+	}
+}
+
 func TestStatusSchemaDefaultsAreCheckedToo(t *testing.T) {
 	_, err := Generate(Options{Group: "composition.krateo.io", Version: "v1", Kind: "Probe",
 		SpecSchema:   []byte(`{"type":"object","properties":{"a":{"type":"string"}}}`),
@@ -141,12 +204,16 @@ func TestUncheckableDefaultsAreNotBlamed(t *testing.T) {
 	for _, ref := range []string{"file://" + filepath.ToSlash(local), "https://example.invalid/schema.json"} {
 		t.Run(ref, func(t *testing.T) {
 			schema := `{"type":"object","properties":{"r":{"type":"object","default":{},"properties":{"x":{"$ref":"` + ref + `"}}}}}`
-			chk := checkDefaults([]byte(schema))
-			if len(chk.contradictions) != 0 || chk.checked != 0 || len(chk.unchecked) != 1 {
+			parsed, err := schemas.FromJSONReader(strings.NewReader(schema))
+			if err != nil {
+				t.Fatal(err)
+			}
+			chk := checkDefaults("spec schema", []byte(schema), parsed)
+			if len(chk.contradictions) != 0 || len(chk.passed) != 0 || len(chk.unchecked) != 1 {
 				t.Fatalf("want one unchecked default and no contradiction, got %+v", chk)
 			}
-			if !strings.Contains(chk.unchecked[0], "#/properties/r") {
-				t.Errorf("unchecked entry does not name the default: %q", chk.unchecked[0])
+			if _, ok := chk.unchecked["#/properties/r"]; !ok {
+				t.Errorf("unchecked does not name the default: %v", chk.unchecked)
 			}
 		})
 	}
@@ -160,13 +227,13 @@ func TestApiserverRefusalNoLongerBlamesCrdgen(t *testing.T) {
 	for _, tc := range []struct{ name, schema, want string }{
 		{"defaults all checked",
 			`{"type":"object","properties":{"a":{"type":"string","default":"x",` + badRule + `}}}`,
-			"all 1 default(s) in the input satisfy their own schema"},
+			"all 1 default(s) carried into the CRD satisfy their own schema"},
 		{"no defaults",
 			`{"type":"object","properties":{"a":{"type":"string",` + badRule + `}}}`,
-			"the input has no defaults"},
+			"no default from the input is carried into the CRD"},
 		{"a default could not be checked",
 			`{"type":"object","properties":{"a":{"type":"string",` + badRule + `},"r":{"type":"object","default":{},"properties":{"x":{"$ref":"https://example.invalid/s.json"}}}}}`,
-			"1 default(s) in the input could not be checked"},
+			"1 default(s) carried into the CRD could not be checked"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := Generate(Options{Group: "composition.krateo.io", Version: "v1", Kind: "Probe", SpecSchema: []byte(tc.schema)})
@@ -185,5 +252,30 @@ func TestApiserverRefusalNoLongerBlamesCrdgen(t *testing.T) {
 				t.Errorf("not a default contradiction, yet typed as one: %v", dc)
 			}
 		})
+	}
+}
+
+// The spec and status schemas are checked separately, and each one's carried defaults are counted
+// against its own document: a spec default is never "unlocated" in the status schema.
+func TestRefusalAttributionCountsBothSchemas(t *testing.T) {
+	_, err := Generate(Options{Group: "composition.krateo.io", Version: "v1", Kind: "Probe",
+		SpecSchema:   []byte(`{"type":"object","properties":{"a":{"type":"string","default":"x","x-kubernetes-validations":[{"rule":"self.("}]}}}`),
+		StatusSchema: []byte(`{"type":"object","properties":{"phase":{"type":"string","default":"Pending"}}}`)})
+	if err == nil || !strings.Contains(err.Error(), "all 2 default(s) carried into the CRD satisfy their own schema") {
+		t.Fatalf("want both carried defaults counted as checked, got %v", err)
+	}
+}
+
+// A carried default whose node the index cannot locate is reported as unknown, never as checked.
+// No schema in the suite produces one (every node copyDefault sees is indexed), so this pins the
+// guard directly.
+func TestVerdictReportsACarriedNodeItCannotLocate(t *testing.T) {
+	c := defaultCheck{schema: "spec schema", pointerOf: map[*schemas.Type]string{}}
+	v := c.verdict(map[*schemas.Type]bool{{}: true})
+	if len(v.carriedUnknown) != 1 || v.carriedPassed != 0 || v.err != nil {
+		t.Fatalf("want one unknown carried default, got %+v", v)
+	}
+	if got := refusalAttribution(v); !strings.Contains(got, "could not be checked") {
+		t.Errorf("attribution claims more than it knows: %s", got)
 	}
 }
