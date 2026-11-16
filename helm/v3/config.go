@@ -7,7 +7,7 @@ import (
 )
 
 func (c *client) buildGetterOpts(cfg *helmconfig.ActionConfig) []getter.Option {
-	return []getter.Option{
+	opts := []getter.Option{
 		getter.WithVersion(cfg.ChartVersion),
 		getter.WithRepo(cfg.ChartName),
 		getter.WithCache(c.cache),
@@ -15,6 +15,12 @@ func (c *client) buildGetterOpts(cfg *helmconfig.ActionConfig) []getter.Option {
 		getter.WithPassCredentialsAll(cfg.PassCredentialsAll),
 		getter.WithInsecureSkipVerifyTLS(cfg.InsecureSkipTLSverify),
 	}
+	// Provenance is checked where plumbing fetches the chart (plumbing#72): helm's own Verify flag
+	// on action.Install/Upgrade only acts inside helm's LocateChart, which this client never calls.
+	if cfg.Verify {
+		opts = append(opts, getter.WithVerify(cfg.Keyring))
+	}
+	return opts
 }
 
 func applyInstallConfig(client *action.Install, releaseName string, namespace string, cfg *helmconfig.InstallConfig) {

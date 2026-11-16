@@ -25,6 +25,8 @@ var _ Getter = (*ociGetter)(nil)
 const (
 	ChartLayerMediaType  = "application/vnd.cncf.helm.chart.content.v1.tar+gzip"
 	LegacyLayerMediaType = "application/tar+gzip" // Fallback for legacy registries
+	// ProvLayerMediaType is the layer `helm push` stores a signed chart's .prov in.
+	ProvLayerMediaType = "application/vnd.cncf.helm.chart.provenance.v1.prov"
 )
 
 // Shared Transport to enable Connection Pooling.
@@ -41,9 +43,80 @@ func NewOCIGetter() Getter {
 	return &ociGetter{}
 }
 
+// ociManifest is a resolved chart reference: the repository client and the manifest it points at.
+type ociManifest struct {
+	repo      *remote.Repository
+	manifest  ocispec.Manifest
+	refString string
+}
+
 func (g *ociGetter) Get(ctx context.Context, opts GetOptions) (io.Reader, string, error) {
+	m, err := g.resolveManifest(ctx, opts)
+	if err != nil {
+		return nil, "", err
+	}
+	chartLayerDesc, err := chartLayer(m.manifest)
+	if err != nil {
+		return nil, "", err
+	}
+
+	// 8. Stream the Layer
+	// repo.Fetch returns an io.ReadCloser connected directly to the HTTP response.
+	// This does NOT load the chart data into memory.
+	rc, err := m.repo.Fetch(ctx, *chartLayerDesc)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to start stream for layer %s: %w", chartLayerDesc.Digest, err)
+	}
+
+	return rc, "oci://" + m.refString, nil
+}
+
+// getSigned reads the chart layer and the provenance layer of ONE manifest, so a tag moved between
+// two requests cannot pair a chart with another version's signature. `helm push` uploads the
+// .prov as that layer when the chart was packaged with --sign.
+func (g *ociGetter) getSigned(ctx context.Context, opts GetOptions) (*signedChart, error) {
+	m, err := g.resolveManifest(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	chartLayerDesc, err := chartLayer(m.manifest)
+	if err != nil {
+		return nil, err
+	}
+	var provDesc *ocispec.Descriptor
+	for _, layer := range m.manifest.Layers {
+		if layer.MediaType == ProvLayerMediaType {
+			l := layer
+			provDesc = &l
+			break
+		}
+	}
+	if provDesc == nil {
+		return nil, fmt.Errorf("%w: the manifest of %s has no %s layer (the chart is unsigned)", ErrProvenance, m.refString, ProvLayerMediaType)
+	}
+	if chartLayerDesc.Size > MaxResponseSize || provDesc.Size > MaxResponseSize {
+		return nil, fmt.Errorf("chart or provenance layer of %s exceeds %d bytes", m.refString, MaxResponseSize)
+	}
+	chart, err := content.FetchAll(ctx, m.repo, *chartLayerDesc)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch layer %s: %w", chartLayerDesc.Digest, err)
+	}
+	prov, err := content.FetchAll(ctx, m.repo, *provDesc)
+	if err != nil {
+		return nil, fmt.Errorf("%w: fetching the provenance layer of %s: %v", ErrProvenance, m.refString, err)
+	}
+	name, err := ociChartFileName(chart)
+	if err != nil {
+		return nil, err
+	}
+	return &signedChart{chart: chart, prov: prov, fileName: name, resolvedURI: "oci://" + m.refString}, nil
+}
+
+// resolveManifest resolves opts' reference (discovering the latest semver tag when none is given)
+// and fetches its manifest.
+func (g *ociGetter) resolveManifest(ctx context.Context, opts GetOptions) (*ociManifest, error) {
 	if !isOCI(opts.URI) {
-		return nil, "", fmt.Errorf("uri '%s' is not a valid OCI ref", opts.URI)
+		return nil, fmt.Errorf("uri '%s' is not a valid OCI ref", opts.URI)
 	}
 
 	// 1. Prepare URI (remove oci:// prefix)
@@ -67,7 +140,7 @@ func (g *ociGetter) Get(ctx context.Context, opts GetOptions) (io.Reader, string
 	// 2. Create Remote Repository
 	repo, err := remote.NewRepository(refString)
 	if err != nil {
-		return nil, "", fmt.Errorf("invalid repository reference: %w", err)
+		return nil, fmt.Errorf("invalid repository reference: %w", err)
 	}
 
 	registry := repo.Reference.Registry
@@ -105,12 +178,12 @@ func (g *ociGetter) Get(ctx context.Context, opts GetOptions) (io.Reader, string
 			return nil
 		})
 		if err != nil {
-			return nil, "", fmt.Errorf("failed to list tags for discovery: %w", err)
+			return nil, fmt.Errorf("failed to list tags for discovery: %w", err)
 		}
 
 		latest, err := findBestSemverMatch(tags)
 		if err != nil {
-			return nil, "", fmt.Errorf("no valid semantic versions found: %w", err)
+			return nil, fmt.Errorf("no valid semantic versions found: %w", err)
 		}
 		reference = latest
 		refString = fmt.Sprintf("%s:%s", refString, latest)
@@ -119,49 +192,37 @@ func (g *ociGetter) Get(ctx context.Context, opts GetOptions) (io.Reader, string
 	// 5. Resolve Tag -> Descriptor
 	desc, err := repo.Resolve(ctx, reference)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to resolve reference %s: %w - %s", refString, err, reference)
+		return nil, fmt.Errorf("failed to resolve reference %s: %w - %s", refString, err, reference)
 	}
 
 	// 6. Download Manifest
 	// FetchAll is acceptable here as the manifest is small (KB), so loading it into RAM is safe.
 	manifestBytes, err := content.FetchAll(ctx, repo, desc)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to fetch manifest: %w", err)
+		return nil, fmt.Errorf("failed to fetch manifest: %w", err)
 	}
 
 	var manifest ocispec.Manifest
 	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
-		return nil, "", fmt.Errorf("failed to parse manifest: %w", err)
+		return nil, fmt.Errorf("failed to parse manifest: %w", err)
 	}
 
-	// 7. Identify the Chart Layer
-	var chartLayerDesc *ocispec.Descriptor
+	return &ociManifest{repo: repo, manifest: manifest, refString: refString}, nil
+}
+
+// chartLayer picks the chart's layer from a manifest.
+func chartLayer(manifest ocispec.Manifest) (*ocispec.Descriptor, error) {
 	for _, layer := range manifest.Layers {
 		if layer.MediaType == ChartLayerMediaType || layer.MediaType == LegacyLayerMediaType {
 			l := layer // Create local copy for pointer
-			chartLayerDesc = &l
-			break
+			return &l, nil
 		}
 	}
-
-	if chartLayerDesc == nil {
-		// Fallback: if there is only one layer, assume it is the chart
-		if len(manifest.Layers) == 1 {
-			chartLayerDesc = &manifest.Layers[0]
-		} else {
-			return nil, "", fmt.Errorf("chart layer not found in manifest")
-		}
+	// Fallback: if there is only one layer, assume it is the chart
+	if len(manifest.Layers) == 1 {
+		return &manifest.Layers[0], nil
 	}
-
-	// 8. Stream the Layer
-	// repo.Fetch returns an io.ReadCloser connected directly to the HTTP response.
-	// This does NOT load the chart data into memory.
-	rc, err := repo.Fetch(ctx, *chartLayerDesc)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to start stream for layer %s: %w", chartLayerDesc.Digest, err)
-	}
-
-	return rc, "oci://" + refString, nil
+	return nil, fmt.Errorf("chart layer not found in manifest")
 }
 
 // getTransport handles secure/insecure TLS while reusing the shared connection pool
