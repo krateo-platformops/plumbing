@@ -31,6 +31,10 @@ import (
 // selects. Request bodies are usually built from nothing: `credentials[0].value` on an empty body
 // creates {"credentials": [{"value": ...}]}.
 //
+// A created intermediate is a whole new object: a caller that also merges that field from elsewhere
+// (rest-dynamic-controller's partialFields overlay, one level deep) must decide which one wins. The
+// writer does not know about merges; see plumbing#111 and oasgen-provider#732.
+//
 // # A bare numeric segment is a key
 //
 // Parse types `credentials.0.value` as the KEY "0" (segments are typed by how they were written), and
