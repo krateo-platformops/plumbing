@@ -17,6 +17,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -273,7 +274,7 @@ func (t *transpiler) transpile(node *schemas.Type, path string, stack map[string
 	// — and the apiserver accepts those keywords alongside the extension, so they were both legal
 	// and lost. It is now a case in the switch below, which falls through to the common-keyword
 	// block like every other node.
-	intOrString := node.XIntOrString || isIntOrStringUnion(node.Type)
+	intOrString := node.XIntOrString || isIntOrStringUnion(node.Type) || isIntOrStringJunction(node)
 
 	// Resolve the (possibly nullable) primary type. OAS 3.0 `nullable` and JSON Schema
 	// type:["x","null"] both map to structural `nullable`.
@@ -366,8 +367,9 @@ func (t *transpiler) transpile(node *schemas.Type, path string, stack map[string
 	t.copyExample(out, node, path)
 	t.passthroughExtensions(out, node) // x-kubernetes-* carried in the input schema
 
-	// Constraint-only unions are allowed alongside a typed node.
-	if len(node.OneOf) > 0 || len(node.AnyOf) > 0 {
+	// Constraint-only unions are allowed alongside a typed node. An integer|string junction is not
+	// one: it IS the int-or-string the switch above already expressed, completely.
+	if (len(node.OneOf) > 0 || len(node.AnyOf) > 0) && !isIntOrStringJunction(node) {
 		t.attachUnion(out, node, path, stack)
 	}
 
@@ -553,6 +555,14 @@ func (t *transpiler) attachUnion(out *apiextensionsv1.JSONSchemaProps, node *sch
 		return false
 	}
 
+	// An int-or-string node is already as wide as it may be: the apiserver refuses
+	// x-kubernetes-preserve-unknown-fields alongside x-kubernetes-int-or-string, so widening it
+	// further made the WHOLE CRD invalid (the Kubernetes quantity maps of installer's schema, 63
+	// structural errors). The union's member constraints are what is lost, so that is the report.
+	if out.XIntOrString {
+		t.warn(path, KindConstraintDropped, kind+" of divergent shapes on an int-or-string node -> union dropped")
+		return false
+	}
 	t.warn(path, KindStructureLoosened, kind+" of divergent shapes -> degraded to preserve-unknown")
 	if out.Type == "" {
 		// Any value, not `type: object`: the members may be strings, numbers or lists, and an object
@@ -790,6 +800,43 @@ func isIntOrStringUnion(tl schemas.TypeList) bool {
 		seen[t] = true
 	}
 	return len(seen) == 2 && seen[schemas.TypeNameInteger] && seen[schemas.TypeNameString]
+}
+
+// isIntOrStringJunction reports whether node's only junction is an anyOf or oneOf of exactly two
+// bare members, {type: integer} and {type: string}: JSON Schema's spelling of int-or-string, the
+// same claim as type: ["integer","string"] (isIntOrStringUnion) and as the x-kubernetes extension.
+// It is how Kubernetes' own quantity fields are written (resources.limits/requests), usually WITH
+// x-kubernetes-int-or-string: true beside it. As a "union of divergent shapes" it was widened to
+// preserve-unknown: with the extension that is a structural error that fails the whole CRD, and
+// without it the field silently accepted any value.
+//
+// Bare means a member carries a single type and nothing else but annotations: a member with a
+// constraint of its own (a pattern, a bound) is left to attachUnion, which reports what it drops.
+// Narrow on purpose, as isIntOrStringUnion: number|string is not int-or-string.
+func isIntOrStringJunction(node *schemas.Type) bool {
+	if (len(node.AnyOf) > 0) == (len(node.OneOf) > 0) || len(node.AllOf) > 0 {
+		return false
+	}
+	members := node.AnyOf
+	if len(members) == 0 {
+		members = node.OneOf
+	}
+	if len(members) != 2 {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, m := range members {
+		if m == nil || len(m.Type) != 1 {
+			return false
+		}
+		bare := *m
+		bare.Type, bare.Description, bare.Title = nil, "", ""
+		if !reflect.DeepEqual(bare, schemas.Type{}) {
+			return false
+		}
+		seen[m.Type[0]] = true
+	}
+	return seen[schemas.TypeNameInteger] && seen[schemas.TypeNameString]
 }
 
 // droppedUnionMembers returns the non-null members primaryType discards: everything after the
