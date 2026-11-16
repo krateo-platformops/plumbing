@@ -44,8 +44,20 @@ func applyInstallConfig(client *action.Install, releaseName string, namespace st
 	client.Username = cfg.Username
 	client.Password = cfg.Password
 	client.InsecureSkipTLSverify = cfg.InsecureSkipTLSverify
+	applyHookCRDSchemaSkips(&client.DisableHooks, &client.SkipCRDs, &client.SkipSchemaValidation, cfg.ActionConfig)
 
 	applyDryRun(&client.DryRun, &client.DryRunOption, cfg.DryRun)
+}
+
+// applyHookCRDSchemaSkips copies the three skip switches onto an Install or an Upgrade
+// (plumbing#72). They were declared on ActionConfig and read nowhere, so NoHooks still ran hooks,
+// SkipCRDs still installed CRDs and SkipSchemaValidation still validated, with no error or warning.
+// Rollback and Uninstall already had theirs (DisableHooks on their own configs). Helm calls the hook
+// switch DisableHooks; ActionConfig's name for it is NoHooks.
+func applyHookCRDSchemaSkips(disableHooks, skipCRDs, skipSchemaValidation *bool, cfg *helmconfig.ActionConfig) {
+	*disableHooks = cfg.NoHooks
+	*skipCRDs = cfg.SkipCRDs
+	*skipSchemaValidation = cfg.SkipSchemaValidation
 }
 
 func applyUpgradeConfig(client *action.Upgrade, namespace string, cfg *helmconfig.UpgradeConfig) {
@@ -76,6 +88,8 @@ func applyUpgradeConfig(client *action.Upgrade, namespace string, cfg *helmconfi
 	client.Username = cfg.Username
 	client.Password = cfg.Password
 	client.InsecureSkipTLSverify = cfg.InsecureSkipTLSverify
+	// SkipCRDs on an upgrade matters when Install is set and the release is absent: helm then installs.
+	applyHookCRDSchemaSkips(&client.DisableHooks, &client.SkipCRDs, &client.SkipSchemaValidation, cfg.ActionConfig)
 
 	applyDryRun(&client.DryRun, &client.DryRunOption, cfg.DryRun)
 }
