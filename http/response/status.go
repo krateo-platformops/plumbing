@@ -224,6 +224,12 @@ func New(code int, err error) *Status {
 	case http.StatusUnsupportedMediaType:
 		res.Status = StatusFailure
 		res.Reason = StatusReasonUnsupportedMediaType
+	case http.StatusGatewayTimeout:
+		res.Status = StatusFailure
+		res.Reason = StatusReasonTimeout
+	case http.StatusTooManyRequests:
+		res.Status = StatusFailure
+		res.Reason = StatusReasonTooManyRequests
 	default:
 		// Only a 2xx is a success: every other code a Status reports is a
 		// failure, listed above or not (plumbing#177: 418, 424, 429, 502, 504
@@ -231,6 +237,12 @@ func New(code int, err error) *Status {
 		res.Status = StatusFailure
 		if code >= 200 && code <= 299 {
 			res.Status = StatusSuccess
+		}
+		// Any other 5xx, 502 among them, is an InternalError, as apimachinery's
+		// NewGenericServerResponse has it (plumbing#91). Status mirrors
+		// metav1.Status, which has no BadGateway reason; the code still says 502.
+		if code >= 500 {
+			res.Reason = StatusReasonInternalError
 		}
 	}
 

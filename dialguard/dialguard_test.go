@@ -23,6 +23,26 @@ func TestDenyAddr_DeniedRanges(t *testing.T) {
 		// IPv4-mapped forms of the same
 		{"[::ffff:169.254.169.254]:80", "link-local"},
 		{"[::ffff:a9fe:a9fe]:80", "link-local"},
+		// the IPv6 cloud metadata addresses, inside ULA (plumbing#90), in more than one spelling:
+		// the check compares addresses, not text
+		{"[fd00:ec2::254]:80", "cloud metadata"},
+		{"[fd20:ce::254]:80", "cloud metadata"},
+		{"[fd00:ec2:0:0:0:0:0:254]:80", "cloud metadata"},
+		{"[FD20:CE::254]:443", "cloud metadata"},
+		// the IPv4 policy applied to the IPv4 an IPv6 address carries: NAT64's well-known prefix,
+		// 6to4 and the IPv4-compatible form, each for the metadata address and for another refused
+		// range, so the decoding is shown to feed the whole policy and not only link-local
+		{"[64:ff9b::a9fe:a9fe]:80", "NAT64 (64:ff9b::/96) encoding of a link-local"},
+		{"[64:ff9b::169.254.169.254]:80", "NAT64 (64:ff9b::/96) encoding of a link-local"},
+		{"[64:ff9b::e000:1]:80", "NAT64 (64:ff9b::/96) encoding of a multicast"},
+		{"[2002:a9fe:a9fe::]:80", "6to4 (2002::/16) encoding of a link-local"},
+		{"[2002:a9fe:a9fe:1::5]:80", "6to4 (2002::/16) encoding of a link-local"},
+		{"[2002::1]:80", "6to4 (2002::/16) encoding of the unspecified"},
+		// 169.254.1.2: unlike the a9fe:a9fe spellings above, reading the wrong 32 bits of a 6to4
+		// address gives a different, permitted IPv4 here, so the offset itself is tested
+		{"[2002:a9fe:102::]:80", "6to4 (2002::/16) encoding of a link-local"},
+		{"[::a9fe:a9fe]:80", "IPv4-compatible (::/96) encoding of a link-local"},
+		{"[::169.254.169.254]:80", "IPv4-compatible (::/96) encoding of a link-local"},
 		// unspecified
 		{"0.0.0.0:8080", "unspecified"},
 		{"[::]:8080", "unspecified"},
@@ -71,8 +91,20 @@ func TestDenyAddr_AllowedRanges(t *testing.T) {
 		"127.0.0.1:5000",       // loopback — allowed by the ruling
 		"[::1]:5000",           // loopback v6
 		"[fd00::1]:443",        // ULA
-		"140.82.121.4:443",     // public (github)
-		"[2606:50c0::153]:443", // public v6
+		"[fd00:ec2::253]:80",   // ULA beside AWS's metadata address: only the address is refused
+		"[fd00:ec2::1:254]:80", // ULA in AWS's metadata /64
+		"[fd20:ce::255]:80",    // ULA beside GCP's metadata address
+		"[fd20:ce::1:254]:80",  // ULA in GCP's metadata /64
+		// embedded IPv4 that the policy allows is still dialled: only refused destinations are
+		// refused in their IPv6 encodings
+		"[64:ff9b::8c52:7904]:443",  // NAT64 of 140.82.121.4 (public)
+		"[64:ff9b::a60:10a]:5000",   // NAT64 of 10.96.1.10 (RFC-1918)
+		"[2002:8c52:7904::1]:443",   // 6to4 of 140.82.121.4
+		"[2002:8c52:a9fe::]:443",    // 6to4 of 140.82.169.254: public, though a9fe follows
+		"[::8c52:7904]:443",         // IPv4-compatible of 140.82.121.4
+		"[64:ff9b:1::a60:10a]:5000", // local-use NAT64: not decoded (layout is site-chosen)
+		"140.82.121.4:443",          // public (github)
+		"[2606:50c0::153]:443",      // public v6
 	}
 
 	if len(allowed) == 0 {
