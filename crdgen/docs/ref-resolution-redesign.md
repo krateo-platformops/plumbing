@@ -213,7 +213,7 @@ is applied **exactly at the recursion edge** (not to the whole subtree).
 | `$anchor`, `$dynamicAnchor` | indexed as `#<name>`; `$ref`/`$dynamicRef`/`$recursiveRef` resolve against them (dynamic scope not modeled — static fallback) |
 | `dependentRequired` | → **CEL** `x-kubernetes-validations`: `!has(self.p) \|\| (has(self.a) && has(self.b))` |
 | `not` (scalar `const`/`enum`) | → **CEL** negation (`self != X` / `!(self in […])`); else degrade |
-| `if`/`then`/`else` (property `const`/`enum` + `required` conditions) | → **CEL**; else degrade |
+| `if`/`then`/`else` (`required`, and property `const`/`enum`/`minLength`/`maxLength`/`minimum`/`maximum`/exclusive bounds/`minItems`/`maxItems`/`minProperties`/`maxProperties` on a map) | → **CEL** (plumbing#211). A property clause holds where the property is absent (`!has(self.k) \|\| P`), as JSON Schema's `properties`; `has(self.k) && P` where k is required, or defaulted (in the condition). A branch keyword CEL can't express (`pattern`, `format`, `multipleOf`, nested objects) is dropped and **warned**, the rest of the branch enforced; one in the condition degrades the whole if/then/else, **warned** |
 | `x-kubernetes-int-or-string` | → typeless int-or-string node |
 | `x-kubernetes-{embedded-resource,list-type,list-map-keys,map-type,validations}` | passed through (existing CEL rules preserved) |
 | `patternProperties`, `dependentSchemas`, `prefixItems` (tuple), `unevaluatedProperties/Items`, non-trivial `not`/`if` | **degrade** to open object + **warn** (§7.8) |
