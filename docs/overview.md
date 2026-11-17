@@ -20,7 +20,7 @@ explicitly; the rest are conventional utilities (mapped one-per-line in
 ## 1. The helm engine (`helm`, `helm/v3`, `helm/getter`, `helm/utils`)
 
 `helm` defines the provider-agnostic `Client` interface (Install / Upgrade /
-**Reconcile** / Uninstall / Rollback / GetRelease / ListReleases) plus its config and
+**Reconcile** / Uninstall / Rollback / GetRelease / History / ListReleases) plus its config and
 result types. `helm/v3` implements it on the unforked Helm v3 SDK, adding what a
 controller needs and upstream Helm does not provide:
 

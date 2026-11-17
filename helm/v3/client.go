@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -568,6 +569,35 @@ func (c *client) GetRelease(ctx context.Context, releaseName string, cfg *helmco
 	}
 
 	return toWrapperRelease(rel), nil
+}
+
+func (c *client) History(ctx context.Context, releaseName string, cfg *helmconfig.HistoryConfig) ([]*helmconfig.Release, error) {
+	namespace := c.namespace
+	if cfg != nil && cfg.Namespace != "" {
+		namespace = cfg.Namespace
+	}
+
+	actionConfig, err := c.newActionConfig(ctx, namespace, c.restConfig, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	// action.History's Max is not set: its Run ignores it and returns every stored revision.
+	helmReleases, err := action.NewHistory(actionConfig).Run(releaseName)
+	if err != nil {
+		if errors.Is(err, driver.ErrReleaseNotFound) {
+			return nil, nil // Not found is not an error, as for GetRelease
+		}
+		return nil, fmt.Errorf("release history failed: %w", err)
+	}
+
+	releases := make([]*helmconfig.Release, 0, len(helmReleases))
+	for _, rel := range helmReleases {
+		releases = append(releases, toWrapperRelease(rel))
+	}
+	// The storage driver's query order is not a contract.
+	sort.Slice(releases, func(i, j int) bool { return releases[i].Revision < releases[j].Revision })
+	return releases, nil
 }
 
 func (c *client) ListReleases(ctx context.Context, cfg *helmconfig.ListConfig) ([]*helmconfig.Release, error) {
