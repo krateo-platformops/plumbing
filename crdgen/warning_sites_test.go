@@ -19,7 +19,7 @@ func TestWarningSites_EveryReachableSiteHasItsKind(t *testing.T) {
 		{"is a union this schema cannot express", `{"type":"object","properties":{"u":{"type":["string","boolean"]}}}`, KindAcceptanceNarrowed},
 		{"properties + additionalProperties schema", `{"type":"object","properties":{"o":{"type":"object","properties":{"a":{"type":"string"}},"additionalProperties":{"type":"integer"}}}}`, KindStructureLoosened},
 		{"dependentRequired on non-object", `{"type":"object","properties":{"s":{"type":"string","dependentRequired":{"a":["b"]}}}}`, KindConstraintDropped},
-		{"not on non-scalar node", `{"type":"object","properties":{"o":{"type":"object","not":{"required":["a"]}}}}`, KindConstraintDropped},
+		{"not on non-scalar node", `{"type":"object","properties":{"o":{"type":"array","items":{"type":"string"},"not":{"maxItems":1}}}}`, KindConstraintDropped},
 		{"not (non-trivial subschema)", `{"type":"object","properties":{"s":{"type":"string","not":{"properties":{"a":{"type":"string"}}}}}}`, KindConstraintDropped},
 		// plumbing#102: minLength inside not is native now, #110 made exclusiveMinimum native and #48
 		// one level of junctions. minItems constrains no string, so a not carrying only it on a string

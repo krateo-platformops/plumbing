@@ -1,5 +1,10 @@
 package crdgen
 
+import (
+	"fmt"
+	"strings"
+)
+
 // WarningKind classifies what a crdgen warning means for the generated CRD, so a caller can act on
 // the ones that matter to it without matching message text (core-provider#362).
 //
@@ -64,4 +69,20 @@ func (w Warning) String() string {
 		return w.Message
 	}
 	return w.Path + ": " + w.Message
+}
+
+// StrictError is returned by a generation with Options.Strict when crdgen would drop a restriction
+// the schema states (plumbing#48). Dropped holds every such warning, in the order generation reported
+// them; Warning.Path and Warning.Message name the field and the keyword.
+type StrictError struct {
+	Dropped []Warning
+}
+
+func (e *StrictError) Error() string {
+	msgs := make([]string, len(e.Dropped))
+	for i, w := range e.Dropped {
+		msgs[i] = w.String()
+	}
+	return fmt.Sprintf("Options.Strict: the CRD would not enforce %d restriction(s) the schema states: %s",
+		len(e.Dropped), strings.Join(msgs, "; "))
 }

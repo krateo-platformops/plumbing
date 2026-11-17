@@ -182,7 +182,7 @@ func (t *transpiler) emitNot(out *apiextensionsv1.JSONSchemaProps, node *schemas
 	if node.Not == nil {
 		return
 	}
-	if out.Type == "" || out.Type == schemas.TypeNameObject || out.Type == schemas.TypeNameArray {
+	if out.Type == "" || out.Type == schemas.TypeNameArray {
 		t.warn(path, KindConstraintDropped, "not on non-scalar node unsupported -> dropped")
 		return
 	}
@@ -209,6 +209,14 @@ func (t *transpiler) emitNot(out *apiextensionsv1.JSONSchemaProps, node *schemas
 	// plumbing#48: a `not` over allOf/anyOf/oneOf of such value validations is native too, e.g.
 	// not: {anyOf: [{enum: ["*"]}, {pattern: "^system:"}]}, "refuse * and every system: group", which
 	// was dropped and left the CRD admitting exactly what the author forbade.
+	//
+	// And on an OBJECT, for the object's own value validations: `required` and the property-count
+	// bounds. core-provider's chart forbids two keys in an env map with
+	// not: {anyOf: [{required: [GOMEMLIMIT]}, {required: [COMPOSITION_CONTROLLER_HELM_TIMEOUT]}]},
+	// which was the last `not` crdgen dropped across 1,187 local values schemas. A structural schema
+	// accepts `required` and min/maxProperties inside a junctor, so it is carried exactly as written,
+	// with no CEL. Anything else object-shaped (properties, patternProperties, dependentRequired)
+	// still drops the whole `not`, because a part dropped inside a `not` makes it refuse MORE.
 	sub, reason := notValueSchema(n, out.Type)
 	if reason == "" {
 		for _, j := range []struct {
@@ -277,8 +285,12 @@ func isScalarJunction(n *schemas.Type) bool {
 //   - an enum or const value that cannot be serialised.
 //
 // Keywords that do not apply to the field's scalar values (array or object sizes) constrain
-// nothing there, so leaving them out loses nothing.
+// nothing there, so leaving them out loses nothing. On an object, min/maxProperties DO apply, and are
+// carried; `required` is carried on every node, as it always was.
 func notValueSchema(m *schemas.Type, nodeType string) (*apiextensionsv1.JSONSchemaProps, string) {
+	if nodeType == schemas.TypeNameObject && (len(m.PatternProperties) > 0 || len(m.DependentRequired) > 0 || len(m.DependentSchemas) > 0) {
+		return nil, "an object keyword the CRD cannot carry inside a not"
+	}
 	if len(m.Type) > 0 {
 		pt, _ := primaryType(m.Type)
 		if len(m.Type) > 1 || pt != nodeType {
@@ -291,6 +303,18 @@ func notValueSchema(m *schemas.Type, nodeType string) (*apiextensionsv1.JSONSche
 	}
 	sub.Description = ""
 	sub.Format = m.Format
+	if nodeType == schemas.TypeNameObject {
+		// The object's own size bounds apply to it, so they are carried; on a scalar they constrain
+		// nothing and are left out losslessly (below).
+		if m.MinProperties > 0 {
+			v := int64(m.MinProperties)
+			sub.MinProperties = &v
+		}
+		if m.MaxProperties > 0 {
+			v := int64(m.MaxProperties)
+			sub.MaxProperties = &v
+		}
+	}
 	values := m.Enum
 	if m.Const != nil {
 		values = []any{m.Const}

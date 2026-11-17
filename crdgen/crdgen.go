@@ -31,6 +31,18 @@ type Options struct {
 	// only as far as the linked k8s.io libraries can validate: a value they cannot check exactly is
 	// refused rather than approximated.
 	MinKubernetesVersion string
+
+	// Strict refuses to generate a CRD that would not enforce a restriction the schema states
+	// (plumbing#48; decided by Diego 2026-11-16: opt-in, each caller decides). With Strict set, every
+	// KindConstraintDropped warning (a `not`, if/then/else, dependentRequired, uniqueness rule or bound
+	// crdgen cannot express) fails generation with *StrictError, naming each path and keyword.
+	// A dropped restriction WIDENS what the CRD admits, which for a forbidden-values constraint is
+	// a security property (snowplow #631: "reject system: groups" became no rule at all).
+	//
+	// Structure loosened to preserve-unknown (KindStructureLoosened) is not refused: it is a
+	// different case, the one #48 calls fine as a warning. The zero value keeps today's behaviour:
+	// a dropped restriction is a warning.
+	Strict bool
 }
 
 // Generate transpiles the Options' JSON Schemas into a Kubernetes CustomResourceDefinition (YAML).

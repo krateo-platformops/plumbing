@@ -145,6 +145,18 @@ func generateDirect(opts Options) ([]byte, []Warning, error) {
 		}
 	}
 
+	if opts.Strict {
+		var dropped []Warning
+		for _, w := range tr.warnings {
+			if w.Kind == KindConstraintDropped {
+				dropped = append(dropped, w)
+			}
+		}
+		if len(dropped) > 0 {
+			return nil, tr.warnings, &StrictError{Dropped: dropped}
+		}
+	}
+
 	if err := validateCRD(crd, target); err != nil {
 		return nil, tr.warnings, fmt.Errorf("generated CRD failed the apiserver's own validation (%s): %w",
 			refusalAttribution(verdicts...), err)
