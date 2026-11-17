@@ -378,6 +378,13 @@ type Client interface {
 	// (plumbing#139).
 	Rollback(ctx context.Context, releaseName string, config *RollbackConfig) (*OperationResult, error)
 	GetRelease(ctx context.Context, releaseName string, config *GetConfig) (*Release, error)
+	// History returns every revision of the release that helm's storage holds, sorted by Revision
+	// ascending, each with its own Status (core-provider#563). It is the only way to find a
+	// release's last deployed revision while a later one is pending: ListReleases keeps only each
+	// release's latest revision before it applies its state mask, and walking GetRelease back has
+	// no bound, because helm's pruning keeps the last deployed revision however far back it is.
+	// A release that has no revisions is nil, nil, as GetRelease; any other error is returned.
+	History(ctx context.Context, releaseName string, config *HistoryConfig) ([]*Release, error)
 	ListReleases(ctx context.Context, config *ListConfig) ([]*Release, error)
 	Close() error
 }
@@ -524,6 +531,16 @@ type GetConfig struct {
 	// several namespaces (operators, test harnesses standing up prerequisites) had no way to ask
 	// "does this release already exist?" at all. Mirrors InstallConfig.Namespace and
 	// UpgradeConfig's handling, so the same override means the same thing on every verb.
+	Namespace string
+}
+
+// HistoryConfig configures History. There is deliberately no limit: helm's own history action
+// ignores its Max (only the helm CLI applies --max, after the fact), and any cap could drop the
+// one revision a caller is looking for, the last deployed one that pruning kept. What History
+// returns is bounded by what storage holds: MaxHistory revisions plus that kept one.
+type HistoryConfig struct {
+	// Namespace overrides the client's namespace for this lookup. Empty means the client's own,
+	// as GetConfig.Namespace.
 	Namespace string
 }
 
