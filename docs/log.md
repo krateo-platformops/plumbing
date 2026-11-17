@@ -9,6 +9,14 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-17 — crdgen: if/then/else property constraints are enforced, or reported** (plumbing#211):
+  a property constraint in a branch other than `const`/`enum` became a bare `has()` with no warning,
+  so `then: {required: [name], properties: {name: {minLength: 1}}}` admitted `name: ""` while
+  `SchemaFullyEnforced` read True. Length, numeric and size bounds now translate to CEL, type-guarded
+  as JSON Schema applies them; anything else in a branch warns `ConstraintDropped` and the rest is
+  enforced. A property clause now holds where the property is absent, as JSON Schema's `properties`
+  does, except where it is required, or defaulted in a condition (the apiserver defaults before it
+  validates). Corpus of 1,191 values schemas: every CRD byte-identical.
 - **2026-11-15 — crdgen: a node crdgen cannot type is any value, not an object** (plumbing#186):
   `{}` and an array without `items` (#187), and now a divergent `oneOf`/`anyOf` on an untyped node
   and an `allOf` with no object member, came out as `type: object` + preserve-unknown, so the

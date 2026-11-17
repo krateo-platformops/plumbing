@@ -9,6 +9,7 @@ package crdgen
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strconv"
@@ -329,7 +330,13 @@ func notValueSchema(m *schemas.Type, nodeType string) (*apiextensionsv1.JSONSche
 	return sub, ""
 }
 
-// emitIfThenElse maps a tractable if/then/else (conditions over property const/enum/required) to CEL.
+// emitIfThenElse maps a tractable if/then/else to CEL: conditions and branches over required and
+// over property constraints celProperty can express (plumbing#211).
+//
+// The condition must translate completely: dropping a conjunct of `if` would widen it and apply
+// then/else where the schema doesn't, refusing objects the schema accepts. A branch may translate
+// in part: a property constraint it can't express is dropped and reported, and the rest of the
+// branch is enforced.
 func (t *transpiler) emitIfThenElse(out *apiextensionsv1.JSONSchemaProps, node *schemas.Type, path string) {
 	if node.If == nil {
 		return
@@ -338,85 +345,263 @@ func (t *transpiler) emitIfThenElse(out *apiextensionsv1.JSONSchemaProps, node *
 		t.warn(path, KindConstraintDropped, "if/then/else on non-object -> dropped")
 		return
 	}
-	cond, ok := t.celCond(out, node.If)
-	if !ok {
+	cond, dropped, ok := t.celCond(out, node.If, true)
+	if !ok || len(dropped) > 0 {
 		t.warn(path, KindConstraintDropped, "if condition not expressible in CEL -> if/then/else dropped")
 		return
 	}
-	if node.Then != nil {
-		if cons, ok := t.celCond(out, node.Then); ok {
-			t.addRule(out, fmt.Sprintf("!(%s) || (%s)", cond, cons), "conditional constraint (then)")
-		} else {
-			t.warn(path, KindConstraintDropped, "then not expressible in CEL -> dropped")
+	if cond == "" {
+		cond = "true" // a condition that checks nothing holds for every object
+	}
+	branch := func(b *schemas.Type, name, format string) {
+		if b == nil {
+			return
+		}
+		cons, dropped, ok := t.celCond(out, b, false)
+		if !ok {
+			t.warn(path, KindConstraintDropped, name+" not expressible in CEL -> dropped")
+			return
+		}
+		for _, d := range dropped {
+			t.warn(path, KindConstraintDropped, fmt.Sprintf("%s: %s -> dropped", name, d))
+		}
+		if cons != "" {
+			t.addRule(out, fmt.Sprintf(format, cond, cons), "conditional constraint ("+name+")")
 		}
 	}
-	if node.Else != nil {
-		if cons, ok := t.celCond(out, node.Else); ok {
-			t.addRule(out, fmt.Sprintf("(%s) || (%s)", cond, cons), "conditional constraint (else)")
-		} else {
-			t.warn(path, KindConstraintDropped, "else not expressible in CEL -> dropped")
-		}
-	}
+	branch(node.Then, "then", "!(%s) || (%s)")
+	branch(node.Else, "else", "(%s) || (%s)")
 }
 
-// celCond turns a simple object schema (required + properties constrained by const/enum + a
-// whole-self const) into a boolean CEL expression over `self`. Every referenced field must be a
-// usable field on `out` (declared property, or the object allows unknowns) so the emitted CEL
-// actually compiles. Returns ok=false for anything more complex.
-func (t *transpiler) celCond(out *apiextensionsv1.JSONSchemaProps, s *schemas.Type) (string, bool) {
+// celCond turns a simple object schema (required, properties whose constraints celProperty
+// expresses, a whole-self const) into a boolean CEL expression over `self`. Every referenced field
+// must be a usable field on `out` (declared property, or the object allows unknowns) so the emitted
+// CEL compiles.
+//
+// A property clause holds where the property is absent, as JSON Schema's `properties` does: it is
+// `!has(self.k) || P`, or `has(self.k) && P` where k is always present, so the two agree: the node
+// or the schema itself requires k, or, in a condition (isIf), the CRD defaults k. The apiserver
+// defaults a property before it validates an object, so a defaulted one is never absent there; the
+// one place it is absent is the apiserver's check of a default literal against the schema (a
+// parent's materialized `{}`), where a condition matching on its absence would refuse the CRD's
+// own default. A clause with nothing to check adds nothing; `required` adds the has().
+//
+// dropped names each property clause celProperty can't express, which the expression leaves out.
+// An empty expression with nothing dropped is a schema that checks nothing (every object satisfies
+// it). ok=false is anything else it can't express.
+func (t *transpiler) celCond(out *apiextensionsv1.JSONSchemaProps, s *schemas.Type, isIf bool) (expr string, dropped []string, ok bool) {
 	if s == nil {
-		return "", false
+		return "", nil, false
 	}
 	if len(s.Type) > 0 && !s.Type.Equals(schemas.TypeList{schemas.TypeNameObject}) {
-		return "", false
+		return "", nil, false
 	}
 	if s.Items != nil || len(s.AllOf) > 0 || len(s.AnyOf) > 0 || len(s.OneOf) > 0 ||
 		s.Ref != "" || s.AdditionalProperties != nil || s.Not != nil || s.If != nil {
-		return "", false
+		return "", nil, false
+	}
+	known := map[string]bool{}
+	for _, r := range out.Required {
+		known[r] = true
+	}
+	if isIf {
+		for k, p := range out.Properties {
+			if p.Default != nil {
+				known[k] = true
+			}
+		}
 	}
 	var conj []string
 	if s.Const != nil {
 		lit, ok := celLiteral(s.Const)
 		if !ok {
-			return "", false
+			return "", nil, false
 		}
 		conj = append(conj, "self == "+lit)
 	}
 	for _, r := range sortedStrings(s.Required) {
 		h, ok := celHas(r)
 		if !ok || !fieldAllowed(out, r) {
-			return "", false
+			return "", nil, false
 		}
 		conj = append(conj, h)
+		known[r] = true
 	}
 	for _, k := range sortedPropKeys(s.Properties) {
-		p := s.Properties[k]
 		has, ok := celHas(k)
 		if !ok || !fieldAllowed(out, k) {
-			return "", false
+			return "", nil, false
 		}
 		sel, _ := celSelf(k)
+		preds, why := celProperty(out.Properties[k], sel, s.Properties[k])
 		switch {
-		case p.Const != nil:
-			lit, ok := celLiteral(p.Const)
-			if !ok {
-				return "", false
-			}
-			conj = append(conj, fmt.Sprintf("%s && %s == %s", has, sel, lit))
-		case len(p.Enum) > 0:
-			lits, ok := celLiteralList(p.Enum)
-			if !ok {
-				return "", false
-			}
-			conj = append(conj, fmt.Sprintf("%s && (%s in [%s])", has, sel, strings.Join(lits, ", ")))
+		case why != "":
+			dropped = append(dropped, fmt.Sprintf("property %q: %s", k, why))
+		case len(preds) == 0:
+		case known[k]:
+			conj = append(conj, has+" && "+strings.Join(preds, " && "))
 		default:
-			conj = append(conj, has)
+			conj = append(conj, "(!"+has+" || "+strings.Join(preds, " && ")+")")
 		}
 	}
-	if len(conj) == 0 {
-		return "", false
+	return strings.Join(conj, " && "), dropped, true
+}
+
+// celPropertyKeywords are the keywords a property clause of a condition may carry: the ones
+// celProperty translates, plus annotations, which constrain nothing.
+var celPropertyKeywords = map[string]bool{
+	"type": true, "const": true, "enum": true,
+	"minLength": true, "maxLength": true,
+	"minimum": true, "maximum": true, "exclusiveMinimum": true, "exclusiveMaximum": true,
+	"minItems": true, "maxItems": true, "minProperties": true, "maxProperties": true,
+	"title": true, "description": true, "default": true, "examples": true, "readOnly": true,
+}
+
+// celProperty translates one property clause of a condition, p, into predicates over sel, the
+// property's CEL selector; decl is the property as the CRD declares it. A keyword applies only to
+// the kind of value it constrains, as in JSON Schema, so a length bound on an integer property
+// checks nothing. why says what it can't express, and then preds is nil.
+func celProperty(decl apiextensionsv1.JSONSchemaProps, sel string, p *schemas.Type) (preds []string, why string) {
+	if p == nil {
+		return nil, ""
 	}
-	return strings.Join(conj, " && "), true
+	raw, err := json.Marshal(p)
+	if err != nil {
+		return nil, "not marshalable"
+	}
+	var kw map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &kw); err != nil {
+		return nil, "not marshalable"
+	}
+	var unsupported []string
+	for k := range kw {
+		if !celPropertyKeywords[k] {
+			unsupported = append(unsupported, k)
+		}
+	}
+	if len(unsupported) > 0 {
+		sort.Strings(unsupported)
+		return nil, strings.Join(unsupported, ", ") + " not expressible in CEL"
+	}
+	if len(p.Type) > 0 && !(len(p.Type) == 1 && p.Type[0] == decl.Type) {
+		return nil, fmt.Sprintf("type %v differs from the declared %q", []string(p.Type), decl.Type)
+	}
+	if p.Const != nil {
+		lit, ok := celLiteral(p.Const)
+		if !ok {
+			return nil, "const not expressible in CEL"
+		}
+		preds = append(preds, sel+" == "+lit)
+	}
+	if len(p.Enum) > 0 {
+		lits, ok := celLiteralList(p.Enum)
+		if !ok {
+			return nil, "enum not expressible in CEL"
+		}
+		preds = append(preds, fmt.Sprintf("(%s in [%s])", sel, strings.Join(lits, ", ")))
+	}
+
+	sizes := func(min, max int) {
+		if min > 0 {
+			preds = append(preds, fmt.Sprintf("size(%s) >= %d", sel, min))
+		}
+		if max > 0 {
+			preds = append(preds, fmt.Sprintf("size(%s) <= %d", sel, max))
+		}
+	}
+	numeric := p.Minimum != nil || p.Maximum != nil || p.ExclusiveMinimum != nil || p.ExclusiveMaximum != nil
+	switch {
+	case decl.XIntOrString || decl.Type == "":
+		if numeric || p.MinLength > 0 || p.MaxLength > 0 || p.MinItems > 0 || p.MaxItems > 0 || p.MinProperties > 0 || p.MaxProperties > 0 {
+			return nil, "a bound on a property with no single declared type"
+		}
+	case decl.Type == schemas.TypeNameString:
+		sizes(p.MinLength, p.MaxLength)
+	case decl.Type == schemas.TypeNameArray:
+		sizes(p.MinItems, p.MaxItems)
+	case decl.Type == schemas.TypeNameObject:
+		if p.MinProperties > 0 || p.MaxProperties > 0 {
+			// CEL's size() is defined on a map, not on an object with declared properties.
+			if decl.AdditionalProperties == nil || len(decl.Properties) > 0 {
+				return nil, "minProperties/maxProperties on an object that isn't a map"
+			}
+			sizes(p.MinProperties, p.MaxProperties)
+		}
+	case decl.Type == schemas.TypeNameInteger || decl.Type == schemas.TypeNameNumber:
+		bounds, why := celNumericBounds(sel, p, decl.Type == schemas.TypeNameInteger)
+		if why != "" {
+			return nil, why
+		}
+		preds = append(preds, bounds...)
+	}
+	return preds, ""
+}
+
+// celNumericBounds renders minimum, maximum and the exclusive bounds (a number, or draft 4's
+// boolean that makes minimum/maximum strict) as comparisons. On an integer property a fractional
+// bound is rounded to the integer comparison it is equal to, so the literal is an int.
+func celNumericBounds(sel string, p *schemas.Type, integer bool) ([]string, string) {
+	type bound struct {
+		op string
+		v  float64
+	}
+	var bs []bound
+	strict := func(e *any, op, strictOp string, base *float64) (string, bool) {
+		if e == nil {
+			if base != nil {
+				bs = append(bs, bound{op, *base})
+			}
+			return "", true
+		}
+		switch x := (*e).(type) {
+		case bool:
+			if base == nil {
+				return "", true
+			}
+			if x {
+				bs = append(bs, bound{strictOp, *base})
+			} else {
+				bs = append(bs, bound{op, *base})
+			}
+		case float64:
+			bs = append(bs, bound{strictOp, x})
+			if base != nil {
+				bs = append(bs, bound{op, *base})
+			}
+		default:
+			return fmt.Sprintf("exclusive bound %v is neither a number nor a boolean", x), false
+		}
+		return "", true
+	}
+	if why, ok := strict(p.ExclusiveMinimum, ">=", ">", p.Minimum); !ok {
+		return nil, why
+	}
+	if why, ok := strict(p.ExclusiveMaximum, "<=", "<", p.Maximum); !ok {
+		return nil, why
+	}
+	out := make([]string, 0, len(bs))
+	for _, b := range bs {
+		if math.IsNaN(b.v) || math.IsInf(b.v, 0) {
+			return nil, "a bound that isn't a finite number"
+		}
+		if !integer {
+			// CEL compares a double with an int literal, so a whole bound needs no ".0".
+			out = append(out, fmt.Sprintf("%s %s %s", sel, b.op, strconv.FormatFloat(b.v, 'g', -1, 64)))
+			continue
+		}
+		v := b.v
+		switch b.op {
+		case ">=", "<":
+			v = math.Ceil(v)
+		case ">", "<=":
+			v = math.Floor(v)
+		}
+		if math.Abs(v) > 1<<53 {
+			return nil, "an integer bound beyond 2^53"
+		}
+		out = append(out, fmt.Sprintf("%s %s %d", sel, b.op, int64(v)))
+	}
+	return out, ""
 }
 
 // handleUnsupported degrades keywords a structural CRD cannot express, always with a warning.
