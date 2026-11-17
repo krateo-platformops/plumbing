@@ -20,7 +20,7 @@ func TestGenerateWithDiagnostics_Kinds(t *testing.T) {
 		loses    bool
 	}{
 		{"unsupported not -> constraint dropped",
-			Options{SpecSchema: []byte(`{"type":"object","properties":{"o":{"type":"object","not":{"required":["a"]}}}}`)},
+			Options{SpecSchema: []byte(`{"type":"object","properties":{"o":{"type":"array","items":{"type":"string"},"not":{"maxItems":1}}}}`)},
 			KindConstraintDropped, "spec.o", true},
 		{"$ref cycle -> structure loosened",
 			Options{SpecSchema: []byte(`{"type":"object","$defs":{"n":{"type":"object","properties":{"next":{"$ref":"#/$defs/n"}}}},"properties":{"root":{"$ref":"#/$defs/n"}}}`)},

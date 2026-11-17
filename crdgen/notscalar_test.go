@@ -119,7 +119,9 @@ func TestNotStillDroppedWhereItMustBe(t *testing.T) {
 		{"a member of another type", `{"type":"object","properties":{"s":{"type":"string","not":{"anyOf":[{"type":"integer"},{"pattern":"^x"}]}}}}`, "other than the field's string"},
 		// One level of allOf/anyOf/oneOf is native since plumbing#48; a junction inside a junction is not.
 		{"structured subschema", `{"type":"object","properties":{"s":{"type":"string","not":{"anyOf":[{"anyOf":[{"pattern":"a"},{"pattern":"b"}]}]}}}}`, "not (non-trivial subschema) unsupported"},
-		{"not on an object", `{"type":"object","properties":{"o":{"type":"object","not":{"required":["x"]}}}}`, "not on non-scalar node unsupported"},
+		// An object's own required/min/maxProperties are native since #48 (notobject_test.go); an
+		// array's are not.
+		{"not on an array", `{"type":"object","properties":{"o":{"type":"array","items":{"type":"string"},"not":{"maxItems":1}}}}`, "not on non-scalar node unsupported"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			out, warns, err := GenerateWithWarnings(Options{Group: "composition.krateo.io", Version: "v1", Kind: "Probe", SpecSchema: []byte(c.schema)})
