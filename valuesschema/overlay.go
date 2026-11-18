@@ -193,6 +193,7 @@ func (ov *overlayer) derefInline(n orderedObject, path string) (orderedObject, b
 
 // overlay lays the coalesced value v onto schema node n (at path) and returns the updated node.
 func (ov *overlayer) overlay(n orderedObject, v *value, path string) orderedObject {
+	required := requiredSet(n)
 	for _, k := range v.keys {
 		cv := v.entries[k]
 		cp := join(path, k)
@@ -217,7 +218,27 @@ func (ov *overlayer) overlay(n orderedObject, v *value, path string) orderedObje
 			continue
 		}
 		if cv.kind == kindMap && len(cv.keys) > 0 {
-			sn = ov.overlay(sn, cv, cp)
+			// A REQUIRED key whose value is a map (authn's re-review of #215): leaf defaults below it
+			// do not satisfy `required` on the key itself, and crdgen never stamps a required parent.
+			// So the coalesced map, pruned to the schema, becomes the key's own default. Not `{}`:
+			// the apiserver validates a default literally, without applying nested defaults
+			// (plumbing#45), so an empty object under required children gets the CRD rejected.
+			if required[k] {
+				if d, why := ov.pruned(sn, cv, cp); why != "" {
+					ov.in.find(cp, KindOverlaySkipped, why)
+				} else {
+					_, had := sn.get("default")
+					sn = sn.set("default", d)
+					detail := "a required map: the coalesced map, pruned to the schema"
+					if had {
+						detail += "; replaced the authored default"
+					}
+					ov.in.find(cp, KindDefaultOverlaid, detail)
+				}
+			}
+			if _, hasProps := sn.get("properties"); hasProps || !required[k] {
+				sn = ov.overlay(sn, cv, cp)
+			}
 		} else {
 			_, had := sn.get("default")
 			sn = sn.set("default", cv.toJSON())
@@ -250,4 +271,91 @@ func (in *inferrer) overlayDefaults(rebased []byte, values *value, path, ptr str
 	ov := &overlayer{in: in, subtree: root, base: ptr}
 	out := ov.overlay(root, values, path)
 	return marshalValue(out)
+}
+
+// requiredSet is node n's `required` list as a set.
+func requiredSet(n orderedObject) map[string]bool {
+	out := map[string]bool{}
+	rv, _ := n.get("required")
+	list, _ := rv.([]any)
+	for _, e := range list {
+		if k, ok := e.(string); ok {
+			out[k] = true
+		}
+	}
+	return out
+}
+
+// resolved follows n's `$ref` chain READ-ONLY (no inlining); ok is false when a ref cannot be
+// resolved inside the subtree.
+func (ov *overlayer) resolved(n orderedObject) (orderedObject, bool) {
+	for hops := 0; hops < 32; hops++ {
+		rv, has := n.get("$ref")
+		if !has {
+			return n, true
+		}
+		ref, _ := rv.(string)
+		target, ok := resolvePointer(ov.subtree, ov.base, ref)
+		to, isObj := target.(orderedObject)
+		if !ok || !isObj {
+			return nil, false
+		}
+		n = to
+	}
+	return nil, false
+}
+
+// pruned is v as a default for node n: the keys n declares (recursively pruned), plus every key
+// where n is an additionalProperties map (each pruned to that schema) or preserve-unknown, or has
+// no properties at all (crdgen emits that as preserve-unknown). Keys a closed object would prune
+// are dropped, because the apiserver rejects a default that carries pruned fields. Nulls are dropped,
+// as helm deletes them. why is non-empty when no valid default exists: the pruned map lacks a key
+// a node in it requires, which the apiserver would reject (plumbing#45), so none is set.
+func (ov *overlayer) pruned(n orderedObject, v *value, path string) (any, string) {
+	if v.kind != kindMap {
+		return v.toJSON(), ""
+	}
+	n, ok := ov.resolved(n)
+	if !ok {
+		return nil, "unresolvable $ref"
+	}
+	pv, hasProps := n.get("properties")
+	props, _ := pv.(orderedObject)
+	av, hasAddl := n.get("additionalProperties")
+	pres, _ := n.get("x-kubernetes-preserve-unknown-fields")
+	keepRest := !hasProps || av == true || pres == true
+	addlSchema, _ := av.(orderedObject)
+	out := orderedObject{}
+	for _, k := range v.keys {
+		cv := v.entries[k]
+		if cv.kind == kindNull {
+			continue
+		}
+		if sv, ok := props.get(k); ok {
+			if sn, isObj := sv.(orderedObject); isObj {
+				d, why := ov.pruned(sn, cv, join(path, k))
+				if why != "" {
+					return nil, why
+				}
+				out = append(out, kv{k, d})
+			}
+			continue
+		}
+		switch {
+		case hasAddl && addlSchema != nil:
+			d, why := ov.pruned(addlSchema, cv, join(path, k))
+			if why != "" {
+				return nil, why
+			}
+			out = append(out, kv{k, d})
+		case keepRest:
+			out = append(out, kv{k, cv.toJSON()})
+		}
+	}
+	for req := range requiredSet(n) {
+		if _, ok := out.get(req); !ok {
+			return nil, fmt.Sprintf("the coalesced map lacks %q, which its schema requires; a default without it would get the CRD rejected", join(path, req))
+		}
+	}
+	return out, ""
 }

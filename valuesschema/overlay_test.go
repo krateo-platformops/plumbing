@@ -33,11 +33,14 @@ func TestInfer_OverlaysSubchartDefaults(t *testing.T) {
 		kind   FindingKind
 		detail string
 	}{
-		"svc.foo":         {KindDefaultOverlaid, ""},
-		"svc.port":        {KindDefaultOverlaid, "replaced the authored default"},
-		"svc.labels.team": {KindOverlaySkipped, "the schema declares no properties here (an open map)"},
-		"svc.extra":       {KindOverlaySkipped, "null in values"},
-		"svc.undeclared":  {KindOverlaySkipped, "no schema node for this key"},
+		"svc.foo":            {KindDefaultOverlaid, ""},
+		"svc.port":           {KindDefaultOverlaid, "replaced the authored default"},
+		"svc.labels":         {KindDefaultOverlaid, "a required map: the coalesced map, pruned to the schema"},
+		"svc.tls":            {KindDefaultOverlaid, "a required map: the coalesced map, pruned to the schema"},
+		"svc.tls.mode":       {KindDefaultOverlaid, ""},
+		"svc.tls.undeclared": {KindOverlaySkipped, "no schema node for this key"},
+		"svc.extra":          {KindOverlaySkipped, "null in values"},
+		"svc.undeclared":     {KindOverlaySkipped, "no schema node for this key"},
 	}
 	got := map[string]Finding{}
 	for _, f := range r.Report.Findings {
@@ -50,6 +53,15 @@ func TestInfer_OverlaysSubchartDefaults(t *testing.T) {
 		if !ok || f.Kind != w.kind || f.Detail != w.detail {
 			t.Errorf("%s: finding %+v, want %s %q", p, f, w.kind, w.detail)
 		}
+	}
+	// A required map's default is the coalesced map PRUNED to the schema: the additionalProperties
+	// map keeps its keys, the closed tls drops `undeclared` (the apiserver rejects a default carrying
+	// a pruned field).
+	if got, _ := json.Marshal(get("properties", "svc", "properties", "labels", "default")); string(got) != `{"team":"core"}` {
+		t.Errorf("svc.labels default = %s, want {\"team\":\"core\"}", got)
+	}
+	if got, _ := json.Marshal(get("properties", "svc", "properties", "tls", "default")); string(got) != `{"mode":"strict"}` {
+		t.Errorf("svc.tls default = %s, want {\"mode\":\"strict\"} (undeclared pruned)", got)
 	}
 	// Nothing invented: the open map got no properties, the undeclared key no node.
 	if get("properties", "svc", "properties", "undeclared") != nil {
@@ -72,5 +84,40 @@ func TestInfer_UnusedClosedPathErrorIsDeterministic(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), `"alpha"`) {
 			t.Fatalf("run %d: err = %v, want it to name \"alpha\"", i, err)
 		}
+	}
+}
+
+// plumbing#45's shape: a required map whose coalesced value LACKS a key its own schema requires
+// gets no default at all, because the apiserver validates a default literally and would reject the
+// CRD. Reported, not set.
+func TestInfer_RequiredMapLackingItsRequiredChildGetsNoDefault(t *testing.T) {
+	fsys := fstest.MapFS{
+		"p/Chart.yaml":                  {Data: []byte("apiVersion: v2\nname: p\nversion: 0.1.0\ndependencies:\n  - name: s\n    version: 0.1.0\n")},
+		"p/values.yaml":                 {Data: []byte("x: 1\n")},
+		"p/charts/s/Chart.yaml":         {Data: []byte("apiVersion: v2\nname: s\nversion: 0.1.0\n")},
+		"p/charts/s/values.yaml":        {Data: []byte("tls:\n  ca: abc\n")},
+		"p/charts/s/values.schema.json": {Data: []byte(`{"type":"object","required":["tls"],"properties":{"tls":{"type":"object","required":["mode"],"properties":{"mode":{"type":"string"},"ca":{"type":"string"}}}}}`)},
+	}
+	r, err := Infer(fsys, "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(r.Schema, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if d, ok := dig(doc, "properties", "s", "properties", "tls", "default"); ok {
+		t.Errorf("tls got default %v: without its required mode the apiserver rejects the CRD (plumbing#45)", d)
+	}
+	found := false
+	for _, f := range r.Report.Findings {
+		found = found || (f.Path == "s.tls" && f.Kind == KindOverlaySkipped && strings.Contains(f.Detail, `"s.tls.mode"`))
+	}
+	if !found {
+		t.Errorf("no OverlaySkipped finding naming s.tls.mode: %+v", r.Report.Findings)
+	}
+	// The leaf below is still defaulted: only the map-level default is withheld.
+	if d, _ := dig(doc, "properties", "s", "properties", "tls", "properties", "ca", "default"); d != "abc" {
+		t.Errorf("tls.ca default = %v, want abc", d)
 	}
 }

@@ -2,5 +2,8 @@ foo: bar
 port: 8080
 labels:
   team: core
+tls:
+  mode: strict
+  undeclared: x
 extra: ~
 undeclared: 1
