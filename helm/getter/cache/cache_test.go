@@ -23,6 +23,7 @@ func TestConcurrency_RaceConditions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create cache: %v", err)
 	}
+	t.Cleanup(c.Stop)
 
 	var wg sync.WaitGroup
 	uri := "https://example.com/charts/mychart"
@@ -69,6 +70,7 @@ func TestBlockingCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create cache: %v", err)
 	}
+	t.Cleanup(c.Stop)
 
 	// 1. Populate cache with 10,000 dummy files to slow down ReadDir
 	// This simulates a heavy cache load (e.g., a chart repository).
@@ -102,24 +104,33 @@ func TestBlockingCleanup(t *testing.T) {
 	}
 }
 
-// TestGoroutineLeak shows that NewDiskCache leaks a goroutine
-// because there is no Shutdown mechanism.
-func TestGoroutineLeak(t *testing.T) {
+// TestManyCaches_StopReleasesEveryCleanupGoroutine is the core-provider#99 shape at scale: a
+// process that creates caches dynamically must get every cleanup goroutine back by calling Stop. It
+// waits on each cache's own done channel rather than counting goroutines process-wide, so other
+// tests' caches cannot make it pass or fail. (It used to create 1000 caches and never stop them,
+// which leaked 1000 goroutines into every later test in this package and made
+// TestStop_TerminatesCleanupGoroutine's process-wide count flaky.)
+func TestManyCaches_StopReleasesEveryCleanupGoroutine(t *testing.T) {
 	dir := t.TempDir()
-
-	// Create 1000 cache instances
+	caches := make([]*DiskCache, 0, 1000)
 	for i := 0; i < 1000; i++ {
-		_, _ = NewDiskCache(
-			WithDir(dir),
-			WithTTL(time.Hour),
-			WithCleanupInterval(time.Hour),
-		)
+		c, err := NewDiskCache(WithDir(dir), WithTTL(time.Hour), WithCleanupInterval(time.Hour))
+		if err != nil {
+			t.Fatalf("NewDiskCache: %v", err)
+		}
+		caches = append(caches, c)
 	}
-
-	// At this point, 1000 tickers are running in the background forever.
-	// In a real application, if you create caches dynamically (e.g., per request),
-	// this will crash the runtime eventually.
-	t.Log("Check runtime.NumGoroutine() - it will be inflated by 1000.")
+	for _, c := range caches {
+		c.Stop()
+	}
+	deadline := time.After(5 * time.Second)
+	for i, c := range caches {
+		select {
+		case <-c.done:
+		case <-deadline:
+			t.Fatalf("cache %d of %d: cleanup goroutine still running 5s after Stop", i+1, len(caches))
+		}
+	}
 }
 
 // TestIOErrorHandling checks behavior when disk permissions fail.
@@ -129,6 +140,7 @@ func TestIOErrorHandling(t *testing.T) {
 		WithDir(dir),
 		WithTTL(time.Hour),
 	)
+	t.Cleanup(c.Stop)
 
 	// Setup a valid file
 	uri, ver := "http://test", "1.0"
