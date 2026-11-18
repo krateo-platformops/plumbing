@@ -685,3 +685,19 @@ const (
 // mean depending on the format of a strings.Builder with no compatibility promise, which is the
 // thing helm's wording has already changed under this repo once.
 var ErrValuesSchema = errors.New("chart values do not satisfy the chart's values.schema.json")
+
+// ErrTemplateExecution marks a render that failed INSIDE the chart's templates: a `fail` or
+// `required` the chart calls on purpose, or a template error such as a nil pointer. Like
+// ErrValuesSchema it is a property of the chart and the values it was given, so a consumer can
+// answer 4xx and attribute it to the chart rather than to itself (core-provider#583: chart-inspector
+// answered 500 and the cdc reported "chart-inspector itself failed").
+//
+// HOW IT IS DETECTED, against helm v3.20.2, and why one half is by message text when
+// ErrValuesSchema refuses to be. helm's engine (pkg/engine/engine.go, cleanupExecError):
+//
+//   - a generic template.ExecError is returned UNCHANGED, typed, and errors.As finds it;
+//   - a `fail`/`required` (an ExecError whose text carries helm's HELM_ERR markers) is REPLACED by
+//     fmt.Errorf("execution error at (%s): %s", ...), and the type is gone. helm has no typed form
+//     of it at all, so the prefix is the only evidence there is. It is pinned by a test that renders
+//     a real chart through helm, so a change of helm's wording fails CI rather than misclassifying.
+var ErrTemplateExecution = errors.New("the chart's templates failed on these values")
