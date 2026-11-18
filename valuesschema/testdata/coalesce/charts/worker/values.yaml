@@ -1,0 +1,11 @@
+enabled: true
+replicas: 1
+limits:
+  cpu: 1
+  memory: 1Gi
+args: [--default, --verbose]
+debug: true
+probes:
+  liveness: /healthz
+global:
+  region: us             # the parent's global wins in helm; never inferred

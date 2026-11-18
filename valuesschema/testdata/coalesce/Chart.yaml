@@ -1,0 +1,15 @@
+apiVersion: v2
+name: coalesce
+version: 0.1.0
+# helm coalesce conformance (core-provider#568, child 3): every way the parent's values combine
+# with a dependency's own, so valuesschema's mergeOver is compared with chartutil.CoalesceValues on
+# each one.
+dependencies:
+  # the SAME chart under two aliases: each alias gets its own merged block
+  - name: worker
+    version: 0.1.0
+    alias: fast
+  - name: worker
+    version: 0.1.0
+    alias: slow
+    condition: slow.enabled

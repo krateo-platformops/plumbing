@@ -17,6 +17,7 @@ var update = flag.Bool("update", false, "rewrite testdata/golden from the curren
 // fixtures: name -> chart dir under testdata.
 var fixtures = map[string]string{
 	"basic":         "basic",
+	"coalesce":      "coalesce",
 	"deps":          "deps",
 	"closed":        "closed",
 	"kyverno-3.9.2": "kyverno-3.9.2/kyverno",

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: worker
+version: 0.1.0
+dependencies:
+  - name: sidecar
+    version: 0.1.0
