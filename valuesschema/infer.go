@@ -196,6 +196,15 @@ func (in *inferrer) chartNode(c *chart, path, ptr string) (*node, error) {
 		n.properties = append(n.properties, kv{d.key(), dn})
 		have[d.key()] = true
 	}
+	// The ROOT always declares `global`, first, even when values.yaml has none: helm supplies it to
+	// every release, the cdc merges its own keys into it, and a wrapper's root is expected to carry
+	// it (kyverno-blueprint's hand-written schema; core-provider#568 child 4). A subchart's global is
+	// only helm's push-down of the parent's, so below the root it is declared only when values.yaml
+	// writes one.
+	if path == "" && !have["global"] {
+		in.find("global", KindGlobalOpen, "not in values.yaml; declared because helm always supplies it")
+		n.properties = append([]kv{{"global", &node{typ: "object"}}}, n.properties...)
+	}
 	return n, nil
 }
 

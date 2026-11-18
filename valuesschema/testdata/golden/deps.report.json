@@ -23,6 +23,11 @@
     {
       "path": "cache.global",
       "kind": "GlobalOpen"
+    },
+    {
+      "path": "global",
+      "kind": "GlobalOpen",
+      "detail": "not in values.yaml; declared because helm always supplies it"
     }
   ]
 }

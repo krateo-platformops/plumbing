@@ -4,7 +4,7 @@ title: plumbing exported API
 description: The exported package map — one line per package, grouped by theme, derived from the package docs and code; full godoc lives on pkg.go.dev.
 resource: https://pkg.go.dev/github.com/krateo-platformops/plumbing
 tags: [go-api, packages]
-timestamp: 2026-08-07T00:00:00Z
+timestamp: 2026-11-18T00:00:00Z
 ---
 
 # Exported API
@@ -52,6 +52,7 @@ derived from the actual package docs and code.
 |---|---|
 | `crdgen` | `Generate(Options)` — direct JSON-Schema → structural-OpenAPI-v3 CRD transpiler, gated on the apiextensions validation library; `NormalizeVersionName`. |
 | `crdgen/schemas` | JSON-Schema resolution primitives and type-name constants used by the transpiler. |
+| `valuesschema` | `Infer(fs.FS, dir)` — a JSON Schema for a chart that ships no values.schema.json, from its values.yaml files (`RulesVersion`, typed `Report` of `Finding`s); `cmd/values-schema` is its CLI. |
 
 ## Identity, endpoints, auth
 
