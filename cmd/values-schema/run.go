@@ -29,6 +29,13 @@ const (
 	exitUsage = 2
 )
 
+// Modes for what the CLI writes, at plumbing's gosec floor (G306, G301). The files are meant to be
+// committed, and git records only the executable bit, so a checkout gets 100644 whatever is used here.
+const (
+	fileMode = 0o600
+	dirMode  = 0o750
+)
+
 // puller fetches a chart archive from an OCI registry. It is the one network boundary, so tests
 // substitute it; production uses helm's own registry client.
 type puller interface {
@@ -226,7 +233,7 @@ func writeOutputs(out, report string, r *valuesschema.Result, stdout io.Writer) 
 		if _, err := stdout.Write(schema); err != nil {
 			return err
 		}
-	} else if err := os.WriteFile(out, schema, 0o644); err != nil {
+	} else if err := os.WriteFile(out, schema, fileMode); err != nil {
 		return err
 	}
 	if report == "" {
@@ -236,7 +243,7 @@ func writeOutputs(out, report string, r *valuesschema.Result, stdout io.Writer) 
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(report, append(b, '\n'), 0o644)
+	return os.WriteFile(report, append(b, '\n'), fileMode)
 }
 
 // summarize prints one line: what was inferred, under which rules, and how many findings of each
@@ -332,11 +339,11 @@ func scaffoldWrapper(o options, src *source, stderr io.Writer) error {
 		return err
 	}
 
-	if err := os.MkdirAll(o.wrapper, 0o755); err != nil {
+	if err := os.MkdirAll(o.wrapper, dirMode); err != nil {
 		return err
 	}
 	for name, data := range map[string][]byte{"Chart.yaml": chartYAML, "values.yaml": []byte(wrapperValues)} {
-		if err := os.WriteFile(filepath.Join(o.wrapper, name), data, 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(o.wrapper, name), data, fileMode); err != nil {
 			return err
 		}
 	}
