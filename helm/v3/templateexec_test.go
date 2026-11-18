@@ -35,7 +35,7 @@ func installClientOnly(t *testing.T, tmpl string, values map[string]any) error {
 	inst := action.NewInstall(cfg)
 	inst.ClientOnly, inst.DryRun, inst.ReleaseName, inst.Namespace = true, true, "r583", "default"
 	if _, err := inst.RunWithContext(context.Background(), ch, values); err != nil {
-		return classifyTemplateExecution(fmt.Errorf("install failed: %w", err)) // exactly as Install wraps it
+		return fmt.Errorf("install failed: %w", classifyTemplateExecution(err)) // exactly as Install does
 	}
 	return nil
 }
@@ -79,14 +79,17 @@ func TestClassifyTemplateExecution_AgainstRealHelm(t *testing.T) {
 // error already classified is not wrapped twice.
 func TestClassifyTemplateExecution_LeavesOtherFailuresAlone(t *testing.T) {
 	for _, err := range []error{
-		errors.New("install failed: Kubernetes cluster unreachable"),
+		errors.New("Kubernetes cluster unreachable"),
 		errors.Join(helmconfig.ErrValuesSchema, errors.New("at '/name': got number, want string")),
+		// The phrase QUOTED mid-message by something else (a webhook echoing a manifest annotation):
+		// not helm's error, so not a template failure. Contains would have matched it.
+		errors.New(`admission webhook "policy.example.com" denied the request: annotation note="execution error at (x.yaml:1:2): no" is not allowed`),
 	} {
 		if got := classifyTemplateExecution(err); errors.Is(got, helmconfig.ErrTemplateExecution) {
 			t.Errorf("%v was classified a template failure", err)
 		}
 	}
-	once := classifyTemplateExecution(errors.New("install failed: execution error at (c/templates/x.yaml:1:3): no"))
+	once := classifyTemplateExecution(errors.New("execution error at (c/templates/x.yaml:1:3): no"))
 	if twice := classifyTemplateExecution(once); twice != once {
 		t.Errorf("an already-classified error was wrapped again: %v", twice)
 	}

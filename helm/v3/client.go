@@ -382,7 +382,7 @@ func (c *client) Upgrade(ctx context.Context, releaseName, chartRef string, cfg 
 				}
 				// Wrapped with %w so IsRESTMappingMiss still sees the typed NoKindMatchError, and
 				// so the caller's message is unchanged from before this retry existed.
-				return classifyTemplateExecution(fmt.Errorf("upgrade failed: %w", e))
+				return fmt.Errorf("upgrade failed: %w", classifyTemplateExecution(e))
 			}
 			rel = r
 			return nil
@@ -500,7 +500,7 @@ func (c *client) install(ctx context.Context, namespace, releaseName, chartRef s
 
 	rel, err := installClient.RunWithContext(ctx, chart, cfg.Values)
 	if err != nil {
-		return nil, classifyTemplateExecution(fmt.Errorf("install failed: %w", err))
+		return nil, fmt.Errorf("install failed: %w", classifyTemplateExecution(err))
 	}
 
 	return toWrapperRelease(rel), nil
