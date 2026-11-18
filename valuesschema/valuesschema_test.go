@@ -20,6 +20,8 @@ var fixtures = map[string]string{
 	"deps":          "deps",
 	"closed":        "closed",
 	"kyverno-3.9.2": "kyverno-3.9.2/kyverno",
+	"refs":          "refs",
+	"required":      "required",
 }
 
 func infer(t *testing.T, dir string) *Result {

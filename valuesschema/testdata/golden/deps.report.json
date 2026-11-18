@@ -7,9 +7,17 @@
       "detail": "schemaful"
     },
     {
+      "path": "schemaful.mode",
+      "kind": "DefaultOverlaid"
+    },
+    {
       "path": "common",
       "kind": "LibraryChart",
       "detail": "common"
+    },
+    {
+      "path": "cache.global",
+      "kind": "GlobalOpen"
     }
   ]
 }

@@ -1,0 +1,34 @@
+{
+  "rulesVersion": "1",
+  "findings": [
+    {
+      "path": "svc",
+      "kind": "SubchartSchemaUsed",
+      "detail": "svc"
+    },
+    {
+      "path": "svc.foo",
+      "kind": "DefaultOverlaid"
+    },
+    {
+      "path": "svc.port",
+      "kind": "DefaultOverlaid",
+      "detail": "replaced the authored default"
+    },
+    {
+      "path": "svc.labels.team",
+      "kind": "OverlaySkipped",
+      "detail": "the schema declares no properties here (an open map)"
+    },
+    {
+      "path": "svc.extra",
+      "kind": "OverlaySkipped",
+      "detail": "null in values"
+    },
+    {
+      "path": "svc.undeclared",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    }
+  ]
+}

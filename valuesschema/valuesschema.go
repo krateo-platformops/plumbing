@@ -9,7 +9,9 @@
 // What it is for: a consumer (core-provider, behind an explicit opt-in) turns the result into a
 // typed, OPEN composition CRD and a portal form. What it is not: a replacement for an authored
 // schema. It infers no constraints (no enum, bound, pattern or required), and every map it emits is
-// open, so it never refuses a value the chart itself accepts.
+// open, so it never refuses a value the chart itself accepts. A subchart's OWN schema (D8) keeps its
+// authored constraints, and its coalesced values are overlaid as defaults (overlay.go), so a
+// `required` key the subchart's values.yaml fills is filled by the apiserver too, as helm fills it.
 //
 // RULES v1 (one table, RulesVersion):
 //
@@ -24,9 +26,12 @@
 //	list of one kind        {type: array, items: <kind>, default}
 //	mixed list              {type: array, items: {}, default}
 //	list of maps            items = merge of every element's keys, typed-open
-//	key `global`            {type: object}                                  the cdc merges its own keys in
+//	key `global`            {type: object}, at the top of EVERY chart       the cdc merges its own keys in;
+//	                                                                        helm pushes the parent's down
 //	dependency (name|alias) its own values.yaml merged under the parent's block, inferred open;
-//	                        its own values.schema.json used instead when it has one (D8)
+//	                        its own values.schema.json used instead when it has one (D8), with
+//	                        local $refs rebased onto its subtree and its coalesced values overlaid
+//	                        as defaults
 //	library chart dep       {type: object}                                  helm adds the key anyway
 //	root                    open, plus x-krateo-values-schema: {source: inferred, rules}
 //
@@ -45,6 +50,7 @@ package valuesschema
 import (
 	"fmt"
 	"io/fs"
+	"sort"
 )
 
 // RulesVersion is the version of the inference rules. It is written into every inferred schema as
@@ -74,8 +80,18 @@ const (
 	KindLibraryChart FindingKind = "LibraryChart"
 	// KindClosedByAnnotation: a map closed by ClosedAnnotation.
 	KindClosedByAnnotation FindingKind = "ClosedByAnnotation"
-	// KindGlobalOpen: the `global` key, always free-form.
+	// KindGlobalOpen: the `global` key at the top of any chart's values, always free-form.
 	KindGlobalOpen FindingKind = "GlobalOpen"
+	// KindDefaultOverlaid: a coalesced value was put on a subchart schema's node as its `default`
+	// (overlay.go), so the apiserver fills what helm's coalesce fills. Detail says when it replaced
+	// an authored default.
+	KindDefaultOverlaid FindingKind = "DefaultOverlaid"
+	// KindOverlaySkipped: a coalesced value had no schema node to go on (no such key, an open map, a
+	// null, an unresolvable $ref); detail says which. Nothing was invented for it.
+	KindOverlaySkipped FindingKind = "OverlaySkipped"
+	// KindRefInlined: a $ref was inlined at one use site so a default could be set below it without
+	// changing the shared $def; detail is the ref.
+	KindRefInlined FindingKind = "RefInlined"
 )
 
 // Finding is one notable decision the inference made, at a dotted value path ("" is the root;
@@ -125,11 +141,17 @@ func Infer(fsys fs.FS, dir string) (*Result, error) {
 	}
 	in.closed = closed
 
-	root, err := in.chartNode(c, "")
+	root, err := in.chartNode(c, "", "#")
 	if err != nil {
 		return nil, err
 	}
+	// Sorted, so the error names the same path on every run.
+	paths := make([]string, 0, len(in.closed))
 	for p := range in.closed {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	for _, p := range paths {
 		if !in.closedUsed[p] {
 			return nil, fmt.Errorf("%s names %q, which is not a map in the chart's values", ClosedAnnotation, p)
 		}

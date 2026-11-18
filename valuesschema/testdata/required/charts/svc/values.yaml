@@ -1,0 +1,6 @@
+foo: bar
+port: 8080
+labels:
+  team: core
+extra: ~
+undeclared: 1

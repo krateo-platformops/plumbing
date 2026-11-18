@@ -1,0 +1,29 @@
+{
+  "rulesVersion": "1",
+  "findings": [
+    {
+      "path": "ports",
+      "kind": "SubchartSchemaUsed",
+      "detail": "ports"
+    },
+    {
+      "path": "ports.http",
+      "kind": "RefInlined",
+      "detail": "#/properties/ports/definitions/endpoint"
+    },
+    {
+      "path": "ports.http.port",
+      "kind": "RefInlined",
+      "detail": "#/properties/ports/definitions/port"
+    },
+    {
+      "path": "ports.http.port",
+      "kind": "DefaultOverlaid"
+    },
+    {
+      "path": "wrapper.tls",
+      "kind": "SubchartSchemaUsed",
+      "detail": "tls"
+    }
+  ]
+}

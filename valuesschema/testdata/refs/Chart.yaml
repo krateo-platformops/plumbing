@@ -1,0 +1,12 @@
+apiVersion: v2
+name: refs
+version: 0.1.0
+dependencies:
+  # A subchart whose own schema uses LOCAL refs: legacy "definitions", "$defs", and a ref from
+  # inside a $def to a sibling $def.
+  - name: ports
+    version: 0.1.0
+  # A subchart with no schema of its own whose OWN subchart has one: the rebased pointer must
+  # carry both levels (#/properties/wrapper/properties/tls/...).
+  - name: wrapper
+    version: 0.1.0

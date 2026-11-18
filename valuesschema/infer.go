@@ -147,8 +147,9 @@ func join(prefix, key string) string {
 	return prefix + "." + key
 }
 
-// chartNode infers the schema of chart c, whose values appear at path (the root is "").
-func (in *inferrer) chartNode(c *chart, path string) (*node, error) {
+// chartNode infers the schema of chart c, whose values appear at path (the root is "") and whose
+// node sits at JSON pointer ptr in the output document (the root is "#").
+func (in *inferrer) chartNode(c *chart, path, ptr string) (*node, error) {
 	if in.closedUsed == nil {
 		in.closedUsed = map[string]bool{}
 	}
@@ -163,11 +164,17 @@ func (in *inferrer) chartNode(c *chart, path string) (*node, error) {
 		deps[d.key()] = d
 	}
 	n, err := in.mapNode(values, path, func(key string) (*node, bool, error) {
+		// `global` at the top of EVERY chart's values, root or subchart: helm coalesceGlobals pushes
+		// the parent's globals down and lets them win, so no chart's own global block is a schema.
+		if key == "global" {
+			in.find(join(path, key), KindGlobalOpen, "")
+			return &node{typ: "object"}, true, nil
+		}
 		d, ok := deps[key]
-		if !ok || path != "" && key == "global" {
+		if !ok {
 			return nil, false, nil
 		}
-		dn, err := in.dependencyNode(c, d, values.entries[key], join(path, key))
+		dn, err := in.dependencyNode(c, d, values.entries[key], join(path, key), ptr+"/properties/"+pointerEscape(key))
 		return dn, true, err
 	})
 	if err != nil {
@@ -182,7 +189,7 @@ func (in *inferrer) chartNode(c *chart, path string) (*node, error) {
 		if have[d.key()] {
 			continue
 		}
-		dn, err := in.dependencyNode(c, d, nil, join(path, d.key()))
+		dn, err := in.dependencyNode(c, d, nil, join(path, d.key()), ptr+"/properties/"+pointerEscape(d.key()))
 		if err != nil {
 			return nil, err
 		}
@@ -192,7 +199,7 @@ func (in *inferrer) chartNode(c *chart, path string) (*node, error) {
 	return n, nil
 }
 
-func (in *inferrer) dependencyNode(parent *chart, d dependency, parentBlock *value, path string) (*node, error) {
+func (in *inferrer) dependencyNode(parent *chart, d dependency, parentBlock *value, path, ptr string) (*node, error) {
 	sub, ok := parent.subcharts[d.name]
 	if !ok {
 		return nil, fmt.Errorf("dependency %s (at %s) is not vendored under charts/: run helm dependency build", d.name, path)
@@ -205,13 +212,27 @@ func (in *inferrer) dependencyNode(parent *chart, d dependency, parentBlock *val
 		if !json.Valid(sub.schema) {
 			return nil, fmt.Errorf("subchart %s: values.schema.json is not valid JSON", sub.name)
 		}
+		// The subchart's schema becomes a subtree of the parent's document, so its LOCAL refs
+		// ("#/$defs/x", "#/definitions/x", "#") would resolve against the parent's root and miss.
+		// Rebase them onto the subtree's own pointer; crdgen indexes $defs at every nesting level by
+		// full pointer (crdgen/transpile.go collectRefs), so the rebased ref resolves there.
+		rebased, err := rebaseLocalRefs(sub.schema, ptr)
+		if err != nil {
+			return nil, fmt.Errorf("subchart %s: values.schema.json: %w", sub.name, err)
+		}
 		in.find(path, KindSubchartSchemaUsed, sub.name)
-		return &node{raw: json.RawMessage(sub.schema)}, nil
+		// The coalesced values become the schema's defaults (overlay.go), so `required` is satisfied
+		// as helm satisfies it.
+		overlaid, err := in.overlayDefaults(rebased, mergeOver(sub.values, parentBlock), path, ptr)
+		if err != nil {
+			return nil, fmt.Errorf("subchart %s: overlaying its values onto values.schema.json: %w", sub.name, err)
+		}
+		return &node{raw: json.RawMessage(overlaid)}, nil
 	}
 	merged := mergeOver(sub.values, parentBlock)
 	view := *sub
 	view.values = merged
-	return in.chartNode(&view, path)
+	return in.chartNode(&view, path, ptr)
 }
 
 // mapNode infers an open object from a non-empty map. special lets the caller supply a node for a
@@ -233,11 +254,6 @@ func (in *inferrer) mapNode(v *value, path string, special func(string) (*node, 
 				n.properties = append(n.properties, kv{k, sn})
 				continue
 			}
-		}
-		if k == "global" && path == "" {
-			in.find(cp, KindGlobalOpen, "")
-			n.properties = append(n.properties, kv{k, &node{typ: "object"}})
-			continue
 		}
 		cn, err := in.valueNode(child, cp)
 		if err != nil {
