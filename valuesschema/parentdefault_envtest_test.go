@@ -125,7 +125,8 @@ func TestEnvtest_InferredLeafDefaultReachesAnOmittedParent(t *testing.T) {
 // REQUIRES foo (a string), labels (an additionalProperties map) and tls (an object with its own
 // required mode, plumbing#45's shape), and svc's values.yaml sets all three. helm accepts a release
 // that omits any of them (it validates the coalesced values), so the CRD must too: each omitted key
-// is filled from its overlaid default, tls without the undeclared key values.yaml also carries.
+// is filled from its overlaid default. tls KEEPS the undeclared key values.yaml also carries: its
+// schema leaves additionalProperties unstated, which helm treats as open, so it is opened (open.go).
 //
 // The overlaid CRD must be ACCEPTED by the apiserver at all (the #45 regression: a default that
 // fails its own schema gets the whole CRD rejected), and crdgen must find no contradicting default.
@@ -247,7 +248,7 @@ func TestEnvtest_OverlaidDefaultSatisfiesASubchartRequired(t *testing.T) {
 				}
 				svc, _, _ := unstructured.NestedMap(stored.Object, "spec", "svc")
 				want := map[string]any{"foo": "given", "labels": map[string]any{"team": "given"}, "tls": map[string]any{"mode": "permissive"}}
-				fromValues := map[string]any{"foo": "bar", "labels": map[string]any{"team": "core"}, "tls": map[string]any{"mode": "strict"}}
+				fromValues := map[string]any{"foo": "bar", "labels": map[string]any{"team": "core"}, "tls": map[string]any{"mode": "strict", "undeclared": "x"}}
 				for _, k := range []string{"foo", "labels", "tls"} {
 					if _, given := spec.spec["svc"].(map[string]any)[k]; !given {
 						want[k] = fromValues[k]

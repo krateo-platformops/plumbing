@@ -7,6 +7,21 @@
       "detail": "ports"
     },
     {
+      "path": "ports",
+      "kind": "AuthoredMapOpened",
+      "detail": "#/properties/ports"
+    },
+    {
+      "path": "ports",
+      "kind": "AuthoredMapOpened",
+      "detail": "#/properties/ports/definitions/endpoint"
+    },
+    {
+      "path": "ports",
+      "kind": "AuthoredMapOpened",
+      "detail": "#/properties/ports/$defs/endpoint"
+    },
+    {
       "path": "ports.http",
       "kind": "RefInlined",
       "detail": "#/properties/ports/definitions/endpoint"
@@ -24,6 +39,11 @@
       "path": "wrapper.tls",
       "kind": "SubchartSchemaUsed",
       "detail": "tls"
+    },
+    {
+      "path": "wrapper.tls",
+      "kind": "AuthoredMapOpened",
+      "detail": "#/properties/wrapper/properties/tls"
     }
   ]
 }

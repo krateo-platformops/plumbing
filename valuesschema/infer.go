@@ -221,9 +221,20 @@ func (in *inferrer) dependencyNode(parent *chart, d dependency, parentBlock *val
 			return nil, fmt.Errorf("subchart %s: values.schema.json: %w", sub.name, err)
 		}
 		in.find(path, KindSubchartSchemaUsed, sub.name)
+		// Objects whose `additionalProperties` the author left unstated are open in helm but would be
+		// closed by crdgen, pruning values helm accepts (open.go). Open them BEFORE the overlay, so a
+		// required map's default keeps the keys the CRD will now keep.
+		tree, err := parseOrdered(rebased)
+		if err != nil {
+			return nil, fmt.Errorf("subchart %s: values.schema.json: %w", sub.name, err)
+		}
+		opened, err := marshalValue(in.openUnstated(tree, path, ptr))
+		if err != nil {
+			return nil, fmt.Errorf("subchart %s: values.schema.json: %w", sub.name, err)
+		}
 		// The coalesced values become the schema's defaults (overlay.go), so `required` is satisfied
 		// as helm satisfies it.
-		overlaid, err := in.overlayDefaults(rebased, mergeOver(sub.values, parentBlock), path, ptr)
+		overlaid, err := in.overlayDefaults(opened, mergeOver(sub.values, parentBlock), path, ptr)
 		if err != nil {
 			return nil, fmt.Errorf("subchart %s: overlaying its values onto values.schema.json: %w", sub.name, err)
 		}

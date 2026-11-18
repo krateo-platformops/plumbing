@@ -54,14 +54,17 @@ func TestInfer_OverlaysSubchartDefaults(t *testing.T) {
 			t.Errorf("%s: finding %+v, want %s %q", p, f, w.kind, w.detail)
 		}
 	}
-	// A required map's default is the coalesced map PRUNED to the schema: the additionalProperties
-	// map keeps its keys, the closed tls drops `undeclared` (the apiserver rejects a default carrying
-	// a pruned field).
+	// A required map's default is the coalesced map pruned to the schema: the additionalProperties
+	// map keeps its keys, and tls keeps `undeclared` because its schema leaves additionalProperties
+	// unstated and is opened (open.go). The closed case is TestInfer_ClosedRequiredMapDefaultIsPruned.
 	if got, _ := json.Marshal(get("properties", "svc", "properties", "labels", "default")); string(got) != `{"team":"core"}` {
 		t.Errorf("svc.labels default = %s, want {\"team\":\"core\"}", got)
 	}
-	if got, _ := json.Marshal(get("properties", "svc", "properties", "tls", "default")); string(got) != `{"mode":"strict"}` {
-		t.Errorf("svc.tls default = %s, want {\"mode\":\"strict\"} (undeclared pruned)", got)
+	if got, _ := json.Marshal(get("properties", "svc", "properties", "tls", "default")); string(got) != `{"mode":"strict","undeclared":"x"}` {
+		t.Errorf("svc.tls default = %s, want {\"mode\":\"strict\",\"undeclared\":\"x\"} (tls is opened, so undeclared is kept)", got)
+	}
+	if got := get("properties", "svc", "properties", "tls", "additionalProperties"); got != true {
+		t.Errorf("svc.tls additionalProperties = %v, want true: its schema left it unstated", got)
 	}
 	// Nothing invented: the open map got no properties, the undeclared key no node.
 	if get("properties", "svc", "properties", "undeclared") != nil {
@@ -150,5 +153,44 @@ func TestInfer_MissingRequiredChildIsNamedDeterministically(t *testing.T) {
 		if string(rep) != string(first) {
 			t.Fatalf("run %d: report differs:\n%s\nvs\n%s", i, rep, first)
 		}
+	}
+}
+
+// The pruning arm of a required map's default: when the AUTHOR closed the object
+// (additionalProperties: false), it stays closed, and a values key it does not declare is dropped
+// from the default, because the apiserver rejects a default carrying a field it would prune
+// (plumbing#45's rule applied to pruning). Opening (open.go) never touches an explicit false.
+func TestInfer_ClosedRequiredMapDefaultIsPruned(t *testing.T) {
+	fsys := fstest.MapFS{
+		"p/Chart.yaml":                  {Data: []byte("apiVersion: v2\nname: p\nversion: 0.1.0\ndependencies:\n  - name: s\n    version: 0.1.0\n")},
+		"p/values.yaml":                 {Data: []byte("x: 1\n")},
+		"p/charts/s/Chart.yaml":         {Data: []byte("apiVersion: v2\nname: s\nversion: 0.1.0\n")},
+		"p/charts/s/values.yaml":        {Data: []byte("tls:\n  mode: strict\n  undeclared: x\n")},
+		"p/charts/s/values.schema.json": {Data: []byte(`{"type":"object","required":["tls"],"properties":{"tls":{"type":"object","additionalProperties":false,"required":["mode"],"properties":{"mode":{"type":"string"}}}}}`)},
+	}
+	r, err := Infer(fsys, "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(r.Schema, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := dig(doc, "properties", "s", "properties", "tls", "additionalProperties"); got != false {
+		t.Errorf("tls additionalProperties = %v, want the author's false kept", got)
+	}
+	d, _ := dig(doc, "properties", "s", "properties", "tls", "default")
+	if got, _ := json.Marshal(d); string(got) != `{"mode":"strict"}` {
+		t.Errorf("tls default = %s, want {\"mode\":\"strict\"}: a closed object's default must not carry the undeclared key", got)
+	}
+	// s itself left additionalProperties unstated, so it is opened and reported; tls is not.
+	opened := []string{}
+	for _, f := range r.Report.Findings {
+		if f.Kind == KindAuthoredMapOpened {
+			opened = append(opened, f.Detail)
+		}
+	}
+	if strings.Join(opened, ",") != "#/properties/s" {
+		t.Errorf("AuthoredMapOpened details = %v, want only #/properties/s", opened)
 	}
 }

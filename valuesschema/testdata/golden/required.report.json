@@ -7,6 +7,16 @@
       "detail": "svc"
     },
     {
+      "path": "svc",
+      "kind": "AuthoredMapOpened",
+      "detail": "#/properties/svc"
+    },
+    {
+      "path": "svc",
+      "kind": "AuthoredMapOpened",
+      "detail": "#/properties/svc/properties/tls"
+    },
+    {
       "path": "svc.foo",
       "kind": "DefaultOverlaid"
     },
