@@ -70,7 +70,7 @@ func TestWithCacheAndCRDInformerBothSucceed(t *testing.T) {
 	cfg := testRESTConfig()
 
 	c, err := NewClient(cfg,
-		WithCache(),
+		testCache(t),
 		WithCRDInformer(cfg, 1*time.Minute),
 	)
 	if err != nil {
@@ -93,7 +93,7 @@ func TestWithCRDInformerBeforeCacheOrderIndependent(t *testing.T) {
 
 	c, err := NewClient(cfg,
 		WithCRDInformer(cfg, 30*time.Second),
-		WithCache(),
+		testCache(t),
 	)
 	if err != nil {
 		t.Fatalf("NewClient with WithCRDInformer + WithCache: unexpected error: %v", err)

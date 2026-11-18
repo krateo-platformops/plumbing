@@ -96,7 +96,7 @@ func TestEnvtest_InstallAndUninstallReportPerChildVerdicts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	hc, err := NewClient(cfg, WithNamespace("default"), WithCache(), WithCachedClients(&cc))
+	hc, err := NewClient(cfg, WithNamespace("default"), testCache(t), WithCachedClients(&cc))
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}

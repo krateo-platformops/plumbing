@@ -89,7 +89,7 @@ func TestControllerReconcile(t *testing.T) {
 			require.NoError(t, err)
 
 			cli, err := NewClient(c.Client().RESTConfig(),
-				WithCache(),
+				testCache(t),
 				WithLogger(func(format string, v ...interface{}) {
 					fmt.Println(fmt.Sprintf(format, v...))
 				}),
