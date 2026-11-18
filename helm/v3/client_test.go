@@ -168,7 +168,7 @@ func TestDuplicateResourcesInstallAndUpgrade(t *testing.T) {
 	f := features.New("Duplicate resources on install and upgrade").
 		Assess("Install the duplicate chart and then upgrade into it", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 			cli, err := NewClient(c.Client().RESTConfig(),
-				WithCache(),
+				testCache(t),
 				WithNamespace(namespace),
 			)
 			require.NoError(t, err)
@@ -234,7 +234,7 @@ func TestInstallAndUninstall_OCI(t *testing.T) {
 		Assess("Install and Uninstall nginx from OCI", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 			// 1. Initialize Client
 			cli, err := NewClient(c.Client().RESTConfig(),
-				WithCache(),
+				testCache(t),
 				WithNamespace(namespace),
 			)
 			require.NoError(t, err)
@@ -306,7 +306,7 @@ func TestUpgrade(t *testing.T) {
 	f := features.New("Upgrade Release").
 		Assess("Install and Upgrade nginx chart", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 			cli, err := NewClient(c.Client().RESTConfig(),
-				WithCache(),
+				testCache(t),
 				WithLogger(func(format string, v ...interface{}) {
 					fmt.Println(fmt.Sprintf(format, v...))
 				}),
@@ -373,7 +373,7 @@ func TestRollback(t *testing.T) {
 	f := features.New("Rollback Release").
 		Assess("Install, Upgrade, and Rollback nginx chart", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 			cli, err := NewClient(c.Client().RESTConfig(),
-				WithCache(),
+				testCache(t),
 				WithNamespace(namespace),
 			)
 			require.NoError(t, err)
@@ -458,7 +458,7 @@ func TestGetRelease(t *testing.T) {
 	f := features.New("Get Release").
 		Assess("Install and Get nginx release", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 			cli, err := NewClient(c.Client().RESTConfig(),
-				WithCache(),
+				testCache(t),
 				WithNamespace(namespace),
 			)
 			require.NoError(t, err)
@@ -513,7 +513,7 @@ func TestListReleases(t *testing.T) {
 	f := features.New("List Releases").
 		Assess("Install multiple releases and list them", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 			cli, err := NewClient(c.Client().RESTConfig(),
-				WithCache(),
+				testCache(t),
 				WithNamespace(namespace),
 			)
 			require.NoError(t, err)
@@ -582,7 +582,7 @@ func TestInstallAndUninstall_Repo(t *testing.T) {
 		Assess("Install and Uninstall ingress-nginx from repo", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 			// 1. Initialize Client
 			cli, err := NewClient(c.Client().RESTConfig(),
-				WithCache(),
+				testCache(t),
 				WithNamespace(namespace),
 			)
 			require.NoError(t, err)
@@ -636,7 +636,7 @@ func TestInstallAndUninstall_TGZ(t *testing.T) {
 		Assess("Install and Uninstall from .tgz archive", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 			// 1. Initialize Client
 			cli, err := NewClient(c.Client().RESTConfig(),
-				WithCache(),
+				testCache(t),
 				WithNamespace(namespace),
 			)
 			require.NoError(t, err)
@@ -807,7 +807,7 @@ func TestFullStackAppRedisUpgrade(t *testing.T) {
 			// 2. Initialize Helm Client for Setup. Every prerequisite comes from the vendored charts,
 			// served as one chart repository (plumbing#96).
 			repoURL := vendoredRepo(t)
-			cli, err := NewClient(c.Client().RESTConfig(), WithCache())
+			cli, err := NewClient(c.Client().RESTConfig(), testCache(t))
 			require.NoError(t, err)
 			defer cli.Close()
 
@@ -888,7 +888,7 @@ func TestFullStackAppRedisUpgrade(t *testing.T) {
 		}).
 		Assess("Install with Redis enabled, then upgrade with Redis disabled", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 			cli, err := NewClient(c.Client().RESTConfig(),
-				WithCache(),
+				testCache(t),
 				WithNamespace(namespace),
 			)
 			require.NoError(t, err)

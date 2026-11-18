@@ -63,7 +63,7 @@ func TestEnvtest_ReconcileDoesNotCountAnotherWritersFieldAsItsChange(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	hc, err := NewClient(&cfg, WithNamespace("default"), WithCache(), WithCachedClients(&cc))
+	hc, err := NewClient(&cfg, WithNamespace("default"), testCache(t), WithCachedClients(&cc))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -183,7 +183,7 @@ func TestEnvtest_CRDExistsRender_PicksUpMidRunCRD(t *testing.T) {
 	chartURL := serveCRDProbeChart(t)
 
 	// ---- cdc-current construction: WithCache only (cachedClients stays nil) ----
-	cur, err := NewClient(cfg, WithNamespace("default"), WithCache())
+	cur, err := NewClient(cfg, WithNamespace("default"), testCache(t))
 	if err != nil {
 		t.Fatalf("new WithCache client: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestEnvtest_CRDExistsRender_PicksUpMidRunCRD(t *testing.T) {
 	t.Logf("EMPIRICAL [WithCache only]: same client crdExists render after mid-run CRD => widgetCRDSeen=%q", seenCur)
 
 	// ---- cdc-fixed construction: WithCRDInformer (shared cachedClients + informer invalidation) ----
-	fix, err := NewClient(cfg, WithNamespace("default"), WithCache(), WithCRDInformer(cfg, time.Minute))
+	fix, err := NewClient(cfg, WithNamespace("default"), testCache(t), WithCRDInformer(cfg, time.Minute))
 	if err != nil {
 		t.Fatalf("new WithCRDInformer client: %v", err)
 	}
