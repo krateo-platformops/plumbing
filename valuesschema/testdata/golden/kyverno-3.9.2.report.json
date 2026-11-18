@@ -1,0 +1,759 @@
+{
+  "rulesVersion": "1",
+  "findings": [
+    {
+      "path": "global",
+      "kind": "GlobalOpen"
+    },
+    {
+      "path": "nameOverride",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "fullnameOverride",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "namespaceOverride",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "apiVersionOverride.podDisruptionBudget",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "crds.templating.version",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "crds.migration.image.registry",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "crds.migration.image.tag",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "config.name",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "config.maxContextSize",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "metricsConfig.name",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "metricsConfig.metricsRefreshInterval",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "metricsConfig.bucketBoundaries[]",
+      "kind": "Untyped",
+      "detail": "mixed list"
+    },
+    {
+      "path": "test.image.tag",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "test.image.pullPolicy",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "webhooksCleanup.image.tag",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "webhooksCleanup.image.pullPolicy",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "grafana.namespace",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "prometheusRule.namespace",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "features.tuf.root",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "features.tuf.rootRaw",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "features.tuf.mirror",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "admissionController.autoscaling.targetMemoryUtilizationPercentage",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "admissionController.rbac.serviceAccount.name",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "admissionController.replicas",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "admissionController.podDisruptionBudget.maxUnavailable",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "admissionController.podDisruptionBudget.unhealthyPodEvictionPolicy",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "admissionController.caCertificates.data",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "admissionController.initContainer.image.registry",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "admissionController.initContainer.image.tag",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "admissionController.initContainer.image.pullPolicy",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "admissionController.container.image.registry",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "admissionController.container.image.tag",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "admissionController.service.nodePort",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "admissionController.service.trafficDistribution",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "admissionController.metricsService.nodePort",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "admissionController.metricsService.trafficDistribution",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "admissionController.serviceMonitor.namespace",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "admissionController.tracing.address",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "admissionController.tracing.port",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "admissionController.profiling.nodePort",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "backgroundController.rbac.serviceAccount.name",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "backgroundController.image.registry",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "backgroundController.image.tag",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "backgroundController.replicas",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "backgroundController.podDisruptionBudget.maxUnavailable",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "backgroundController.podDisruptionBudget.unhealthyPodEvictionPolicy",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "backgroundController.caCertificates.data",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "backgroundController.metricsService.nodePort",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "backgroundController.metricsService.trafficDistribution",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "backgroundController.serviceMonitor.namespace",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "backgroundController.tracing.address",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "backgroundController.tracing.port",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "backgroundController.profiling.nodePort",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "cleanupController.rbac.serviceAccount.name",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "cleanupController.image.registry",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "cleanupController.image.tag",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "cleanupController.replicas",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "cleanupController.podDisruptionBudget.maxUnavailable",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "cleanupController.podDisruptionBudget.unhealthyPodEvictionPolicy",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "cleanupController.service.nodePort",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "cleanupController.service.trafficDistribution",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "cleanupController.metricsService.nodePort",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "cleanupController.metricsService.trafficDistribution",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "cleanupController.serviceMonitor.namespace",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "cleanupController.tracing.address",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "cleanupController.tracing.port",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "cleanupController.profiling.nodePort",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "reportsController.rbac.serviceAccount.name",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "reportsController.image.registry",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "reportsController.image.tag",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "reportsController.replicas",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "reportsController.podDisruptionBudget.maxUnavailable",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "reportsController.podDisruptionBudget.unhealthyPodEvictionPolicy",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "reportsController.caCertificates.data",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "reportsController.metricsService.nodePort",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "reportsController.metricsService.trafficDistribution",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "reportsController.serviceMonitor.namespace",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "reportsController.tracing.address",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "reportsController.tracing.port",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "reportsController.tracing.creds",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "reportsController.metering.collector",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "reportsController.metering.creds",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "reportsController.profiling.nodePort",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "reports-server.postgresql",
+      "kind": "SubchartSchemaUsed",
+      "detail": "postgresql"
+    },
+    {
+      "path": "reports-server.postgresql.global",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.kubeVersion",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.nameOverride",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.fullnameOverride",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.clusterDomain",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.extraDeploy",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.commonLabels",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.commonAnnotations",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.diagnosticMode",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.image",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.auth.enablePostgresUser",
+      "kind": "DefaultOverlaid"
+    },
+    {
+      "path": "reports-server.postgresql.auth.postgresPassword",
+      "kind": "DefaultOverlaid"
+    },
+    {
+      "path": "reports-server.postgresql.auth.username",
+      "kind": "DefaultOverlaid"
+    },
+    {
+      "path": "reports-server.postgresql.auth.password",
+      "kind": "DefaultOverlaid"
+    },
+    {
+      "path": "reports-server.postgresql.auth.database",
+      "kind": "DefaultOverlaid"
+    },
+    {
+      "path": "reports-server.postgresql.auth.replicationUsername",
+      "kind": "DefaultOverlaid"
+    },
+    {
+      "path": "reports-server.postgresql.auth.replicationPassword",
+      "kind": "DefaultOverlaid"
+    },
+    {
+      "path": "reports-server.postgresql.auth.existingSecret",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.auth.secretKeys",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.auth.usePasswordFiles",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.architecture",
+      "kind": "DefaultOverlaid"
+    },
+    {
+      "path": "reports-server.postgresql.replication.synchronousCommit",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.replication.numSynchronousReplicas",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.replication.applicationName",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.containerPorts",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.audit",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.ldap",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.postgresqlDataDir",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.postgresqlSharedPreloadLibraries",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.shmVolume",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.tls",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.primary",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.readReplicas",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.backup",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.networkPolicy",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.volumePermissions.enabled",
+      "kind": "DefaultOverlaid"
+    },
+    {
+      "path": "reports-server.postgresql.volumePermissions.image",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.volumePermissions.resources",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.volumePermissions.containerSecurityContext",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.serviceBindings",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.serviceAccount",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.rbac",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.psp",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.metrics.enabled",
+      "kind": "DefaultOverlaid"
+    },
+    {
+      "path": "reports-server.postgresql.metrics.image",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.metrics.collectors",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.metrics.customMetrics",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.metrics.extraEnvVars",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.metrics.containerSecurityContext",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.metrics.livenessProbe",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.metrics.readinessProbe",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.metrics.startupProbe",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.metrics.customLivenessProbe",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.metrics.customReadinessProbe",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.metrics.customStartupProbe",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.metrics.containerPorts",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.metrics.resources",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.metrics.service",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.metrics.serviceMonitor",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.metrics.prometheusRule",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.postgresql.enabled",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "reports-server.image.tag",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "reports-server.resources.limits",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "reports-server.resources.requests",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "reports-server.autoscaling.targetMemoryUtilizationPercentage",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "reports-server.pdb.minAvailable",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "reports-server.config.etcd.endpoints",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "reports-server.apiServicesManagement.image.pullPolicy",
+      "kind": "Untyped",
+      "detail": "null"
+    }
+  ]
+}

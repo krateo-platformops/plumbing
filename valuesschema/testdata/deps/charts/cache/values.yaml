@@ -1,0 +1,4 @@
+size: 64
+# A subchart's own global block: open at every chart level, not only the root.
+global:
+  region: eu

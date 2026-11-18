@@ -1,0 +1,6 @@
+apiVersion: v2
+name: wrapper
+version: 0.1.0
+dependencies:
+  - name: tls
+    version: 0.1.0

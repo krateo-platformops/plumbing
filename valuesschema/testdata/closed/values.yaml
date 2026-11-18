@@ -1,0 +1,8 @@
+image:
+  repository: nginx
+  tag: latest
+resources:
+  limits:
+    cpu: 500m
+  requests:
+    cpu: 100m

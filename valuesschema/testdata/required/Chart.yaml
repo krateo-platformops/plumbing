@@ -1,0 +1,9 @@
+apiVersion: v2
+name: required
+version: 0.1.0
+dependencies:
+  # svc's own schema REQUIRES foo, and svc's values.yaml sets it. helm validates the coalesced
+  # values, so a release omitting foo passes; the CRD must accept it too (authn's review of
+  # plumbing#215, (2); Diego, 2026-11-18: overlay the defaults).
+  - name: svc
+    version: 0.1.0

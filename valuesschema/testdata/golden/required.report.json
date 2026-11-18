@@ -1,0 +1,48 @@
+{
+  "rulesVersion": "1",
+  "findings": [
+    {
+      "path": "svc",
+      "kind": "SubchartSchemaUsed",
+      "detail": "svc"
+    },
+    {
+      "path": "svc.foo",
+      "kind": "DefaultOverlaid"
+    },
+    {
+      "path": "svc.port",
+      "kind": "DefaultOverlaid",
+      "detail": "replaced the authored default"
+    },
+    {
+      "path": "svc.labels",
+      "kind": "DefaultOverlaid",
+      "detail": "a required map: the coalesced map, pruned to the schema"
+    },
+    {
+      "path": "svc.tls",
+      "kind": "DefaultOverlaid",
+      "detail": "a required map: the coalesced map, pruned to the schema"
+    },
+    {
+      "path": "svc.tls.mode",
+      "kind": "DefaultOverlaid"
+    },
+    {
+      "path": "svc.tls.undeclared",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    },
+    {
+      "path": "svc.extra",
+      "kind": "OverlaySkipped",
+      "detail": "null in values"
+    },
+    {
+      "path": "svc.undeclared",
+      "kind": "OverlaySkipped",
+      "detail": "no schema node for this key"
+    }
+  ]
+}

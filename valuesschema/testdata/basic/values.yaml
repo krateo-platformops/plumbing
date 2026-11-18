@@ -1,0 +1,31 @@
+# Every input state the rules table distinguishes, in an order the output must keep.
+replicaCount: 1
+image:
+  repository: nginx
+  tag: "1.27"
+  pullPolicy: IfNotPresent
+enabled: true
+nodeSelector: {}
+tolerations: []
+podAnnotations: ~
+cpuRatio: 0.5
+port: "8080"
+maxSurge: 25%
+args:
+  - --verbose
+  - --port=80
+ports:
+  - 80
+  - "443"
+mixed:
+  - 1
+  - true
+env:
+  - name: A
+    value: "1"
+  - name: B
+    valueFrom:
+      secretKeyRef: {name: s, key: k}
+global:
+  imageRegistry: ""
+html: "<none>"

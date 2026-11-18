@@ -1,0 +1,23 @@
+{
+  "rulesVersion": "1",
+  "findings": [
+    {
+      "path": "schemaful",
+      "kind": "SubchartSchemaUsed",
+      "detail": "schemaful"
+    },
+    {
+      "path": "schemaful.mode",
+      "kind": "DefaultOverlaid"
+    },
+    {
+      "path": "common",
+      "kind": "LibraryChart",
+      "detail": "common"
+    },
+    {
+      "path": "cache.global",
+      "kind": "GlobalOpen"
+    }
+  ]
+}

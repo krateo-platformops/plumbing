@@ -1,0 +1,15 @@
+{
+  "type": "object",
+  "required": ["foo", "labels", "tls"],
+  "properties": {
+    "foo": {"type": "string"},
+    "port": {"type": "integer", "default": 80},
+    "labels": {"type": "object", "additionalProperties": {"type": "string"}},
+    "tls": {
+      "type": "object",
+      "required": ["mode"],
+      "properties": {"mode": {"type": "string", "enum": ["strict", "permissive"]}}
+    },
+    "extra": {"type": "string"}
+  }
+}

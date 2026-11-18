@@ -1,0 +1,5 @@
+enabled: false
+auth:
+  username: admin
+  password: ""
+storage: 10Gi
