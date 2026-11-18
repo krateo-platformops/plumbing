@@ -426,6 +426,46 @@
       "detail": "postgresql"
     },
     {
+      "path": "reports-server.postgresql",
+      "kind": "AuthoredMapOpened",
+      "detail": "#/properties/reports-server/properties/postgresql"
+    },
+    {
+      "path": "reports-server.postgresql",
+      "kind": "AuthoredMapOpened",
+      "detail": "#/properties/reports-server/properties/postgresql/properties/auth"
+    },
+    {
+      "path": "reports-server.postgresql",
+      "kind": "AuthoredMapOpened",
+      "detail": "#/properties/reports-server/properties/postgresql/properties/persistence"
+    },
+    {
+      "path": "reports-server.postgresql",
+      "kind": "AuthoredMapOpened",
+      "detail": "#/properties/reports-server/properties/postgresql/properties/resources"
+    },
+    {
+      "path": "reports-server.postgresql",
+      "kind": "AuthoredMapOpened",
+      "detail": "#/properties/reports-server/properties/postgresql/properties/resources/properties/requests"
+    },
+    {
+      "path": "reports-server.postgresql",
+      "kind": "AuthoredMapOpened",
+      "detail": "#/properties/reports-server/properties/postgresql/properties/replication"
+    },
+    {
+      "path": "reports-server.postgresql",
+      "kind": "AuthoredMapOpened",
+      "detail": "#/properties/reports-server/properties/postgresql/properties/volumePermissions"
+    },
+    {
+      "path": "reports-server.postgresql",
+      "kind": "AuthoredMapOpened",
+      "detail": "#/properties/reports-server/properties/postgresql/properties/metrics"
+    },
+    {
       "path": "reports-server.postgresql.global",
       "kind": "OverlaySkipped",
       "detail": "no schema node for this key"

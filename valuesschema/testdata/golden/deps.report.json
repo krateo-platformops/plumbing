@@ -7,6 +7,11 @@
       "detail": "schemaful"
     },
     {
+      "path": "schemaful",
+      "kind": "AuthoredMapOpened",
+      "detail": "#/properties/schemaful"
+    },
+    {
       "path": "schemaful.mode",
       "kind": "DefaultOverlaid"
     },

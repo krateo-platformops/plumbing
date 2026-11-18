@@ -30,8 +30,9 @@
 //	                                                                        helm pushes the parent's down
 //	dependency (name|alias) its own values.yaml merged under the parent's block, inferred open;
 //	                        its own values.schema.json used instead when it has one (D8), with
-//	                        local $refs rebased onto its subtree and its coalesced values overlaid
-//	                        as defaults
+//	                        local $refs rebased onto its subtree, objects that leave
+//	                        additionalProperties unstated opened (helm treats them as open), and
+//	                        its coalesced values overlaid as defaults
 //	library chart dep       {type: object}                                  helm adds the key anyway
 //	root                    open, plus x-krateo-values-schema: {source: inferred, rules}
 //
@@ -92,6 +93,10 @@ const (
 	// KindRefInlined: a $ref was inlined at one use site so a default could be set below it without
 	// changing the shared $def; detail is the ref.
 	KindRefInlined FindingKind = "RefInlined"
+	// KindAuthoredMapOpened: an object in a subchart's own schema that left `additionalProperties`
+	// unstated was given `additionalProperties: true`, so the CRD keeps the undeclared keys helm
+	// accepts instead of pruning them (open.go); detail is the node's JSON pointer.
+	KindAuthoredMapOpened FindingKind = "AuthoredMapOpened"
 )
 
 // Finding is one notable decision the inference made, at a dotted value path ("" is the root;
