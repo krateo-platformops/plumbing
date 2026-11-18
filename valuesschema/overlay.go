@@ -273,15 +273,24 @@ func (in *inferrer) overlayDefaults(rebased []byte, values *value, path, ptr str
 	return marshalValue(out)
 }
 
-// requiredSet is node n's `required` list as a set.
-func requiredSet(n orderedObject) map[string]bool {
-	out := map[string]bool{}
+// requiredList is node n's `required` list, in the order the schema writes it.
+func requiredList(n orderedObject) []string {
 	rv, _ := n.get("required")
 	list, _ := rv.([]any)
+	out := make([]string, 0, len(list))
 	for _, e := range list {
 		if k, ok := e.(string); ok {
-			out[k] = true
+			out = append(out, k)
 		}
+	}
+	return out
+}
+
+// requiredSet is node n's `required` list as a set, for membership only (never iterated).
+func requiredSet(n orderedObject) map[string]bool {
+	out := map[string]bool{}
+	for _, k := range requiredList(n) {
+		out[k] = true
 	}
 	return out
 }
@@ -352,7 +361,7 @@ func (ov *overlayer) pruned(n orderedObject, v *value, path string) (any, string
 			out = append(out, kv{k, cv.toJSON()})
 		}
 	}
-	for req := range requiredSet(n) {
+	for _, req := range requiredList(n) { // in the schema's order: the finding names the same key every run
 		if _, ok := out.get(req); !ok {
 			return nil, fmt.Sprintf("the coalesced map lacks %q, which its schema requires; a default without it would get the CRD rejected", join(path, req))
 		}

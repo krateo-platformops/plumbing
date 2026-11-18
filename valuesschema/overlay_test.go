@@ -121,3 +121,34 @@ func TestInfer_RequiredMapLackingItsRequiredChildGetsNoDefault(t *testing.T) {
 		t.Errorf("tls.ca default = %v, want abc", d)
 	}
 }
+
+// authn's re-review of 109cb64: with TWO required keys missing, the finding names the first in the
+// schema's `required` order, identically on every run (a map iteration named a random one, so the
+// report bytes varied).
+func TestInfer_MissingRequiredChildIsNamedDeterministically(t *testing.T) {
+	fsys := fstest.MapFS{
+		"p/Chart.yaml":                  {Data: []byte("apiVersion: v2\nname: p\nversion: 0.1.0\ndependencies:\n  - name: s\n    version: 0.1.0\n")},
+		"p/values.yaml":                 {Data: []byte("x: 1\n")},
+		"p/charts/s/Chart.yaml":         {Data: []byte("apiVersion: v2\nname: s\nversion: 0.1.0\n")},
+		"p/charts/s/values.yaml":        {Data: []byte("tls:\n  ca: abc\n")},
+		"p/charts/s/values.schema.json": {Data: []byte(`{"type":"object","required":["tls"],"properties":{"tls":{"type":"object","required":["zmode","amode"],"properties":{"zmode":{"type":"string"},"amode":{"type":"string"},"ca":{"type":"string"}}}}}`)},
+	}
+	var first []byte
+	for i := 0; i < 100; i++ {
+		r, err := Infer(fsys, "p")
+		if err != nil {
+			t.Fatal(err)
+		}
+		rep, _ := json.Marshal(r.Report)
+		if i == 0 {
+			first = rep
+			if !strings.Contains(string(rep), `\"s.tls.zmode\"`) {
+				t.Fatalf("the finding should name s.tls.zmode, the first in required order: %s", rep)
+			}
+			continue
+		}
+		if string(rep) != string(first) {
+			t.Fatalf("run %d: report differs:\n%s\nvs\n%s", i, rep, first)
+		}
+	}
+}
