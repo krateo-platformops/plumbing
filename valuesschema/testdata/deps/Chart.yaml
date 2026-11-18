@@ -1,0 +1,14 @@
+apiVersion: v2
+name: deps
+version: 0.1.0
+dependencies:
+  - name: db
+    version: 0.1.0
+    alias: database
+    condition: database.enabled
+  - name: common
+    version: 0.1.0
+  - name: schemaful
+    version: 0.1.0
+  - name: cache
+    version: 0.1.0

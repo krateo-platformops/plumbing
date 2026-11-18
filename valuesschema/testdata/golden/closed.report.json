@@ -1,0 +1,13 @@
+{
+  "rulesVersion": "1",
+  "findings": [
+    {
+      "path": "image",
+      "kind": "ClosedByAnnotation"
+    },
+    {
+      "path": "resources.limits",
+      "kind": "ClosedByAnnotation"
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+apiVersion: v2
+name: closed
+version: 0.1.0
+annotations:
+  krateo.io/values-schema-closed: "image, resources.limits"

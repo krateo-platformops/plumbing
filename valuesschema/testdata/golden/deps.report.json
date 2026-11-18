@@ -1,0 +1,15 @@
+{
+  "rulesVersion": "1",
+  "findings": [
+    {
+      "path": "schemaful",
+      "kind": "SubchartSchemaUsed",
+      "detail": "schemaful"
+    },
+    {
+      "path": "common",
+      "kind": "LibraryChart",
+      "detail": "common"
+    }
+  ]
+}

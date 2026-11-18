@@ -1,0 +1,8 @@
+# database: the parent's block is merged OVER db's own values (helm coalesceDeps); cache is not
+# mentioned here at all, and still gets its key.
+database:
+  enabled: true
+  auth:
+    password: changeme
+schemaful:
+  mode: fast

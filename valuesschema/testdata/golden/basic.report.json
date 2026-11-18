@@ -1,0 +1,24 @@
+{
+  "rulesVersion": "1",
+  "findings": [
+    {
+      "path": "podAnnotations",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "cpuRatio",
+      "kind": "Untyped",
+      "detail": "float"
+    },
+    {
+      "path": "mixed[]",
+      "kind": "Untyped",
+      "detail": "mixed list"
+    },
+    {
+      "path": "global",
+      "kind": "GlobalOpen"
+    }
+  ]
+}
