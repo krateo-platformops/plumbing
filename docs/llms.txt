@@ -9,4 +9,5 @@ docs/examples.md: examples index
 docs/release.md: how a release ships — tag-only Go module (vX.Y.Z git tags, no OCI artifact)
 docs/log.md: curated history, newest first
 examples/minimal/README.md: runnable example — values.schema.json to CRD via crdgen.Generate
+cmd/values-schema/README.md: the values-schema CLI — infer a chart's values.schema.json (dir, .tgz, oci://) or scaffold a wrapper chart, with valuesschema
 crdgen/docs/ref-resolution-redesign.md: design record of the direct JSON-Schema to structural-OpenAPI-v3 crdgen transpiler

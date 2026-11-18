@@ -53,6 +53,11 @@
       "path": "svc.undeclared",
       "kind": "OverlaySkipped",
       "detail": "no schema node for this key"
+    },
+    {
+      "path": "global",
+      "kind": "GlobalOpen",
+      "detail": "not in values.yaml; declared because helm always supplies it"
     }
   ]
 }

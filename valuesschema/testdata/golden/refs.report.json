@@ -44,6 +44,11 @@
       "path": "wrapper.tls",
       "kind": "AuthoredMapOpened",
       "detail": "#/properties/wrapper/properties/tls"
+    },
+    {
+      "path": "global",
+      "kind": "GlobalOpen",
+      "detail": "not in values.yaml; declared because helm always supplies it"
     }
   ]
 }

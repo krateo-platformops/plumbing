@@ -8,6 +8,11 @@
     {
       "path": "resources.limits",
       "kind": "ClosedByAnnotation"
+    },
+    {
+      "path": "global",
+      "kind": "GlobalOpen",
+      "detail": "not in values.yaml; declared because helm always supplies it"
     }
   ]
 }

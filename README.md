@@ -37,6 +37,12 @@ There is almost nothing to configure — see
 - [examples/minimal](examples/minimal) — `values.schema.json` → CRD via
   `crdgen.Generate`; `go run ./examples/minimal`.
 
+## Commands
+
+- [cmd/values-schema](cmd/values-schema) — infer a chart's `values.schema.json`, or scaffold a
+  wrapper chart, with `valuesschema`;
+  `go install github.com/krateo-platformops/plumbing/cmd/values-schema@<version>`.
+
 ## Docs
 
 - [docs/index.md](docs/index.md) — the map

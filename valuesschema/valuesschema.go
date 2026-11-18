@@ -27,7 +27,7 @@
 //	mixed list              {type: array, items: {}, default}
 //	list of maps            items = merge of every element's keys, typed-open
 //	key `global`            {type: object}, at the top of EVERY chart       the cdc merges its own keys in;
-//	                                                                        helm pushes the parent's down
+//	                        that writes one; at the root ALWAYS, first      helm pushes the parent's down
 //	dependency (name|alias) its own values.yaml merged under the parent's block, inferred open;
 //	                        its own values.schema.json used instead when it has one (D8), with
 //	                        local $refs rebased onto its subtree, objects that leave
