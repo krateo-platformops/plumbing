@@ -18,6 +18,7 @@ type DiskCache struct {
 	mu              sync.RWMutex
 	stopCh          chan struct{} // Channel to signal the cleanup routine to stop
 	stopOnce        sync.Once     // Makes Stop idempotent — see Stop
+	done            chan struct{} // Closed when startCleanupRoutine has returned, so a test can wait on THIS cache's goroutine
 }
 
 // Option defines the functional pattern for configuration.
@@ -56,6 +57,7 @@ func NewDiskCache(opts ...Option) (*DiskCache, error) {
 		ttl:             24 * time.Hour,
 		cleanupInterval: 1 * time.Hour,
 		stopCh:          make(chan struct{}),
+		done:            make(chan struct{}),
 	}
 	// 2. Apply functional options
 	for _, opt := range opts {
@@ -175,6 +177,7 @@ func (c *DiskCache) key(uri, version string) string {
 
 // startCleanupRoutine runs the ticker loop.
 func (c *DiskCache) startCleanupRoutine() {
+	defer close(c.done)
 	ticker := time.NewTicker(c.cleanupInterval)
 	defer ticker.Stop()
 

@@ -1,8 +1,6 @@
 package cache
 
 import (
-	"runtime"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -64,42 +62,29 @@ func TestStop_ConcurrentIsSafe(t *testing.T) {
 // startCleanupRoutine unconditionally, and never stopping it is what leaked a goroutine per helm
 // client in core-provider#99. This asserts the goroutine is actually gone after Stop, so the guard
 // above cannot be "fixed" by making Stop a no-op.
+//
+// It waits on THIS cache's done channel. It used to count every goroutine in startCleanupRoutine
+// across the process, in a 1 MiB stack dump: other tests' caches moved the count (before=361,
+// now=1003 in one run), and past ~1 MiB of stacks the dump truncated and the count itself was wrong.
 func TestStop_TerminatesCleanupGoroutine(t *testing.T) {
-	before := countCleanupGoroutines()
-
 	c, err := NewDiskCache(WithDir(t.TempDir()), WithCleanupInterval(10*time.Millisecond))
 	if err != nil {
 		t.Fatalf("NewDiskCache: %v", err)
 	}
 
-	// The goroutine is started by NewDiskCache; give the scheduler a moment to run it.
-	if !eventually(func() bool { return countCleanupGoroutines() > before }, time.Second) {
-		t.Skip("cleanup goroutine not observable in this runtime; nothing to assert")
+	// Control: the goroutine is running before Stop, across several ticks. Without this, a done
+	// channel closed at construction would pass the assertion below.
+	select {
+	case <-c.done:
+		t.Fatal("cleanup goroutine exited before Stop was called")
+	case <-time.After(50 * time.Millisecond):
 	}
 
 	c.Stop()
 
-	if !eventually(func() bool { return countCleanupGoroutines() <= before }, 2*time.Second) {
-		t.Errorf("cleanup goroutine still running after Stop (before=%d, now=%d): "+
-			"the DiskCache goroutine leak from core-provider#99 is back",
-			before, countCleanupGoroutines())
+	select {
+	case <-c.done:
+	case <-time.After(2 * time.Second):
+		t.Error("cleanup goroutine still running 2s after Stop: the DiskCache goroutine leak from core-provider#99 is back")
 	}
-}
-
-// countCleanupGoroutines counts stacks currently inside startCleanupRoutine.
-func countCleanupGoroutines() int {
-	buf := make([]byte, 1<<20)
-	n := runtime.Stack(buf, true)
-	return strings.Count(string(buf[:n]), "startCleanupRoutine")
-}
-
-func eventually(cond func() bool, within time.Duration) bool {
-	deadline := time.Now().Add(within)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return true
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	return cond()
 }
