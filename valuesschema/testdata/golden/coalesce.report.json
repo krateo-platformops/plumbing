@@ -1,0 +1,27 @@
+{
+  "rulesVersion": "1",
+  "findings": [
+    {
+      "path": "global",
+      "kind": "GlobalOpen"
+    },
+    {
+      "path": "fast.debug",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "fast.probes",
+      "kind": "Untyped",
+      "detail": "null"
+    },
+    {
+      "path": "fast.global",
+      "kind": "GlobalOpen"
+    },
+    {
+      "path": "slow.global",
+      "kind": "GlobalOpen"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+global:
+  region: eu
+fast:
+  replicas: 4            # scalar override
+  limits:
+    cpu: 2               # nested map: merged key by key, memory kept from the subchart
+  args: [--fast]         # a list is REPLACED, not merged
+  debug: ~               # null deletes the subchart's default
+  probes: ~              # null deletes a whole map default
+slow:
+  enabled: false         # a disabled condition still gets its key inferred
+  sidecar:
+    image: busybox:1.36  # a grandchild override, two levels down
