@@ -45,6 +45,7 @@ derived from the actual package docs and code.
 | `kubeutil/eventrecorder` | `record.EventRecorder` factories, including a state-aware throttled recorder. |
 | `kubeutil/discoveryevents` | Publishes API-discovery resource added/changed/removed events onto an `eventbus.Bus`. |
 | `labels` | THE shared composition label keys coupling core-provider and composition-dynamic-controller (compile-time cross-repo contract). |
+| `managementpolicy` | THE definition of `krateo.io/management-policy` and `krateo.io/deletion-policy` for both runtimes (unstructured-runtime#110): `Parse` (a verb set, the four presets as aliases, observe implied, invalid → observe-only with `Invalid`), `For(annotations, declared)` → `Decision.Why(verb)` (`NotDeclared` / `ByPolicy` / `ByDeletionPolicy`; orphan always wins), and the shared reason literals. Management verbs only; RBAC verbs are `compositionrbac`'s. |
 
 ## CRD generation
 
