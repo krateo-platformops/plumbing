@@ -21,6 +21,11 @@
 //   - D5: krateo.io/deletion-policy: orphan ALWAYS wins. Delete runs only when the set allows it AND
 //     the deletion policy is not orphan. (Before, observe-delete deleted despite orphan.) A policy
 //     without delete orphans, as before.
+//   - An unrecognised deletion-policy KEEPS the external resource and is reported (Diego,
+//     2026-11-19, from authn's review): only "" and "delete" mean delete, "orphan" keeps, and any
+//     other value ("orphaned", "Orphan", "keep") keeps too, with Decision.DeletionInvalid naming it
+//     for ReasonDeletionPolicyInvalid. Delete is the one verb that cannot be undone, so a typo must
+//     not reach it; this is also what both runtimes do today.
 //   - D8: a controller whose API declares only some verbs (a RestDefinition's verbsDescription) passes
 //     them as Declared; the effective verbs are declared AND allowed. Declared absent (nil) means "no
 //     verb information", and the policy alone decides; Declared empty means the API declares none.
@@ -35,6 +40,9 @@ import (
 const (
 	// ReasonInvalid (Synced=False): the annotation did not parse; Policy.Invalid says why.
 	ReasonInvalid = "ManagementPolicyInvalid"
+	// ReasonDeletionPolicyInvalid (Synced=False): krateo.io/deletion-policy is neither delete nor
+	// orphan; the resource is kept, and Decision.DeletionInvalid says why.
+	ReasonDeletionPolicyInvalid = "DeletionPolicyInvalid"
 	// ReasonCreateWithheld (Ready=False, verdict failed): the external resource is absent and the
 	// policy withholds create. Only a human changes it.
 	ReasonCreateWithheld = "CreateWithheldByPolicy"
@@ -50,8 +58,10 @@ const (
 const (
 	AnnotationKey         = "krateo.io/management-policy"
 	DeletionAnnotationKey = "krateo.io/deletion-policy"
-	// DeletionOrphan is the deletion-policy value that keeps the external resource.
+	// DeletionOrphan is the deletion-policy value that keeps the external resource; DeletionDelete
+	// (or the annotation absent) deletes it, subject to the management policy.
 	DeletionOrphan = "orphan"
+	DeletionDelete = "delete"
 )
 
 // Verb is one thing a controller may do to the external resource.
@@ -143,8 +153,12 @@ func (p Policy) String() string {
 // its API declares.
 type Decision struct {
 	Policy Policy
-	// Orphan is deletion-policy: orphan.
+	// Orphan is whether the deletion policy keeps the external resource: "orphan", or any value that
+	// is not "" or "delete" (then DeletionInvalid is set).
 	Orphan bool
+	// DeletionInvalid is non-empty when krateo.io/deletion-policy is not a recognised value; the
+	// resource is kept, and this names the value for ReasonDeletionPolicyInvalid.
+	DeletionInvalid string
 	// Declared is the set of verbs the API declares (D8); nil when the controller gives no verb
 	// information.
 	Declared map[Verb]bool
@@ -153,9 +167,14 @@ type Decision struct {
 // For reads the decision from an object's annotations. declared is the API's verbs (nil for none
 // given; an empty, non-nil set when the API declares no verb).
 func For(annotations map[string]string, declared []Verb) Decision {
-	d := Decision{
-		Policy: Parse(annotations[AnnotationKey]),
-		Orphan: strings.TrimSpace(annotations[DeletionAnnotationKey]) == DeletionOrphan,
+	d := Decision{Policy: Parse(annotations[AnnotationKey])}
+	switch dp := strings.TrimSpace(annotations[DeletionAnnotationKey]); dp {
+	case "", DeletionDelete:
+	case DeletionOrphan:
+		d.Orphan = true
+	default:
+		d.Orphan = true // fail closed: never delete on a value we do not understand
+		d.DeletionInvalid = fmt.Sprintf("%s %q is not %q or %q; the external resource is kept", DeletionAnnotationKey, dp, DeletionDelete, DeletionOrphan)
 	}
 	if declared != nil {
 		d.Declared = map[Verb]bool{}
@@ -174,7 +193,8 @@ const (
 	NotWithheld Withheld = ""
 	// ByPolicy: krateo.io/management-policy does not allow it.
 	ByPolicy Withheld = "ByPolicy"
-	// ByDeletionPolicy: deletion-policy: orphan keeps the external resource (D5).
+	// ByDeletionPolicy: deletion-policy keeps the external resource: orphan (D5), or a value that is not
+	// recognised (DeletionInvalid says which).
 	ByDeletionPolicy Withheld = "ByDeletionPolicy"
 	// NotDeclared: the API does not declare the verb (D8). Its owner is the API, not the object's
 	// author, so it is reported apart from ByPolicy.

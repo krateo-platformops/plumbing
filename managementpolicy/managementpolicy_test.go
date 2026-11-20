@@ -1,6 +1,7 @@
 package managementpolicy
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -63,13 +64,15 @@ func TestParse_InvalidActsOnNothing(t *testing.T) {
 	}
 }
 
-// The full table: every subset of {create, update, delete} x deletion-policy {unset, orphan} x
+// The full table: every subset of {create, update, delete} x deletion-policy {unset, delete, orphan,
+// an unrecognised value} x
 // declared {nil (no information), all, none, create-only}. Each row's expectation is computed from
 // the decided rules written out here, independently of Why's implementation order:
 //   - observe always may;
 //   - a verb not declared (when declared is given) is NotDeclared;
 //   - else a verb not in the set is ByPolicy;
-//   - else delete with orphan is ByDeletionPolicy (D5: orphan always wins);
+//   - else delete with orphan, or with an unrecognised deletion-policy, is ByDeletionPolicy (D5: orphan
+//     always wins; an unknown value fails closed);
 //   - else it may run.
 func TestDecision_TruthTable(t *testing.T) {
 	subsets := []string{"observe", "observe,create", "observe,update", "observe,delete",
@@ -80,13 +83,18 @@ func TestDecision_TruthTable(t *testing.T) {
 		"none":   {},
 		"create": {Observe, Create},
 	}
+	deletions := []struct {
+		value string // "" = annotation absent
+		keeps bool
+	}{{"", false}, {"delete", false}, {"orphan", true}, {"orphaned", true}}
 	rows := 0
 	for _, set := range subsets {
-		for _, orphan := range []bool{false, true} {
+		for _, del := range deletions {
+			orphan := del.keeps
 			for dname, declared := range declareds {
 				ann := map[string]string{AnnotationKey: set}
-				if orphan {
-					ann[DeletionAnnotationKey] = DeletionOrphan
+				if del.value != "" {
+					ann[DeletionAnnotationKey] = del.value
 				}
 				d := For(ann, declared)
 				for _, v := range verbs {
@@ -106,15 +114,15 @@ func TestDecision_TruthTable(t *testing.T) {
 						want = ByDeletionPolicy
 					}
 					if got := d.Why(v); got != want {
-						t.Errorf("set=%q orphan=%v declared=%s: Why(%s) = %q, want %q", set, orphan, dname, v, got, want)
+						t.Errorf("set=%q deletion=%q declared=%s: Why(%s) = %q, want %q", set, del.value, dname, v, got, want)
 					}
 					rows++
 				}
 			}
 		}
 	}
-	if rows != 8*2*4*4 {
-		t.Fatalf("checked %d (set, orphan, declared, verb) rows, want %d", rows, 8*2*4*4)
+	if rows != 8*4*4*4 {
+		t.Fatalf("checked %d (set, deletion, declared, verb) rows, want %d", rows, 8*4*4*4)
 	}
 }
 
@@ -154,5 +162,31 @@ func TestDecision_InvalidWithholdsEveryWrite(t *testing.T) {
 	}
 	if got := d.Withholds(); len(got) != 3 || got[0] != Create || got[1] != Update || got[2] != Delete {
 		t.Errorf("Withholds = %v, want [create update delete]", got)
+	}
+}
+
+// authn's review of #220 (Diego, 2026-11-19): an unrecognised deletion-policy KEEPS the resource and
+// says so, whatever the management policy allows. CONTROL: "" and "delete" still delete under default.
+func TestDecision_UnknownDeletionPolicyKeeps(t *testing.T) {
+	for _, v := range []string{"orphaned", "Orphan", "keep", "Delete", "true"} {
+		d := For(map[string]string{DeletionAnnotationKey: v}, nil)
+		if d.May(Delete) || d.Why(Delete) != ByDeletionPolicy {
+			t.Errorf("deletion-policy %q: May(Delete)=%v Why=%q; want it withheld", v, d.May(Delete), d.Why(Delete))
+		}
+		if !strings.Contains(d.DeletionInvalid, strconv.Quote(v)) {
+			t.Errorf("deletion-policy %q: DeletionInvalid = %q; want it to name the value", v, d.DeletionInvalid)
+		}
+	}
+	for _, v := range []string{"", "delete", " delete "} {
+		ann := map[string]string{}
+		if v != "" {
+			ann[DeletionAnnotationKey] = v
+		}
+		if d := For(ann, nil); !d.May(Delete) || d.DeletionInvalid != "" {
+			t.Errorf("control: deletion-policy %q must delete under default, with no invalid report (got May=%v, invalid %q)", v, d.May(Delete), d.DeletionInvalid)
+		}
+	}
+	if d := For(map[string]string{DeletionAnnotationKey: "orphan"}, nil); d.DeletionInvalid != "" {
+		t.Errorf("orphan is a recognised value, not invalid: %q", d.DeletionInvalid)
 	}
 }
