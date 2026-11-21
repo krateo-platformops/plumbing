@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,13 +28,18 @@ const DelegatedSecretPrefix = "delegated-"
 // the actor for the person replacing it, so two actors never replace each
 // other's.
 //
-// The name is DelegatedSecretPrefix and the hex SHA-256 of username and
-// actor, so it fits any username and actor, and authn and a reader compute
-// the same one. Two distinct (username, actor) pairs never share it: the two
-// are joined with a NUL, which neither contains. A reader still proves the
+// username is the token's username. actor is the actor the token was issued
+// to: its outermost act.sub, the name of the actor's ServiceAccount mapping
+// (jwtutil's UserInfo.Actor()), never a deeper link of the chain.
+//
+// The name is DelegatedSecretPrefix and the hex SHA-256 of username's length
+// in decimal, a colon, username, then actor. The length prefix makes the
+// encoding injective whatever the two contain, NUL included: two distinct
+// (username, actor) pairs never share a name. It fits any username and actor,
+// and authn and a reader compute the same one. A reader still proves the
 // Secret is the token's with CheckDelegatedCredential before using it.
 func DelegatedSecretName(username, actor string) string {
-	sum := sha256.Sum256([]byte(username + "\x00" + actor))
+	sum := sha256.Sum256([]byte(strconv.Itoa(len(username)) + ":" + username + actor))
 	return DelegatedSecretPrefix + hex.EncodeToString(sum[:])
 }
 

@@ -31,6 +31,14 @@ func TestDelegatedSecretName(t *testing.T) {
 		// The join can't be shifted: "a"+"bc" and "ab"+"c" differ.
 		{"a", "bc"},
 		{"ab", "c"},
+		// Nor with a NUL, which a JSON claim can carry (\u0000).
+		{"a\x00b", "c"},
+		{"a", "b\x00c"},
+		// Nor with the length prefix's own colon and digits.
+		{"1:a", "b"},
+		{"1", ":ab"},
+		{"", "1:a"},
+		{"", ""},
 	} {
 		got := DelegatedSecretName(tc.username, tc.actor)
 		if got != DelegatedSecretName(tc.username, tc.actor) {
@@ -54,7 +62,7 @@ func TestDelegatedSecretName(t *testing.T) {
 	}
 	// Pinned: authn writes it and snowplow reads it, so it never changes.
 	if got, want := DelegatedSecretName("alice", "dispatcher"),
-		"delegated-"+sha256Hex("alice\x00dispatcher"); got != want {
+		"delegated-"+sha256Hex("5:alicedispatcher"); got != want {
 		t.Errorf("DelegatedSecretName(alice, dispatcher) = %q, want %q", got, want)
 	}
 }
@@ -163,7 +171,7 @@ func sha256Hex(s string) string {
 }
 
 func TestIsDelegatedSecretName(t *testing.T) {
-	digest := sha256Hex("alice\x00dispatcher")
+	digest := sha256Hex("5:alicedispatcher")
 	for name, want := range map[string]bool{
 		DelegatedSecretName("alice", "dispatcher"): true,
 		DelegatedSecretName("", ""):                true,
