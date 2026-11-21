@@ -100,17 +100,27 @@ func OwnsSecret(sec *corev1.Secret, username string) bool {
 // Secret holds: base64 of a PEM block, as authn stores it (or the PEM block
 // itself).
 func certificateCommonName(data []byte) (string, bool) {
+	crt, ok := clientCertificate(data)
+	if !ok {
+		return "", false
+	}
+	return crt.Subject.CommonName, true
+}
+
+// clientCertificate parses the client certificate a session Secret holds:
+// base64 of a PEM block, as authn stores it (or the PEM block itself).
+func clientCertificate(data []byte) (*x509.Certificate, bool) {
 	raw := data
 	if dec, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(data))); err == nil {
 		raw = dec
 	}
 	block, _ := pem.Decode(raw)
 	if block == nil {
-		return "", false
+		return nil, false
 	}
 	crt, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
-		return "", false
+		return nil, false
 	}
-	return crt.Subject.CommonName, true
+	return crt, true
 }

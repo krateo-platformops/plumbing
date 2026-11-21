@@ -9,6 +9,14 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-21 — `endpoints`: the delegated credential Secret** (authn#167): a delegated token's
+  apiserver calls went through the person's `<user>-clientconfig`, whose groups came from the last
+  sign-in and whose certificate only a sign-in renews, so they could disagree with the token's groups
+  and expire after 24h. authn now issues a credential per exchange, one Secret per person and actor.
+  `DelegatedSecretName(username, actor)` names it (`delegated-` and the hex SHA-256 of both, never
+  ending in `-clientconfig`), `IsDelegatedSecretName` recognises one, and `CheckDelegatedCredential`
+  tells a reader whether it is the token's: `held`, or `not-owned`, `expired`, `mismatch` (its
+  certificate's Organizations aren't the token's groups). `ActorAnnotation` records the actor.
 - **2026-11-21 — `UpgradeConfig.WriteNothing`: Reconcile reports what it would write, and writes
   nothing** (core-provider#597): a composition annotated `krateo.io/management-policy: observe` was
   still upgraded and drift-healed, because the cdc's Observe runs Reconcile, which always merges.
