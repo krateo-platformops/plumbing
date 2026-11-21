@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -145,5 +146,39 @@ func TestDryRunTransport_RecordsAdmissionDenialsOnly(t *testing.T) {
 		if tc.want && (!errors.Is(err, helmconfig.ErrDryRunRefused) || !strings.Contains(err.Error(), "/configmaps/x") || !strings.Contains(err.Error(), "deny.example.org")) {
 			t.Errorf("%s: err = %v; want ErrDryRunRefused naming the resource and the webhook", tc.name, err)
 		}
+	}
+}
+
+// authn's review of #222: WriteNothing is refused under a release storage driver the dry-run transport
+// cannot cover, before any request is sent. CONTROL: every driver it does cover is accepted.
+func TestWriteNothing_RefusesUncoveredStorageDrivers(t *testing.T) {
+	for _, d := range []string{"", "secret", "secrets", "configmap", "configmaps", "memory"} {
+		if err := writeNothingConflicts(&helmconfig.UpgradeConfig{ActionConfig: &helmconfig.ActionConfig{}}, d); err != nil {
+			t.Errorf("control: HELM_DRIVER=%q is covered, got %v", d, err)
+		}
+	}
+	for _, d := range []string{"sql", "Secrets", "postgres"} {
+		err := writeNothingConflicts(&helmconfig.UpgradeConfig{ActionConfig: &helmconfig.ActionConfig{}}, d)
+		if !errors.Is(err, helmconfig.ErrWriteNothingConflict) || !strings.Contains(err.Error(), strconv.Quote(d)) {
+			t.Errorf("HELM_DRIVER=%q: err = %v; want ErrWriteNothingConflict naming the driver", d, err)
+		}
+	}
+
+	// End to end: Reconcile reads HELM_DRIVER at call time, and sends nothing when it refuses.
+	sent := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { sent++; w.WriteHeader(500) }))
+	defer srv.Close()
+	hc, err := NewClient(&rest.Config{Host: srv.URL}, WithNamespace("default"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HELM_DRIVER", "sql")
+	before := sent
+	_, err = hc.Reconcile(context.Background(), "r", "oci://x", &helmconfig.UpgradeConfig{ActionConfig: &helmconfig.ActionConfig{}, WriteNothing: true})
+	if !errors.Is(err, helmconfig.ErrWriteNothingConflict) || !strings.Contains(err.Error(), `"sql"`) {
+		t.Errorf("Reconcile under HELM_DRIVER=sql: err = %v; want ErrWriteNothingConflict naming sql", err)
+	}
+	if sent != before {
+		t.Errorf("%d request(s) sent; a refused Reconcile must send none", sent-before)
 	}
 }

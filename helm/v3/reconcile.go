@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"sort"
 	"strings"
@@ -94,7 +95,7 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 	// send dry runs (writenothing.go), so no step below can persist anything, whichever branch it
 	// takes. The branches that WOULD write return a report instead.
 	if cfg.WriteNothing && c.dryRun == nil {
-		if err := writeNothingConflicts(cfg); err != nil {
+		if err := writeNothingConflicts(cfg, os.Getenv("HELM_DRIVER")); err != nil {
 			return nil, err
 		}
 		return c.writeNothingClient(&dryRunLog{}).Reconcile(ctx, releaseName, chartRef, cfg)

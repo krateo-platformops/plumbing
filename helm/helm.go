@@ -479,9 +479,12 @@ type UpgradeConfig struct {
 	// written (core-provider#597: a composition whose krateo.io/management-policy withholds update
 	// must be observed, never upgraded or healed). Every client Reconcile uses is built from a copy
 	// of the rest config whose transport adds dryRun=All to each request that is not a read, so the
-	// release storage, the render, the stored-manifest repair and helm's own three-way merge all
-	// reach the apiserver as server-side dry runs: the server computes each result and persists
-	// none. The merge's patches are helm's own, unchanged; only their effect is withheld.
+	// render, the stored-manifest repair and helm's own three-way merge reach the apiserver as
+	// server-side dry runs: the server computes each result and persists none. So does the release
+	// storage, but only for the drivers that go through the apiserver (HELM_DRIVER unset, secret(s),
+	// configmap(s)) or are in-process (memory); any other driver, sql among them, writes where the
+	// transport cannot see, so WriteNothing is refused under it. The merge's patches are helm's own,
+	// unchanged; only their effect is withheld.
 	//
 	// What would be written is reported in the Would* fields and WriteWithheld; Changed, Created,
 	// Deleted, PatchedUpdated, ChangedObjects, Objects, IntendedDeletions and KeptDeletions stay
@@ -493,6 +496,7 @@ type UpgradeConfig struct {
 	// Reconcile writes: Force (delete and recreate: the dry-run delete leaves the object, so its
 	// dry-run re-create reads AlreadyExists), Wait, WaitForJobs and Atomic (they govern the real
 	// upgrade, which never runs).
+	// Also refused under a HELM_DRIVER the dry-run transport cannot cover (above).
 	WriteNothing bool `json:"-"`
 	// ContentAnnotations are the annotation keys the Objects verdicts (Reconcile's, and Upgrade's
 	// OperationResult) count as content (plumbing#124), on every kind: a write that changes only one

@@ -17,7 +17,7 @@ timestamp: 2026-08-07T00:00:00Z
   query when present: measured, a query-only dry-run DELETE deleted). helm's own merge runs
   unchanged and is reported in `WouldCreate`/`WouldDelete`/`WouldPatch`/`WouldChange`; the write
   fields stay empty. Refused with `Force`, `Wait`, `WaitForJobs` and `Atomic`
-  (`ErrWriteNothingConflict`); a webhook denying a dry run is `ErrDryRunRefused`; a stored-manifest
+  (`ErrWriteNothingConflict`; so is a `HELM_DRIVER` the transport cannot cover, such as `sql`); a webhook denying a dry run is `ErrDryRunRefused`; a stored-manifest
   repair it would need is `ErrStoredManifestRepairWithheld`. Proven per arm by recording every
   request and comparing the namespace before and after.
 - **2026-11-17 — crdgen: if/then/else property constraints are enforced, or reported** (plumbing#211):

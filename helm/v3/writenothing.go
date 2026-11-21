@@ -26,9 +26,18 @@ import (
 // the object it WOULD store, and step 6 compares that against the live object exactly as it does a
 // real write's result.
 
-// writeNothingConflicts refuses the options that only mean something when Reconcile writes.
-func writeNothingConflicts(cfg *helmconfig.UpgradeConfig) error {
+// writeNothingConflicts refuses the options that only mean something when Reconcile writes, and a
+// release storage driver the dry-run transport cannot cover. helmDriver is HELM_DRIVER, as helm's
+// action.Configuration.Init reads it.
+func writeNothingConflicts(cfg *helmconfig.UpgradeConfig, helmDriver string) error {
 	var bad []string
+	if !dryRunCoversDriver(helmDriver) {
+		// authn's review of #222: "nothing persists by construction" holds only for storage that goes
+		// through the apiserver. The sql driver writes to a database the transport never sees; it is
+		// safe today only because WriteNothing writes no storage, and refusing keeps it from depending
+		// on that.
+		bad = append(bad, fmt.Sprintf("HELM_DRIVER=%q (only the apiserver-backed drivers and memory can be held to dry run)", helmDriver))
+	}
 	if cfg.Force {
 		// helm's force path is delete-then-recreate: the dry-run delete leaves the object, so the
 		// dry-run re-create would read AlreadyExists and look like a merge failure.
@@ -257,4 +266,15 @@ func (c *client) writeNothingResult(stored *helmconfig.Release, res *kube.Result
 		errs = append(errs, applyErr)
 	}
 	return r, errors.Join(errs...)
+}
+
+// dryRunCoversDriver reports whether release storage under helmDriver can only be written through the
+// dry-run transport or not at all: the Secret and ConfigMap drivers (helm v3.20.2 action.go:388-395)
+// go through the apiserver, and memory is in-process. sql, and any name helm does not know, do not.
+func dryRunCoversDriver(helmDriver string) bool {
+	switch helmDriver {
+	case "", "secret", "secrets", "configmap", "configmaps", "memory":
+		return true
+	}
+	return false
 }
