@@ -253,6 +253,32 @@ type ReconcileResult struct {
 	// stored release, or step 7 after a detected change), as OperationResult.HooksExcluded. The
 	// self-heal merge itself sends no hook (plumbing#139).
 	HooksExcluded int
+
+	// WriteWithheld is true when UpgradeConfig.WriteNothing was in effect: Reconcile wrote nothing,
+	// and the Would* fields say what it would have written.
+	WriteWithheld bool
+	// WouldChange is true when a Reconcile without WriteNothing would have written anything: an
+	// install (WouldInstall), a changed desired state (DesiredStateChange), a child created, deleted
+	// or patched, a new revision for kept deletions or stale manifest versions, or the retry of a
+	// failed latest revision.
+	WouldChange bool
+	// WouldInstall is true when there is no stored release, so Reconcile would have installed it.
+	WouldInstall bool
+	// WouldCreate, WouldDelete and WouldPatch count the children the self-heal merge would have
+	// created, deleted and changed, from the apiserver's dry-run verdict on helm's own requests. A
+	// patch the apiserver reduces to a no-op is not counted (the comparison PatchedUpdated uses).
+	// Zero when DesiredStateChange is set: the merge does not run then.
+	WouldCreate int
+	WouldDelete int
+	WouldPatch  int
+	// The children behind those counts, by identity, capped like ChangedObjects, with the number
+	// left out.
+	WouldCreateObjects        []string
+	WouldCreateObjectsOmitted int
+	WouldDeleteObjects        []string
+	WouldDeleteObjectsOmitted int
+	WouldPatchObjects         []string
+	WouldPatchObjectsOmitted  int
 }
 
 // ObjectVerdict is one child's outcome in a Reconcile (plumbing#106).
@@ -323,6 +349,25 @@ const (
 // a Job that is live. The template is immutable, so the release cannot converge until the chart stops
 // changing it (a hook with before-hook-creation, or a versioned Job name) or the Job is removed.
 var ErrJobTemplateChanged = errors.New("the chart changed the pod template of a live Job, which is immutable")
+
+// ErrWriteNothingConflict: UpgradeConfig.WriteNothing was combined with an option that only means
+// something when Reconcile writes (Force, Wait, WaitForJobs, Atomic). The error names the options.
+// Nothing was sent.
+var ErrWriteNothingConflict = errors.New("WriteNothing cannot be combined with an option that only applies to a write")
+
+// ErrDryRunRefused: under UpgradeConfig.WriteNothing an admission webhook denied a dry-run request,
+// so what the merge would do to that child is unknown, and so is whether the webhook would deny the
+// real write. The error names each refused request's resource and the webhook's message. The
+// apiserver answers such a denial with 403, an empty reason and the message
+// `admission webhook "<name>" denied the request: ...` (measured on kube-apiserver 1.36). It refuses
+// to register a v1 webhook whose sideEffects is Some or Unknown, so a webhook that cannot run on a
+// dry run never reaches this: only one that denies the dry run does.
+var ErrDryRunRefused = errors.New("an admission webhook denied a dry-run request, so its effect is unknown")
+
+// ErrStoredManifestRepairWithheld: the stored release manifest names kinds the cluster no longer
+// serves, and repairing it is a write that UpgradeConfig.WriteNothing withholds. Without the repair
+// helm cannot render, so nothing can be reported either. The error names the dropped kinds.
+var ErrStoredManifestRepairWithheld = errors.New("the stored release manifest needs a repair that WriteNothing withholds")
 
 // ErrOperationInProgress is returned (wrapped) by Upgrade when helm refused to start because another
 // operation holds the release: its latest revision is pending-install, pending-upgrade or
@@ -430,6 +475,25 @@ type UpgradeConfig struct {
 	// installer-platform the same day). Falling through to the merge would not hold anything: the
 	// merge applies the request's render.
 	HoldDesiredStateChange bool `json:"-"`
+	// WriteNothing makes Reconcile write NOTHING, by construction, and report what it would have
+	// written (core-provider#597: a composition whose krateo.io/management-policy withholds update
+	// must be observed, never upgraded or healed). Every client Reconcile uses is built from a copy
+	// of the rest config whose transport adds dryRun=All to each request that is not a read, so the
+	// release storage, the render, the stored-manifest repair and helm's own three-way merge all
+	// reach the apiserver as server-side dry runs: the server computes each result and persists
+	// none. The merge's patches are helm's own, unchanged; only their effect is withheld.
+	//
+	// What would be written is reported in the Would* fields and WriteWithheld; Changed, Created,
+	// Deleted, PatchedUpdated, ChangedObjects, Objects, IntendedDeletions and KeptDeletions stay
+	// empty, because callers record those as writes. A changed desired state (DesiredStateChange) is
+	// reported without running the merge or any upgrade; DesiredStateHeld stays false, since it means
+	// HoldDesiredStateChange held it. BeforeRevision is never called (no revision is written).
+	//
+	// Refused with ErrWriteNothingConflict alongside an option that only means something when
+	// Reconcile writes: Force (delete and recreate: the dry-run delete leaves the object, so its
+	// dry-run re-create reads AlreadyExists), Wait, WaitForJobs and Atomic (they govern the real
+	// upgrade, which never runs).
+	WriteNothing bool `json:"-"`
 	// ContentAnnotations are the annotation keys the Objects verdicts (Reconcile's, and Upgrade's
 	// OperationResult) count as content (plumbing#124), on every kind: a write that changes only one
 	// of them is specChanged, not metadataOnly. They are the annotations authorization reads, so

@@ -90,11 +90,24 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 	if cfg.ActionConfig == nil {
 		cfg.ActionConfig = &helmconfig.ActionConfig{}
 	}
+	// core-provider#597: WriteNothing runs this whole function on a copy of the client that can only
+	// send dry runs (writenothing.go), so no step below can persist anything, whichever branch it
+	// takes. The branches that WOULD write return a report instead.
+	if cfg.WriteNothing && c.dryRun == nil {
+		if err := writeNothingConflicts(cfg); err != nil {
+			return nil, err
+		}
+		return c.writeNothingClient(&dryRunLog{}).Reconcile(ctx, releaseName, chartRef, cfg)
+	}
+	writeNothing := cfg.WriteNothing
 
 	// 1. Stored (current) release.
 	stored, err := c.GetRelease(ctx, releaseName, &helmconfig.GetConfig{})
 	if err != nil {
 		return nil, fmt.Errorf("reconcile: getting stored release: %w", err)
+	}
+	if stored == nil && writeNothing {
+		return &helmconfig.ReconcileResult{WriteWithheld: true, WouldInstall: true, WouldChange: true, ObjectsComplete: true}, nil
 	}
 	if stored == nil {
 		// No release yet: there is nothing to self-heal against. Perform a real install and report
@@ -131,8 +144,12 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 	// build) and persist the repaired release, so the render proceeds. Each dropped child is live
 	// at the NEW version and is re-adopted by step 4.7 below; the next real Upgrade (step 7)
 	// rewrites the manifest with the served versions, after which this is a no-op.
-	if repaired, dropped, rerr := c.dropUnservedFromStoredManifest(ctx, cfg, releaseName, currentManifest); rerr != nil {
+	if repaired, dropped, rerr := c.dropUnservedFromStoredManifest(ctx, cfg, releaseName, currentManifest, !writeNothing); rerr != nil {
 		return nil, fmt.Errorf("reconcile: repairing stored manifest: %w", rerr)
+	} else if len(dropped) > 0 && writeNothing {
+		// The repair is a write. Without it helm's own render fails on the unserved kinds, so there
+		// is nothing to report but that.
+		return nil, fmt.Errorf("reconcile: %w: %s", helmconfig.ErrStoredManifestRepairWithheld, strings.Join(dropped, ", "))
 	} else if len(dropped) > 0 {
 		currentManifest = repaired
 	}
@@ -330,6 +347,16 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 	if derr != nil {
 		return nil, fmt.Errorf("reconcile: comparing the request with the stored release: %w", derr)
 	}
+	if change != "" && writeNothing {
+		// Reported, never applied: no upgrade and no merge (the merge would apply the request's
+		// render). DesiredStateHeld stays false: it says HoldDesiredStateChange held the change, and
+		// WriteWithheld already says why nothing was written.
+		return &helmconfig.ReconcileResult{
+			WriteWithheld: true, WouldChange: true, DesiredStateChange: change, Release: stored, ObjectsComplete: true,
+			StaleManifestVersions: stale.names, StaleManifestVersionsOmitted: stale.omitted,
+			ChangedJobTemplates: jobs.templateChanged,
+		}, nil
+	}
 	if change != "" {
 		res := &helmconfig.ReconcileResult{
 			Changed: true, DesiredStateChange: change, ObjectsComplete: true,
@@ -421,6 +448,12 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 	// res == nil is a different thing: the call failed before producing any result, and nothing can
 	// be said about any child. That still aborts.
 	applyErr, abort := classifyApply(res, err)
+	if writeNothing {
+		if abort {
+			return nil, errors.Join(c.dryRun.err(), applyErr)
+		}
+		return c.writeNothingResult(stored, res, current, target, liveObj, absent, owned, stale, jobs, applyErr)
+	}
 	if abort {
 		return nil, applyErr
 	}
@@ -904,7 +937,7 @@ func filterUnmappableManifestDocs(manifest string, mapper apimeta.RESTMapper) (s
 // REST mapper (drops precisely what helm cannot build) and the release storage (the k8s
 // Secrets that Upgrade reads). See the step-1.5 comment in Reconcile for why. Returns the
 // (possibly unchanged) manifest and the dropped GVKs.
-func (c *client) dropUnservedFromStoredManifest(ctx context.Context, cfg *helmconfig.UpgradeConfig, releaseName, manifest string) (string, []string, error) {
+func (c *client) dropUnservedFromStoredManifest(ctx context.Context, cfg *helmconfig.UpgradeConfig, releaseName, manifest string, persist bool) (string, []string, error) {
 	actionConfig, err := c.newActionConfig(ctx, c.namespace, c.restConfig, cfg.ActionConfig)
 	if err != nil {
 		return manifest, nil, fmt.Errorf("building action config: %w", err)
@@ -929,6 +962,9 @@ func (c *client) dropUnservedFromStoredManifest(ctx context.Context, cfg *helmco
 	repaired, dropped := filterUnmappableManifestDocs(rel.Manifest, mapper)
 	if len(dropped) == 0 {
 		return manifest, nil, nil
+	}
+	if !persist {
+		return repaired, dropped, nil // WriteNothing: the caller reports the repair it cannot make
 	}
 	rel.Manifest = repaired
 	if err := actionConfig.Releases.Update(rel); err != nil {

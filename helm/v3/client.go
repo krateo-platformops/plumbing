@@ -75,6 +75,10 @@ type client struct {
 	crdInformerCancel context.CancelFunc
 	// mappingRetryObserver is WithMappingRetryObserver's fn; nil observes nothing.
 	mappingRetryObserver func(ctx context.Context, r MappingRetry)
+	// dryRun is set only on the copy Reconcile makes for UpgradeConfig.WriteNothing
+	// (writeNothingClient): its restConfig sends every non-read request as a dry run, and this log
+	// collects the admission denials those dry runs met.
+	dryRun *dryRunLog
 }
 
 type ClientOption func(*client) error
