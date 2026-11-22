@@ -51,7 +51,8 @@ derived from the actual package docs and code.
 
 | Package | What it exports |
 |---|---|
-| `crdgen` | `Generate(Options)` — direct JSON-Schema → structural-OpenAPI-v3 CRD transpiler, gated on the apiextensions validation library; `NormalizeVersionName`. |
+| `crdgen` | `Generate(Options)` — direct JSON-Schema → structural-OpenAPI-v3 CRD transpiler, gated on the apiextensions validation library; `NormalizeVersionName` (delegates to `versionname.Normalize`; a binary that only derives a version name should import `versionname` instead, to avoid linking crdgen's dependencies). |
+| `versionname` | Leaf package (standard library only) deriving Kubernetes CRD version names: `Normalize` (crdgen's rule: lowercase, runs of non-alphanumerics → `-`, trimmed, `v` prefixed when it starts with a digit) and `ForChart(chartVersion)` = `Normalize("v" + chartVersion)`, the name core-provider serves for a chart version (`v1.0.0` → `vv1-0-0`; core-provider#591). |
 | `crdgen/schemas` | JSON-Schema resolution primitives and type-name constants used by the transpiler. |
 | `valuesschema` | `Infer(fs.FS, dir)` — a JSON Schema for a chart that ships no values.schema.json, from its values.yaml files (`RulesVersion`, typed `Report` of `Finding`s); `cmd/values-schema` is its CLI. |
 
