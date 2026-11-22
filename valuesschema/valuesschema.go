@@ -65,7 +65,8 @@ const RulesVersion = "1"
 // A cross-team contract: the portal shows its "inferred schema" banner only for this key at the
 // schema ROOT with source "inferred" (frontend #494), and core-provider strips a forged root marker
 // by this constant (#617). Tell frontend and core-provider BEFORE renaming it, placing it anywhere
-// but the root, or adding a source value. A rules bump needs no notice; the portal displays it.
+// but the root, or adding a source value: the banner would silently disappear. A rules bump needs
+// no notice: the portal never reads rules (core-provider's condition message names it verbatim).
 const MarkerKey = "x-krateo-values-schema"
 
 // ClosedAnnotation is the Chart.yaml annotation that closes specific maps (additionalProperties:
