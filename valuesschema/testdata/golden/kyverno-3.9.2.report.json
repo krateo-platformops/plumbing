@@ -41,9 +41,34 @@
       "detail": "null"
     },
     {
+      "path": "crds.migration.imagePullSecrets[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "crds.migration.tolerations[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
       "path": "config.name",
       "kind": "Untyped",
       "detail": "null"
+    },
+    {
+      "path": "config.excludeUsernames[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "config.excludeRoles[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "config.excludeClusterRoles[]",
+      "kind": "Untyped",
+      "detail": "empty list"
     },
     {
       "path": "config.maxContextSize",
@@ -51,9 +76,44 @@
       "detail": "null"
     },
     {
+      "path": "config.matchConditions[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "config.resourceFiltersExcludeNamespaces[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "config.resourceFiltersExclude[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "config.resourceFiltersIncludeNamespaces[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "config.resourceFiltersInclude[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
       "path": "metricsConfig.name",
       "kind": "Untyped",
       "detail": "null"
+    },
+    {
+      "path": "metricsConfig.namespaces.include[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "metricsConfig.namespaces.exclude[]",
+      "kind": "Untyped",
+      "detail": "empty list"
     },
     {
       "path": "metricsConfig.metricsRefreshInterval",
@@ -66,6 +126,11 @@
       "detail": "mixed list"
     },
     {
+      "path": "existingImagePullSecrets[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
       "path": "test.image.tag",
       "kind": "Untyped",
       "detail": "null"
@@ -74,6 +139,16 @@
       "path": "test.image.pullPolicy",
       "kind": "Untyped",
       "detail": "null"
+    },
+    {
+      "path": "test.imagePullSecrets[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "test.tolerations[]",
+      "kind": "Untyped",
+      "detail": "empty list"
     },
     {
       "path": "webhooksCleanup.image.tag",
@@ -86,6 +161,16 @@
       "detail": "null"
     },
     {
+      "path": "webhooksCleanup.imagePullSecrets[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "webhooksCleanup.tolerations[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
       "path": "grafana.namespace",
       "kind": "Untyped",
       "detail": "null"
@@ -94,6 +179,11 @@
       "path": "prometheusRule.namespace",
       "kind": "Untyped",
       "detail": "null"
+    },
+    {
+      "path": "prometheusRule.spec[]",
+      "kind": "Untyped",
+      "detail": "empty list"
     },
     {
       "path": "features.tuf.root",
@@ -121,9 +211,29 @@
       "detail": "null"
     },
     {
+      "path": "admissionController.rbac.coreClusterRole.extraResources[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "admissionController.rbac.clusterRole.extraResources[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
       "path": "admissionController.replicas",
       "kind": "Untyped",
       "detail": "null"
+    },
+    {
+      "path": "admissionController.tolerations[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "admissionController.topologySpreadConstraints[]",
+      "kind": "Untyped",
+      "detail": "empty list"
     },
     {
       "path": "admissionController.podDisruptionBudget.maxUnavailable",
@@ -141,6 +251,11 @@
       "detail": "null"
     },
     {
+      "path": "admissionController.imagePullSecrets[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
       "path": "admissionController.initContainer.image.registry",
       "kind": "Untyped",
       "detail": "null"
@@ -156,6 +271,11 @@
       "detail": "null"
     },
     {
+      "path": "admissionController.initContainer.extraEnvVars[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
       "path": "admissionController.container.image.registry",
       "kind": "Untyped",
       "detail": "null"
@@ -164,6 +284,31 @@
       "path": "admissionController.container.image.tag",
       "kind": "Untyped",
       "detail": "null"
+    },
+    {
+      "path": "admissionController.container.extraEnvVars[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "admissionController.extraInitContainers[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "admissionController.extraContainers[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "admissionController.extraVolumes[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "admissionController.extraVolumeMounts[]",
+      "kind": "Untyped",
+      "detail": "empty list"
     },
     {
       "path": "admissionController.service.nodePort",
@@ -186,9 +331,24 @@
       "detail": "null"
     },
     {
+      "path": "admissionController.networkPolicy.ingressFrom[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
       "path": "admissionController.serviceMonitor.namespace",
       "kind": "Untyped",
       "detail": "null"
+    },
+    {
+      "path": "admissionController.serviceMonitor.relabelings[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "admissionController.serviceMonitor.metricRelabelings[]",
+      "kind": "Untyped",
+      "detail": "empty list"
     },
     {
       "path": "admissionController.tracing.address",
@@ -211,6 +371,11 @@
       "detail": "null"
     },
     {
+      "path": "backgroundController.rbac.clusterRole.extraResources[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
       "path": "backgroundController.image.registry",
       "kind": "Untyped",
       "detail": "null"
@@ -221,9 +386,29 @@
       "detail": "null"
     },
     {
+      "path": "backgroundController.imagePullSecrets[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
       "path": "backgroundController.replicas",
       "kind": "Untyped",
       "detail": "null"
+    },
+    {
+      "path": "backgroundController.extraEnvVars[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "backgroundController.tolerations[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "backgroundController.topologySpreadConstraints[]",
+      "kind": "Untyped",
+      "detail": "empty list"
     },
     {
       "path": "backgroundController.podDisruptionBudget.maxUnavailable",
@@ -241,6 +426,16 @@
       "detail": "null"
     },
     {
+      "path": "backgroundController.extraVolumes[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "backgroundController.extraVolumeMounts[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
       "path": "backgroundController.metricsService.nodePort",
       "kind": "Untyped",
       "detail": "null"
@@ -251,9 +446,24 @@
       "detail": "null"
     },
     {
+      "path": "backgroundController.networkPolicy.ingressFrom[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
       "path": "backgroundController.serviceMonitor.namespace",
       "kind": "Untyped",
       "detail": "null"
+    },
+    {
+      "path": "backgroundController.serviceMonitor.relabelings[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "backgroundController.serviceMonitor.metricRelabelings[]",
+      "kind": "Untyped",
+      "detail": "empty list"
     },
     {
       "path": "backgroundController.tracing.address",
@@ -276,6 +486,16 @@
       "detail": "null"
     },
     {
+      "path": "cleanupController.rbac.coreClusterRole.extraResources[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "cleanupController.rbac.clusterRole.extraResources[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
       "path": "cleanupController.image.registry",
       "kind": "Untyped",
       "detail": "null"
@@ -286,9 +506,29 @@
       "detail": "null"
     },
     {
+      "path": "cleanupController.imagePullSecrets[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
       "path": "cleanupController.replicas",
       "kind": "Untyped",
       "detail": "null"
+    },
+    {
+      "path": "cleanupController.extraEnvVars[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "cleanupController.tolerations[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "cleanupController.topologySpreadConstraints[]",
+      "kind": "Untyped",
+      "detail": "empty list"
     },
     {
       "path": "cleanupController.podDisruptionBudget.maxUnavailable",
@@ -299,6 +539,16 @@
       "path": "cleanupController.podDisruptionBudget.unhealthyPodEvictionPolicy",
       "kind": "Untyped",
       "detail": "null"
+    },
+    {
+      "path": "cleanupController.extraVolumes[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "cleanupController.extraVolumeMounts[]",
+      "kind": "Untyped",
+      "detail": "empty list"
     },
     {
       "path": "cleanupController.service.nodePort",
@@ -321,9 +571,24 @@
       "detail": "null"
     },
     {
+      "path": "cleanupController.networkPolicy.ingressFrom[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
       "path": "cleanupController.serviceMonitor.namespace",
       "kind": "Untyped",
       "detail": "null"
+    },
+    {
+      "path": "cleanupController.serviceMonitor.relabelings[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "cleanupController.serviceMonitor.metricRelabelings[]",
+      "kind": "Untyped",
+      "detail": "empty list"
     },
     {
       "path": "cleanupController.tracing.address",
@@ -346,6 +611,16 @@
       "detail": "null"
     },
     {
+      "path": "reportsController.rbac.coreClusterRole.extraResources[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "reportsController.rbac.clusterRole.extraResources[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
       "path": "reportsController.image.registry",
       "kind": "Untyped",
       "detail": "null"
@@ -356,9 +631,29 @@
       "detail": "null"
     },
     {
+      "path": "reportsController.imagePullSecrets[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
       "path": "reportsController.replicas",
       "kind": "Untyped",
       "detail": "null"
+    },
+    {
+      "path": "reportsController.extraEnvVars[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "reportsController.tolerations[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "reportsController.topologySpreadConstraints[]",
+      "kind": "Untyped",
+      "detail": "empty list"
     },
     {
       "path": "reportsController.podDisruptionBudget.maxUnavailable",
@@ -376,6 +671,16 @@
       "detail": "null"
     },
     {
+      "path": "reportsController.extraVolumes[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "reportsController.extraVolumeMounts[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
       "path": "reportsController.metricsService.nodePort",
       "kind": "Untyped",
       "detail": "null"
@@ -386,9 +691,24 @@
       "detail": "null"
     },
     {
+      "path": "reportsController.networkPolicy.ingressFrom[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
       "path": "reportsController.serviceMonitor.namespace",
       "kind": "Untyped",
       "detail": "null"
+    },
+    {
+      "path": "reportsController.serviceMonitor.relabelings[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "reportsController.serviceMonitor.metricRelabelings[]",
+      "kind": "Untyped",
+      "detail": "empty list"
     },
     {
       "path": "reportsController.tracing.address",
@@ -766,6 +1086,21 @@
       "detail": "null"
     },
     {
+      "path": "reports-server.imagePullSecrets[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "reports-server.metrics.serviceMonitor.metricRelabelings[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "reports-server.metrics.serviceMonitor.relabelings[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
       "path": "reports-server.resources.limits",
       "kind": "Untyped",
       "detail": "null"
@@ -786,6 +1121,11 @@
       "detail": "null"
     },
     {
+      "path": "reports-server.tolerations[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
       "path": "reports-server.config.etcd.endpoints",
       "kind": "Untyped",
       "detail": "null"
@@ -794,6 +1134,21 @@
       "path": "reports-server.apiServicesManagement.image.pullPolicy",
       "kind": "Untyped",
       "detail": "null"
+    },
+    {
+      "path": "reports-server.apiServicesManagement.imagePullSecrets[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "reports-server.apiServicesManagement.tolerations[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
+      "path": "reports-server.extraObjects[]",
+      "kind": "Untyped",
+      "detail": "empty list"
     }
   ]
 }
