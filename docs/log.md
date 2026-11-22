@@ -9,6 +9,19 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-22 — `versionname`: CRD version names without crdgen** (core-provider#591): core-provider
+  wrote a definition's `status.apiVersion` from `"v" + strings.ReplaceAll(chartVersion, ".", "-")`
+  while crdgen served the normalized name, so a chart versioned `1.0.0-RC1` recorded `v1-0-0-RC1` but
+  served `v1-0-0-rc1`, and everything derived from status (pool, scale-to-zero, the portal's schema
+  ConfigMap lookup, the cdc's migration check) addressed a version that does not exist. Every site
+  must use one rule, but importing crdgen into the composition-dynamic-controller linked 24 CEL/ANTLR
+  packages it never uses and grew its stripped linux/amd64 binary 65.6 MB → 72.4 MB (+10.4%), one
+  cdc per definition version. `versionname.Normalize` is crdgen's rule moved verbatim (stdlib only;
+  `crdgen.NormalizeVersionName` delegates). `versionname.ForChart` = `Normalize("v" + chartVersion)`
+  is the name core-provider has always served: `v1.0.0` → **`vv1-0-0`**, kept so that no existing
+  definition's served version moves (Diego); plain `Normalize` would have moved all 22 v/V-prefixed
+  shapes of the 33 tested.
+
 - **2026-11-21 — `endpoints`: the delegated credential Secret** (authn#167): a delegated token's
   apiserver calls went through the person's `<user>-clientconfig`, whose groups came from the last
   sign-in and whose certificate only a sign-in renews, so they could disagree with the token's groups

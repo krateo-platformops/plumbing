@@ -19,7 +19,10 @@ func TestNormalize(t *testing.T) {
 }
 
 // ForChart must equal the name core-provider has always served: Normalize of
-// fmt.Sprintf("v%s", strings.ReplaceAll(chartVersion, ".", "-")). CONTROL: plain Normalize moves
+// fmt.Sprintf("v%s", strings.ReplaceAll(chartVersion, ".", "-")), the expression core-provider used
+// (through 2.13.122) in go/core-provider/internal/tools/chart/chart.go ChartGroupVersionKind and
+// go/core-provider/internal/tools/chart/chartfs/gvr.go GroupVersionKind to build the chart's GVK,
+// which crdgen then normalized into the served CRD version. CONTROL: plain Normalize moves
 // every v/V-prefixed version, so the comparison can tell the two rules apart.
 func TestForChart_PreservesTheHistoricalServedName(t *testing.T) {
 	cores := []string{"0.0.1", "1.0.0", "10.20.30", "1.2.3-RC1", "1.2.3-rc.1", "1.2.3+build.5",
