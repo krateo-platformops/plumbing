@@ -9,6 +9,18 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-22 — `crdgen`: `const: null` is enforced or reported, never silently dropped**
+  (plumbing#227): `schemas.Type.Const` is `any`, and JSON `null` left it nil, the same as no const,
+  so "only null" became "any value" with no warning. `Type.ConstNull` now records it. Measured on
+  apiserver 1.36 for every type: on a typed, non-nullable field `enum: [null]` admits absent and
+  null (not stored) and refuses every value, so it is enforced there, exactly (Diego's choice:
+  enforce where exact, else warn). On a nullable field the apiserver refuses null itself against
+  `enum: [null]`, and on an untyped one a CEL rule can't reference the field: both are dropped with
+  a `ConstraintDropped` warning (and `Options.Strict` refuses them). Inside a `not`, or in an
+  if/then clause, dropping it would widen the subschema, so the `not`, the `if` or the clause is
+  dropped and reported as other inexpressible parts are. **A tightening** on typed fields: an object
+  that set a value where its schema said `const: null` is refused at its next write.
+
 - **2026-11-22 — `valuesschema`: an empty list's items are reported untyped** (core-provider#568):
   `[]` emits `{type: array, default: []}` with no `items`, so crdgen makes its items preserve-unknown
   and they accept any value, yet the Report said nothing, while a mixed list, a list of lists and every
