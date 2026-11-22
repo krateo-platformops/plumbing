@@ -9,6 +9,15 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-22 — `valuesschema`: an empty list's items are reported untyped** (core-provider#568):
+  `[]` emits `{type: array, default: []}` with no `items`, so crdgen makes its items preserve-unknown
+  and they accept any value, yet the Report said nothing, while a mixed list, a list of lists and every
+  other any-value path are `KindUntyped`. core-provider's "N path(s) accept any value" message
+  undercounted by every empty list (core-provider measured it on envtest). The Report now carries `path[]`
+  `Untyped` "empty list"; the schema is unchanged byte for byte (the golden schema files didn't
+  move; only the reports gained 72 entries across the fixtures). `MarkerKey`'s doc now names its
+  cross-team contract (frontend #494, core-provider #617).
+
 - **2026-11-22 — `crdgen`: an untyped node keeps its default** (core-provider#613): a node with no
   usable type became a bare `x-kubernetes-preserve-unknown-fields: true` and lost its `default`,
   description, title and example with no warning. `valuesschema` infers a decimal leaf untyped on

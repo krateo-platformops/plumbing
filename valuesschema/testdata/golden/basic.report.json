@@ -2,6 +2,11 @@
   "rulesVersion": "1",
   "findings": [
     {
+      "path": "tolerations[]",
+      "kind": "Untyped",
+      "detail": "empty list"
+    },
+    {
       "path": "podAnnotations",
       "kind": "Untyped",
       "detail": "null"

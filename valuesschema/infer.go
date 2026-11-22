@@ -321,8 +321,13 @@ func (in *inferrer) valueNode(v *value, path string) (*node, error) {
 // itemsNode infers a list's items: nil for an empty list, the shared type when every element has
 // one kind (int and string count as one, int-or-string), a merge of every element's keys for a list
 // of maps, and untyped otherwise.
+//
+// An empty list emits no `items`, so its items accept any value (crdgen makes them
+// preserve-unknown) and are reported KindUntyped like every other any-value path. Only the report
+// says so: the schema is the same `{type: array, default: []}` it always was.
 func (in *inferrer) itemsNode(items []*value, path string) (*node, error) {
 	if len(items) == 0 {
+		in.find(path, KindUntyped, "empty list")
 		return nil, nil
 	}
 	class := func(k kind) kind {

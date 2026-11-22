@@ -22,7 +22,7 @@
 //	bool                    {type: boolean, default}                        D4 default
 //	int, string             {x-kubernetes-int-or-string: true, default}      D5: "25%" and 1 both pass
 //	float                   {default}                                       type: number becomes string in crdgen's caller
-//	[]                      {type: array, default}
+//	[]                      {type: array, default}                          items untyped, reported
 //	list of one kind        {type: array, items: <kind>, default}
 //	mixed list              {type: array, items: {}, default}
 //	list of maps            items = merge of every element's keys, typed-open
@@ -61,6 +61,11 @@ import (
 const RulesVersion = "1"
 
 // MarkerKey is the root keyword that says a schema was inferred: {source: "inferred", rules: RulesVersion}.
+//
+// A cross-team contract: the portal shows its "inferred schema" banner only for this key at the
+// schema ROOT with source "inferred" (frontend #494), and core-provider strips a forged root marker
+// by this constant (#617). Tell frontend and core-provider BEFORE renaming it, placing it anywhere
+// but the root, or adding a source value. A rules bump needs no notice; the portal displays it.
 const MarkerKey = "x-krateo-values-schema"
 
 // ClosedAnnotation is the Chart.yaml annotation that closes specific maps (additionalProperties:
@@ -72,8 +77,8 @@ const ClosedAnnotation = "krateo.io/values-schema-closed"
 type FindingKind string
 
 const (
-	// KindUntyped: the value's type could not be inferred (null, a float, a list mixing kinds), so the
-	// node accepts any value.
+	// KindUntyped: the value's type could not be inferred (null, a float, a list mixing kinds, the
+	// items of an empty list), so the node accepts any value.
 	KindUntyped FindingKind = "Untyped"
 	// KindSubchartSchemaUsed: a dependency ships its own values.schema.json, used instead of inference (D8).
 	KindSubchartSchemaUsed FindingKind = "SubchartSchemaUsed"
