@@ -1,0 +1,67 @@
+# Generated once by crdgen at plumbing v1.104.0 (the tag before core-provider#613's fix), NOT
+# edited by hand: crdgen.Generate(Options{Group: "composition.krateo.io", Version: "v1",
+# Kind: "Before", SpecSchema: untypedDefaultSpec}) with untypedDefaultSpec copied byte for byte
+# from untyped_default_envtest_test.go, from a separate module that requires
+# github.com/krateo-platformops/plumbing v1.104.0. It is the envtest's control: spec.ratio and
+# spec.tuning.ratio carry no default, and spec.tuning no default {}.
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: befores.composition.krateo.io
+spec:
+  group: composition.krateo.io
+  names:
+    kind: Before
+    listKind: BeforeList
+    plural: befores
+    singular: before
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .metadata.creationTimestamp
+      name: AGE
+      type: date
+    name: v1
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            description: 'APIVersion defines the versioned schema of this representation
+              of an object. Servers should convert recognized schemas to the latest
+              internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+            type: string
+          kind:
+            description: 'Kind is a string value representing the REST resource this
+              object represents. Servers may infer this from the endpoint the client
+              submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              count:
+                default: 3
+                type: integer
+              ratio:
+                x-kubernetes-preserve-unknown-fields: true
+              tuning:
+                properties:
+                  ratio:
+                    x-kubernetes-preserve-unknown-fields: true
+                type: object
+            type: object
+          status:
+            type: object
+            x-kubernetes-preserve-unknown-fields: true
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+status:
+  acceptedNames:
+    kind: ""
+    plural: ""
+  conditions: null
+  storedVersions: null

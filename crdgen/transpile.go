@@ -414,7 +414,7 @@ func (t *transpiler) transpile(node *schemas.Type, path string, stack map[string
 		if node.Not != nil {
 			t.warn(path, KindConstraintDropped, "not without a typed node -> any value (constraint dropped)")
 		}
-		return anyValue()
+		return t.untyped(out, node, path)
 	}
 
 	// Common keywords valid on any node.
@@ -950,6 +950,27 @@ func openObject() *apiextensionsv1.JSONSchemaProps {
 // `targetNamespaces: {type: array, items: {}}` refused a list of namespace names).
 func anyValue() *apiextensionsv1.JSONSchemaProps {
 	return &apiextensionsv1.JSONSchemaProps{XPreserveUnknownFields: boolPtr(true)}
+}
+
+// untyped is the node for a schema with no usable type: any value is accepted
+// (anyValue), but what describes the node and the default its author wrote
+// are kept (core-provider#613). A values schema infers a decimal leaf untyped
+// on purpose ({default: 0.5}), and the default used to vanish here with no
+// warning, along with the description, title and example. An enum can't be
+// kept, since the apiserver refuses one on an untyped node, so it is dropped
+// with a ConstraintDropped warning.
+func (t *transpiler) untyped(out *apiextensionsv1.JSONSchemaProps, node *schemas.Type, path string) *apiextensionsv1.JSONSchemaProps {
+	av := anyValue()
+	av.Description = out.Description
+	av.Title = node.Title
+	t.copyDefault(av, node, path)
+	t.copyExample(av, node, path)
+	// Only an enum whose first value is null gets here: inferType types a node from its enum's first
+	// value, and from any const (a JSON null const parses as no const at all).
+	if len(node.Enum) > 0 {
+		t.warn(path, KindConstraintDropped, "enum without a typed node -> any value (constraint dropped)")
+	}
+	return av
 }
 
 // rootObject keeps the spec and status roots objects. A Helm values root is always a map, so an
