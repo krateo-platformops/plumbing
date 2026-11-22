@@ -56,7 +56,21 @@ func jsonKindType(v any) string {
 }
 
 // copyConst maps `const` to a single-value `enum` (native + faithful).
+//
+// `const: null` ("only null", plumbing#227) is enforced as `enum: [null]` on a typed field that is
+// not nullable. Measured on apiserver 1.36, for every type: absent and null are admitted (null is
+// not stored on a non-nullable field) and every value is refused, which is the schema's own
+// acceptance. On a nullable field the apiserver refuses null itself against `enum: [null]`, so it
+// can't be carried: dropped, and said so. An untyped field never gets here (untyped()).
 func (t *transpiler) copyConst(out *apiextensionsv1.JSONSchemaProps, node *schemas.Type, path string) {
+	if node.ConstNull {
+		if out.Nullable {
+			t.warn(path, KindConstraintDropped, "const: null on a nullable field: the apiserver refuses null against enum [null] -> dropped")
+			return
+		}
+		out.Enum = []apiextensionsv1.JSON{{Raw: []byte("null")}}
+		return
+	}
 	if node.Const == nil {
 		return
 	}
@@ -289,6 +303,9 @@ func isScalarJunction(n *schemas.Type) bool {
 // nothing there, so leaving them out loses nothing. On an object, min/maxProperties DO apply, and are
 // carried; `required` is carried on every node, as it always was.
 func notValueSchema(m *schemas.Type, nodeType string) (*apiextensionsv1.JSONSchemaProps, string) {
+	if m.ConstNull {
+		return nil, "const: null" // plumbing#227: without it the subschema matches more, so the not refuses more
+	}
 	if nodeType == schemas.TypeNameObject && (len(m.PatternProperties) > 0 || len(m.DependentRequired) > 0 || len(m.DependentSchemas) > 0) {
 		return nil, "an object keyword the CRD cannot carry inside a not"
 	}
@@ -412,6 +429,9 @@ func (t *transpiler) celCond(out *apiextensionsv1.JSONSchemaProps, s *schemas.Ty
 		}
 	}
 	var conj []string
+	if s.ConstNull {
+		return "", nil, false // plumbing#227: "only null" for the object itself isn't expressed
+	}
 	if s.Const != nil {
 		lit, ok := celLiteral(s.Const)
 		if !ok {
@@ -485,6 +505,9 @@ func celProperty(decl apiextensionsv1.JSONSchemaProps, sel string, p *schemas.Ty
 	}
 	if len(p.Type) > 0 && !(len(p.Type) == 1 && p.Type[0] == decl.Type) {
 		return nil, fmt.Sprintf("type %v differs from the declared %q", []string(p.Type), decl.Type)
+	}
+	if p.ConstNull {
+		return nil, "const: null not expressible in CEL" // plumbing#227: dropping it would widen the clause
 	}
 	if p.Const != nil {
 		lit, ok := celLiteral(p.Const)

@@ -1,6 +1,7 @@
 package schemas
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 )
@@ -215,7 +216,10 @@ type Type struct {
 	DependentSchemas map[string]*Type `json:"dependentSchemas,omitempty"`
 
 	// Draft 2019-09 / 2020-12 keywords.
-	Const                 any                   `json:"const,omitempty"`                 // draft-06
+	Const any `json:"const,omitempty"` // draft-06
+	// ConstNull is true when the schema says `"const": null`, which JSON decoding can't tell apart
+	// from no const at all (Const is nil for both). Set by UnmarshalJSON (plumbing#227).
+	ConstNull             bool                  `json:"-"`
 	If                    *Type                 `json:"if,omitempty"`                    // draft-07
 	Then                  *Type                 `json:"then,omitempty"`                  // draft-07
 	Else                  *Type                 `json:"else,omitempty"`                  // draft-07
@@ -321,6 +325,15 @@ func (value *Type) UnmarshalJSON(raw []byte) error {
 
 	if legacyObj.Dependencies != nil && tmp.DependentSchemas == nil {
 		tmp.DependentSchemas = legacyObj.Dependencies
+	}
+
+	if tmp.Const == nil {
+		var keys map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &keys); err == nil {
+			if c, ok := keys["const"]; ok && bytes.Equal(bytes.TrimSpace(c), []byte("null")) {
+				tmp.ConstNull = true
+			}
+		}
 	}
 
 	*value = Type(tmp)

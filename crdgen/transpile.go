@@ -965,10 +965,14 @@ func (t *transpiler) untyped(out *apiextensionsv1.JSONSchemaProps, node *schemas
 	av.Title = node.Title
 	t.copyDefault(av, node, path)
 	t.copyExample(av, node, path)
-	// Only an enum whose first value is null gets here: inferType types a node from its enum's first
-	// value, and from any const (a JSON null const parses as no const at all).
+	// Only an enum whose first value is null gets here (inferType types a node from its enum's first
+	// value and from any non-null const), and `const: null`, which a CRD can't hold on an untyped
+	// node: a CEL rule can't reference it, and null isn't stored there (plumbing#227).
 	if len(node.Enum) > 0 {
 		t.warn(path, KindConstraintDropped, "enum without a typed node -> any value (constraint dropped)")
+	}
+	if node.ConstNull {
+		t.warn(path, KindConstraintDropped, "const: null without a typed node -> any value (constraint dropped)")
 	}
 	return av
 }
