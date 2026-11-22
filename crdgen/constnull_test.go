@@ -16,6 +16,7 @@ func TestConstNullIsEnforcedOrReported(t *testing.T) {
 	  "typed":{"type":"string","const":null},
 	  "typedInt":{"type":"integer","const":null},
 	  "nullable":{"type":["string","null"],"const":null},
+	  "nullableOAS30":{"type":"string","nullable":true,"const":null},
 	  "untyped":{"const":null},
 	  "control":{"type":"string","const":"a"},
 	  "negated":{"type":"string","not":{"const":null}},
@@ -70,8 +71,12 @@ func TestConstNullIsEnforcedOrReported(t *testing.T) {
 	}
 
 	// Reported: where the CRD can't hold it.
-	if p := props["nullable"]; len(p.Enum) != 0 || !p.Nullable || !warned("nullable", "const: null on a nullable field") {
-		t.Errorf("nullable: enum %q nullable %v, warned %v", enumOf(p), p.Nullable, warned("nullable", "const: null"))
+	// Both spellings of nullable (JSON Schema's type list, OAS 3.0's `nullable: true`): nullable wins
+	// over the type, since enum [null] on a nullable field refuses null itself.
+	for _, name := range []string{"nullable", "nullableOAS30"} {
+		if p := props[name]; len(p.Enum) != 0 || !p.Nullable || !warned(name, "const: null on a nullable field") {
+			t.Errorf("%s: enum %q nullable %v, warned %v", name, enumOf(p), p.Nullable, warned(name, "const: null"))
+		}
 	}
 	if p := props["untyped"]; p.XPreserveUnknownFields == nil || len(p.Enum) != 0 || !warned("untyped", "const: null without a typed node") {
 		t.Errorf("untyped: %+v, warned %v", p, warned("untyped", "const: null"))
