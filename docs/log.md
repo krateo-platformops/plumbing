@@ -9,6 +9,17 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-22 — `crdgen`: an untyped node keeps its default** (core-provider#613): a node with no
+  usable type became a bare `x-kubernetes-preserve-unknown-fields: true` and lost its `default`,
+  description, title and example with no warning. `valuesschema` infers a decimal leaf untyped on
+  purpose (`{default: 0.5}`, since a `type: number` is rewritten to string by core-provider), so a
+  chart's `ratio: 0.5` was never defaulted by the apiserver, and an optional parent whose only
+  defaulted leaf was untyped got no `default: {}`. The untyped node now keeps all four, and the
+  parent materializes. Measured on envtest against the CRD v1.104.0 actually generated for the same
+  schema (`crdgen/testdata/613-untyped-default-v1.104.0.yaml`): v1.104.0 leaves `spec.ratio` and
+  `spec.tuning.ratio` unset, this sets both to 0.5. An enum on an untyped node (only reachable with a
+  null first value) is dropped with a `ConstraintDropped` warning instead of silently.
+
 - **2026-11-22 — `versionname`: CRD version names without crdgen** (core-provider#591): core-provider
   wrote a definition's `status.apiVersion` from `"v" + strings.ReplaceAll(chartVersion, ".", "-")`
   while crdgen served the normalized name, so a chart versioned `1.0.0-RC1` recorded `v1-0-0-RC1` but
