@@ -9,6 +9,18 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-23 — `helm`: a failed first install can be retried as an install** (core-provider#636,
+  Diego's decision): `InstallConfig.RetryFailed`, and `InstallConfig.MaxHistory` to bound the
+  revisions it leaves. Retrying with Upgrade runs the upgrade hooks and never the install ones; a
+  bare Install with `Replace` ignores what the failed attempt applied, so a dropped field or object
+  stays, the object even through an uninstall (measured, envtest 1.36). The retry keeps helm's
+  install order and merges the objects against what the failed attempts APPLIED: a retry's revision
+  stores that, not its render, so an attempt that fails in a pre-install hook does not hide the one
+  before it. A dropped object is deleted as an upgrade deletes it, but only when it is annotated as
+  this release's and not `helm.sh/resource-policy: keep`. Merging in `Reconcile` first was rejected:
+  it applies the objects before the pre-install hooks (plumbing#232).
+  `Client.SettleInterruptedInstall` records a `pending-install` whose process died as failed, so it
+  can be retried too, with a write conditional on the record it read (helm's own is last-write-wins).
 - **2026-11-22 — `crdgen`: `const: null` is enforced or reported, never silently dropped**
   (plumbing#227): `schemas.Type.Const` is `any`, and JSON `null` left it nil, the same as no const,
   so "only null" became "any value" with no warning. `Type.ConstNull` now records it. Measured on
