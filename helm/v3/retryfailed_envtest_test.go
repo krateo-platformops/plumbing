@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -505,6 +506,60 @@ func TestEnvtest_RetryFailed(t *testing.T) {
 		}
 	})
 
+	// A killed process: from the cut on, none of its requests reach the apiserver.
+	for _, c := range []struct {
+		name string
+		cut  func(r *http.Request, rel string) (before, after bool)
+	}{
+		{"in the objects step", func(r *http.Request, rel string) (bool, bool) {
+			return false, r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/configmaps") && bodyHas(r, rel+"-new")
+		}},
+		{"between the record and the post-install hooks", func(r *http.Request, rel string) (bool, bool) {
+			return r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/no-such-namespace/"), false
+		}},
+	} {
+		t.Run("killed "+c.name+": an uninstall leaves nothing", func(t *testing.T) {
+			rel := "kill" + map[bool]string{true: "a", false: "b"}[strings.HasPrefix(c.name, "in")]
+			files := leftoverChart()
+			files["templates/new.yaml"] = "{{- if .Values.edited }}\n" + cmDoc("new", "  k: v\n") + "{{- end }}\n"
+			u := serveFiles(t, files)
+			e.first(t, rel, u, bad)
+			rc := rest.CopyConfig(e.hc.restConfig)
+			var dead atomic.Bool
+			rc.Wrap(func(next http.RoundTripper) http.RoundTripper {
+				return roundTrip(func(r *http.Request) (*http.Response, error) {
+					before, after := c.cut(r, rel)
+					if before || dead.Load() {
+						dead.Store(true)
+						return nil, errors.New("killed")
+					}
+					resp, err := next.RoundTrip(r)
+					if after {
+						dead.Store(true)
+					}
+					return resp, err
+				})
+			})
+			if _, err := e.retry(rel, u, map[string]any{"edited": true, "post": "bad"}, func(c *helmconfig.InstallConfig) { c.RestConfig = rc }); err == nil || !dead.Load() {
+				t.Fatalf("control: the attempt must be cut (err=%v)", err)
+			}
+			if got := e.last(t, rel); got.Status != helmconfig.StatusPendingInstall || got.Revision != 2 {
+				t.Fatalf("control: revision %d %s, want a pending-install 2", got.Revision, got.Status)
+			}
+			if e.cm(t, rel+"-new") == nil {
+				t.Fatal("control: the killed attempt must have created its new object")
+			}
+			if _, err := e.hc.Uninstall(ctx, rel, &helmconfig.UninstallConfig{}); err != nil {
+				t.Fatal(err)
+			}
+			for _, s := range []string{"ok", "orphan", "new", "installonly"} {
+				if e.cm(t, rel+"-"+s) != nil {
+					t.Errorf("%s survives the uninstall", s)
+				}
+			}
+		})
+	}
+
 	t.Run("a dry run writes nothing", func(t *testing.T) {
 		rel := "dry"
 		e.first(t, rel, url, bad)
@@ -554,6 +609,16 @@ func TestEnvtest_RetryFailed(t *testing.T) {
 type roundTrip func(*http.Request) (*http.Response, error)
 
 func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// bodyHas reports whether a request's body contains text, leaving the body readable.
+func bodyHas(r *http.Request, text string) bool {
+	if r.Body == nil {
+		return false
+	}
+	b, _ := io.ReadAll(r.Body)
+	r.Body = io.NopCloser(bytes.NewReader(b))
+	return bytes.Contains(b, []byte(text))
+}
 
 // beforeRender is a post-renderer that runs f and changes nothing.
 type beforeRender func()

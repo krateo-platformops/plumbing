@@ -208,6 +208,20 @@ func (r *failedRetry) apply(target kube.ResourceList) (*kube.Result, error) {
 		current = append(current, &adopted)
 	}
 
+	// Before the first write: what is applied, plus what this attempt is about to create. A process
+	// killed in the merge leaves this, so nothing it created is unrecorded.
+	fresh, err := r.renderedDocuments()
+	if err != nil {
+		return nil, err
+	}
+	r.mu.Lock()
+	r.recorded = recordIntent(current, target, docs, fresh)
+	err = r.persistLocked()
+	r.mu.Unlock()
+	if err != nil {
+		return nil, fmt.Errorf("recording what is about to be applied: %w", err)
+	}
+
 	res, err := r.kube.UpdateThreeWayMerge(current, target, r.force)
 
 	r.mu.Lock()
@@ -216,10 +230,44 @@ func (r *failedRetry) apply(target kube.ResourceList) (*kube.Result, error) {
 	if err == nil {
 		r.recorded = r.recordSuccess(current, target, res, docs)
 	} else {
-		r.recorded = r.recordPartial(current, target, docs)
+		r.recorded = recordPartial(current, target, docs, fresh)
 	}
-	r.persistLocked()
+	// Best effort: helm's own record, after the wait and the post-install hooks, carries the same
+	// manifest, and the one written above already names every object.
+	if perr := r.persistLocked(); perr != nil {
+		r.logf("retrying %s as an install: recording what was applied: %v", r.releaseName, perr)
+	}
 	return res, err
+}
+
+// recordIntent is the manifest just before the merge: every object as it was applied, and the render
+// of each one not applied yet.
+func recordIntent(current, target kube.ResourceList, docs, fresh map[string]string) string {
+	var out []string
+	for _, info := range current {
+		if doc, ok := docs[infoKey(info)]; ok {
+			out = append(out, doc)
+		}
+	}
+	for _, info := range target {
+		if before := current.Get(info); before != nil {
+			if _, ok := docs[infoKey(before)]; ok {
+				continue
+			}
+		}
+		out = append(out, fresh[infoKey(info)])
+	}
+	return strings.Join(out, "\n---\n")
+}
+
+// renderedDocuments is the render's documents, built apart from the list helm applies: that one
+// carries helm's ownership metadata and is refreshed in place.
+func (r *failedRetry) renderedDocuments() (map[string]string, error) {
+	fresh, err := r.kube.Build(strings.NewReader(r.rendered), false)
+	if err != nil {
+		return nil, fmt.Errorf("building the rendered manifest: %w", err)
+	}
+	return documentsOf(fresh)
 }
 
 // recordSuccess is the manifest after a merge helm reports as done: the render, plus each dropped
@@ -240,15 +288,7 @@ func (r *failedRetry) recordSuccess(current, target kube.ResourceList, res *kube
 // recordPartial is the manifest after a merge that failed, object by object: the render where helm
 // confirmed the write, or where there is nothing else it could be; what was applied before where the
 // write failed; and every dropped object, because helm deletes only after every update succeeded.
-func (r *failedRetry) recordPartial(current, target kube.ResourceList, docs map[string]string) string {
-	fresh, err := r.kube.Build(strings.NewReader(r.rendered), false)
-	if err != nil {
-		return r.recorded
-	}
-	renderedDocs, err := documentsOf(fresh)
-	if err != nil {
-		return r.recorded
-	}
+func recordPartial(current, target kube.ResourceList, docs, fresh map[string]string) string {
 	var out []string
 	for _, info := range target {
 		if before := current.Get(info); before != nil && !writeConfirmed(info) {
@@ -257,9 +297,7 @@ func (r *failedRetry) recordPartial(current, target kube.ResourceList, docs map[
 				continue
 			}
 		}
-		if doc, ok := renderedDocs[infoKey(info)]; ok {
-			out = append(out, doc)
-		}
+		out = append(out, fresh[infoKey(info)])
 	}
 	for _, info := range current.Difference(target) {
 		if doc, ok := docs[infoKey(info)]; ok {
@@ -269,17 +307,14 @@ func (r *failedRetry) recordPartial(current, target kube.ResourceList, docs map[
 	return strings.Join(out, "\n---\n")
 }
 
-// persistLocked writes the record at once rather than with helm's next one, which comes only after
-// the wait and the post-install hooks. Best effort: helm's own record carries the same manifest.
-func (r *failedRetry) persistLocked() {
+// persistLocked writes the record now, rather than with helm's next one.
+func (r *failedRetry) persistLocked() error {
 	rel, err := r.driver.Get(r.key)
-	if err == nil {
-		rel.Manifest = r.recorded
-		err = r.driver.Update(r.key, rel)
-	}
 	if err != nil {
-		r.logf("retrying %s as an install: recording what was applied: %v", r.releaseName, err)
+		return err
 	}
+	rel.Manifest = r.recorded
+	return r.driver.Update(r.key, rel)
 }
 
 // finish completes an install that succeeded. A render with no objects makes helm skip the objects

@@ -26,13 +26,14 @@ type Release struct {
 	//
 	// For a revision written by InstallConfig.RetryFailed it is what is APPLIED, so do not compare it
 	// with a render. Until the attempt's objects step it is the manifest of the revision it retries.
-	// After that step it is the render; or, if the step failed, each object's last confirmed document
-	// plus the dropped objects not yet deleted; or, if a deletion failed, the render plus that object.
-	// So the next attempt merges against what is there, and an uninstall deletes what is there.
+	// During the step it is that plus the objects the attempt is about to create. After it, it is the
+	// render; or, if the step failed, each object's last confirmed document plus the dropped objects
+	// not yet deleted; or, if a deletion failed, the render plus that object. So the next attempt
+	// merges against what is there, and an uninstall deletes what is there.
 	//
-	// A process killed during the objects step, before that record, leaves the manifest of the revision
-	// it retried. The next attempt compares against that one, so at most the killed attempt's own new
-	// objects and fields can be left behind, and only if the next render drops them.
+	// A process killed during the objects step leaves a record that names every object, but an object
+	// that was already there with its earlier document: a field the killed attempt added to it stays
+	// if the next render does not have it.
 	Manifest string
 	// Updated is helm's Info.LastDeployed for this revision — when the (possibly still
 	// pending) revision record was written. For a pending-install/upgrade/rollback status,
