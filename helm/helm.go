@@ -367,6 +367,11 @@ var ErrJobTemplateChanged = errors.New("the chart changed the pod template of a 
 // was written.
 var ErrNotRetryableAsInstall = errors.New("the release is not a failed first install, so it cannot be retried as an install")
 
+// ErrNotInterruptedInstall is returned (wrapped) by SettleInterruptedInstall when the revision is not
+// the release's latest, is not pending-install, changed while it was being settled, or a stored
+// revision is deployed. Nothing was written.
+var ErrNotInterruptedInstall = errors.New("the revision is not an interrupted install")
+
 // ErrWriteNothingConflict: UpgradeConfig.WriteNothing was combined with an option that only means
 // something when Reconcile writes (Force, Wait, WaitForJobs, Atomic). The error names the options.
 // Nothing was sent.
@@ -448,6 +453,18 @@ type Client interface {
 	// A release that has no revisions is nil, nil, as GetRelease; any other error is returned.
 	History(ctx context.Context, releaseName string, config *HistoryConfig) ([]*Release, error)
 	ListReleases(ctx context.Context, config *ListConfig) ([]*Release, error)
+	// SettleInterruptedInstall records revision as failed, so an install whose process died can be
+	// retried (InstallConfig.RetryFailed) instead of staying pending-install, which helm refuses every
+	// operation on but an uninstall. Only the revision's status and description change.
+	//
+	// The caller vouches that no process holds the install: helm keeps no owner, so this cannot check.
+	// It writes only if revision is the latest, is pending-install, and no stored revision is deployed;
+	// otherwise ErrNotInterruptedInstall, and nothing is written. The write is conditional on the record
+	// being the one that was read, so an install that turns out to be alive and records first is not
+	// overwritten: that too is ErrNotInterruptedInstall. One that records later overwrites this.
+	//
+	// It needs helm's Secrets or ConfigMaps storage; any other HELM_DRIVER is an error.
+	SettleInterruptedInstall(ctx context.Context, releaseName string, revision int) error
 	Close() error
 }
 

@@ -524,22 +524,7 @@ func TestEnvtest_RetryFailed(t *testing.T) {
 			files["templates/new.yaml"] = "{{- if .Values.edited }}\n" + cmDoc("new", "  k: v\n") + "{{- end }}\n"
 			u := serveFiles(t, files)
 			e.first(t, rel, u, bad)
-			rc := rest.CopyConfig(e.hc.restConfig)
-			var dead atomic.Bool
-			rc.Wrap(func(next http.RoundTripper) http.RoundTripper {
-				return roundTrip(func(r *http.Request) (*http.Response, error) {
-					before, after := c.cut(r, rel)
-					if before || dead.Load() {
-						dead.Store(true)
-						return nil, errors.New("killed")
-					}
-					resp, err := next.RoundTrip(r)
-					if after {
-						dead.Store(true)
-					}
-					return resp, err
-				})
-			})
+			rc, dead := killer(e.hc.restConfig, func(r *http.Request) (bool, bool) { return c.cut(r, rel) })
 			if _, err := e.retry(rel, u, map[string]any{"edited": true, "post": "bad"}, func(c *helmconfig.InstallConfig) { c.RestConfig = rc }); err == nil || !dead.Load() {
 				t.Fatalf("control: the attempt must be cut (err=%v)", err)
 			}
@@ -609,6 +594,27 @@ func TestEnvtest_RetryFailed(t *testing.T) {
 type roundTrip func(*http.Request) (*http.Response, error)
 
 func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// killer is cfg for a process that dies: from the cut on, none of its requests reach the apiserver.
+// cut says whether it dies before or after the given request.
+func killer(cfg *rest.Config, cut func(*http.Request) (before, after bool)) (*rest.Config, *atomic.Bool) {
+	rc, dead := rest.CopyConfig(cfg), &atomic.Bool{}
+	rc.Wrap(func(next http.RoundTripper) http.RoundTripper {
+		return roundTrip(func(r *http.Request) (*http.Response, error) {
+			before, after := cut(r)
+			if before || dead.Load() {
+				dead.Store(true)
+				return nil, errors.New("killed")
+			}
+			resp, err := next.RoundTrip(r)
+			if after {
+				dead.Store(true)
+			}
+			return resp, err
+		})
+	})
+	return rc, dead
+}
 
 // bodyHas reports whether a request's body contains text, leaving the body readable.
 func bodyHas(r *http.Request, text string) bool {

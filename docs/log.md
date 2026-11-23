@@ -19,6 +19,8 @@ timestamp: 2026-08-07T00:00:00Z
   before it. A dropped object is deleted as an upgrade deletes it, but only when it is annotated as
   this release's and not `helm.sh/resource-policy: keep`. Merging in `Reconcile` first was rejected:
   it applies the objects before the pre-install hooks (plumbing#232).
+  `Client.SettleInterruptedInstall` records a `pending-install` whose process died as failed, so it
+  can be retried too, with a write conditional on the record it read (helm's own is last-write-wins).
 - **2026-11-22 — `crdgen`: `const: null` is enforced or reported, never silently dropped**
   (plumbing#227): `schemas.Type.Const` is `any`, and JSON `null` left it nil, the same as no const,
   so "only null" became "any value" with no warning. `Type.ConstNull` now records it. Measured on
