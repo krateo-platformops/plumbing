@@ -474,6 +474,9 @@ func (c *client) install(ctx context.Context, namespace, releaseName, chartRef s
 
 	installClient := action.NewInstall(actionConfig)
 	applyInstallConfig(installClient, releaseName, namespace, cfg)
+	// action.Upgrade and action.Rollback set this from their own MaxHistory; action.Install has none.
+	// The configuration is built per operation, so this reaches no other one.
+	actionConfig.Releases.MaxHistory = cfg.MaxHistory
 	installClient.PostRenderer = withDuplicateResourceValidation(cfg.PostRenderer, actionConfig.KubeClient)
 
 	chart, err := c.loadChart(ctx, chartRef, c.buildGetterOpts(cfg.ActionConfig))
