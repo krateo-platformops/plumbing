@@ -79,7 +79,12 @@ func TestEnvtest_FailedReleaseRetryRunsPreHooksFirst(t *testing.T) {
 			if _, err := kube.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: c.rel + "-ns"}}, metav1.CreateOptions{}); err != nil {
 				t.Fatal(err)
 			}
-			res, err = hc.Reconcile(ctx, c.rel, url, &helmconfig.UpgradeConfig{ActionConfig: gated})
+			// A report of it writes nothing.
+			if res, err := hc.Reconcile(ctx, c.rel, url, &helmconfig.UpgradeConfig{ActionConfig: gated, WriteNothing: true}); err != nil || !res.WriteWithheld || value(c.rel) != c.before {
+				t.Fatalf("WriteNothing: err=%v res=%+v k=%q", err, res, value(c.rel))
+			}
+			// HoldDesiredStateChange holds a changed desired state; this one did not change.
+			res, err = hc.Reconcile(ctx, c.rel, url, &helmconfig.UpgradeConfig{ActionConfig: gated, HoldDesiredStateChange: true})
 			if err != nil || !res.RetriedFailedRelease || !res.Changed || res.Release.Status != helmconfig.StatusDeployed || value(c.rel) != "w" {
 				t.Fatalf("the retry that can succeed: err=%v res=%+v k=%q", err, res, value(c.rel))
 			}

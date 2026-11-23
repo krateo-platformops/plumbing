@@ -474,6 +474,9 @@ func (c *client) install(ctx context.Context, namespace, releaseName, chartRef s
 
 	installClient := action.NewInstall(actionConfig)
 	applyInstallConfig(installClient, releaseName, namespace, cfg)
+	// action.Upgrade and action.Rollback set this from their own MaxHistory; action.Install has none.
+	// The configuration is built per operation, so this reaches no other one.
+	actionConfig.Releases.MaxHistory = cfg.MaxHistory
 	installClient.PostRenderer = withDuplicateResourceValidation(cfg.PostRenderer, actionConfig.KubeClient)
 
 	chart, err := c.loadChart(ctx, chartRef, c.buildGetterOpts(cfg.ActionConfig))
@@ -502,7 +505,15 @@ func (c *client) install(ctx context.Context, namespace, releaseName, chartRef s
 		}
 	}
 
-	rel, err := installClient.RunWithContext(ctx, chart, cfg.Values)
+	run := func(ctx context.Context) (*release.Release, error) {
+		return installClient.RunWithContext(ctx, chart, cfg.Values)
+	}
+	var rel *release.Release
+	if cfg.RetryFailed {
+		rel, err = c.retryInstall(ctx, installClient, run, namespace, cfg, actionConfig)
+	} else {
+		rel, err = run(ctx)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("install failed: %w", classifyTemplateExecution(err))
 	}
