@@ -15,8 +15,10 @@ import (
 // core-provider#636, on a real apiserver and real release storage. A first install that keeps failing
 // is retried with Replace. Each retry is a new revision, and only InstallConfig.MaxHistory bounds them.
 //
-// The second half is what makes Replace the right retry: an object the failed attempt created is the
-// SAME object afterwards (adopted, not recreated), and a retry that succeeds runs the INSTALL hooks.
+// An object the failed attempt created is the SAME object afterwards (adopted, not recreated), and a
+// retry that succeeds runs the INSTALL hooks. Every attempt here renders the same manifest, so this says
+// nothing about CHANGED values: a bare Replace leaves behind what only the failed attempt had (helm's
+// requireAdoption merges with original == target; plumbing#231's review measured it).
 func TestEnvtest_InstallWithReplaceBoundsItsHistory(t *testing.T) {
 	const retries = 5
 	for _, tc := range []struct {
