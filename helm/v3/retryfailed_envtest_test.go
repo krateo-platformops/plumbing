@@ -545,6 +545,52 @@ func TestEnvtest_RetryFailed(t *testing.T) {
 		})
 	}
 
+	t.Run("a live object the baseline does not name is adopted only under TakeOwnership", func(t *testing.T) {
+		rel := "adopt"
+		files := leftoverChart()
+		files["templates/new.yaml"] = "{{- if .Values.edited }}\n" + cmDoc("new", "  k: v\n") + "{{- end }}\n"
+		u := serveFiles(t, files)
+		e.first(t, rel, u, bad)
+		there, err := e.kube.CoreV1().ConfigMaps("default").Create(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: rel + "-new"}}, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.retry(rel, u, edited); err == nil || !strings.Contains(err.Error(), "invalid ownership metadata") {
+			t.Fatalf("control: without TakeOwnership the object must be refused: %v", err)
+		}
+		if e.last(t, rel).Revision != 1 || e.cm(t, rel+"-orphan") == nil {
+			t.Fatal("the refused attempt wrote something")
+		}
+		if _, err := e.retry(rel, u, edited, func(c *helmconfig.InstallConfig) { c.TakeOwnership = true }); err != nil {
+			t.Fatal(err)
+		}
+		if got := e.cm(t, rel+"-new"); got.UID != there.UID || got.Data["k"] != "v" {
+			t.Errorf("same=%v data=%v", got.UID == there.UID, got.Data)
+		}
+	})
+
+	t.Run("nothing is applied when the record cannot be written", func(t *testing.T) {
+		rel := "norecord"
+		e.first(t, rel, url, bad)
+		rc := rest.CopyConfig(e.hc.restConfig)
+		refused := 0
+		rc.Wrap(func(next http.RoundTripper) http.RoundTripper {
+			return roundTrip(func(r *http.Request) (*http.Response, error) {
+				if r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/secrets/sh.helm.release") {
+					refused++
+					return nil, errors.New("storage is down")
+				}
+				return next.RoundTrip(r)
+			})
+		})
+		if _, err := e.retry(rel, url, edited, func(c *helmconfig.InstallConfig) { c.RestConfig = rc }); err == nil || refused == 0 {
+			t.Fatalf("err = %v, refused = %d", err, refused)
+		}
+		if e.cm(t, rel+"-ok").Data["k"] != "v1" || e.cm(t, rel+"-orphan") == nil {
+			t.Error("the objects were applied although what is applied could not be recorded")
+		}
+	})
+
 	t.Run("a dry run writes nothing", func(t *testing.T) {
 		rel := "dry"
 		e.first(t, rel, url, bad)

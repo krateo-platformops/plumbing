@@ -87,10 +87,19 @@ func TestEnvtest_SettleInterruptedInstall(t *testing.T) {
 		if err := ac.Releases.Create(over); err != nil {
 			t.Fatal(err)
 		}
+		// A pending revision that is not the latest.
+		over.Name, over.Version = "old", 1
+		if err := ac.Releases.Create(over); err != nil {
+			t.Fatal(err)
+		}
+		over.Version, over.Info.Status = 2, release.StatusFailed
+		if err := ac.Releases.Create(over); err != nil {
+			t.Fatal(err)
+		}
 		for _, c := range []struct {
 			rel string
 			rev int
-		}{{"absent", 1}, {"pend", 2}, {"pend", 0}, {"fail", 1}, {"dep", 1}, {"over", 2}} {
+		}{{"old", 1}, {"absent", 1}, {"pend", 2}, {"pend", 0}, {"fail", 1}, {"dep", 1}, {"over", 2}} {
 			rv := e.recordVersions(t)
 			if err := e.hc.SettleInterruptedInstall(ctx, c.rel, c.rev); !errors.Is(err, helmconfig.ErrNotInterruptedInstall) {
 				t.Errorf("%s revision %d: err = %v, want ErrNotInterruptedInstall", c.rel, c.rev, err)
