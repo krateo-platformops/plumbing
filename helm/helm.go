@@ -441,6 +441,12 @@ type InstallConfig struct {
 	// Install-Only Fields
 	GenerateName    bool
 	CreateNamespace bool
+	// MaxHistory limits the revisions kept for the release, as UpgradeConfig.MaxHistory does. Zero, the
+	// default, keeps every revision, which is all an install could do before this field: helm's own
+	// Install never sets the limit, because a first install has no history. An install with Replace
+	// does: each one adds a revision over the failed ones, so retrying without a limit adds a release
+	// Secret per attempt, forever (core-provider#636).
+	MaxHistory int
 }
 
 type UpgradeConfig struct {
