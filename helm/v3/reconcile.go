@@ -367,7 +367,7 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 	if change != "" || retryFailed {
 		res := &helmconfig.ReconcileResult{
 			Changed: change != "", DesiredStateChange: change, ObjectsComplete: true,
-			RetriedFailedRelease: change == "",
+			RetriedFailedRelease:  change == "",
 			StaleManifestVersions: stale.names, StaleManifestVersionsOmitted: stale.omitted,
 			ChangedJobTemplates: jobs.templateChanged,
 		}
