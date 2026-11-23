@@ -20,6 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -304,20 +305,25 @@ func TestEnvtest_RetryFailed(t *testing.T) {
 	t.Run("a custom resource's changed and dropped fields", func(t *testing.T) {
 		const crd = "apiVersion: apiextensions.k8s.io/v1\nkind: CustomResourceDefinition\nmetadata:\n  name: widgets.retry.test\nspec:\n  group: retry.test\n  scope: Namespaced\n  names: {kind: Widget, plural: widgets, singular: widget, listKind: WidgetList}\n  versions:\n  - name: v1\n    served: true\n    storage: true\n    schema:\n      openAPIV3Schema:\n        type: object\n        x-kubernetes-preserve-unknown-fields: true\n"
 		u := serveFiles(t, map[string]string{"Chart.yaml": chartYAML, "crds/w.yaml": crd, "templates/post.yaml": hookDoc("post", "post-install", "post"),
-			"templates/w.yaml": "apiVersion: retry.test/v1\nkind: Widget\nmetadata:\n  name: {{ .Release.Name }}-w\n  namespace: default\nspec:\n  k: {{ .Values.k | default \"v1\" }}\n" + unlessEdited + "  gone: x\n{{- end }}\n"})
+			"templates/w.yaml": "apiVersion: retry.test/v1\nkind: Widget\nmetadata:\n  name: {{ .Release.Name }}-w\n  namespace: default\nspec:\n  same: s\n  k: {{ .Values.k | default \"v1\" }}\n" + unlessEdited + "  gone: x\n{{- end }}\n"})
 		for _, own := range []bool{false, true} {
 			rel := "cr" + map[bool]string{true: "a", false: "b"}[own]
 			e.first(t, rel, u, bad)
+			widgets := e.dyn.Resource(schema.GroupVersionResource{Group: "retry.test", Version: "v1", Resource: "widgets"}).Namespace("default")
+			// Only a three-way merge heals this: the failed render and this one agree on it.
+			if _, err := widgets.Patch(ctx, rel+"-w", types.MergePatchType, []byte(`{"spec":{"same":"drifted"}}`), metav1.PatchOptions{}); err != nil {
+				t.Fatal(err)
+			}
 			if _, err := e.retry(rel, u, edited, func(c *helmconfig.InstallConfig) { c.TakeOwnership = own }); err != nil {
 				t.Fatal(err)
 			}
-			w, err := e.dyn.Resource(schema.GroupVersionResource{Group: "retry.test", Version: "v1", Resource: "widgets"}).Namespace("default").Get(ctx, rel+"-w", metav1.GetOptions{})
+			w, err := widgets.Get(ctx, rel+"-w", metav1.GetOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
 			spec, _, _ := unstructured.NestedStringMap(w.Object, "spec")
-			if len(spec) != 1 || spec["k"] != "v2" {
-				t.Errorf("TakeOwnership=%v: spec = %v, want k: v2 only", own, spec)
+			if len(spec) != 2 || spec["k"] != "v2" || spec["same"] != "s" {
+				t.Errorf("TakeOwnership=%v: spec = %v, want k: v2 and same: s only", own, spec)
 			}
 		}
 	})
@@ -479,33 +485,6 @@ func TestEnvtest_RetryFailed(t *testing.T) {
 		}
 	})
 
-	t.Run("the record is written before the post-install hooks", func(t *testing.T) {
-		rel := "record"
-		e.first(t, rel, url, bad)
-		ac, err := e.hc.newActionConfig(ctx, "default", e.hc.restConfig, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		rc := rest.CopyConfig(e.hc.restConfig)
-		var atHook string
-		rc.Wrap(func(next http.RoundTripper) http.RoundTripper {
-			return roundTrip(func(r *http.Request) (*http.Response, error) {
-				if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/no-such-namespace/configmaps") {
-					if l, err := ac.Releases.Last(rel); err == nil {
-						atHook = l.Manifest
-					}
-				}
-				return next.RoundTrip(r)
-			})
-		})
-		if _, err := e.retry(rel, url, map[string]any{"edited": true, "post": "bad"}, func(c *helmconfig.InstallConfig) { c.RestConfig = rc }); err == nil {
-			t.Fatal("control: the post-install hook must fail")
-		}
-		if atHook == "" || strings.Contains(atHook, rel+"-orphan") {
-			t.Errorf("at the post-install hook the stored manifest is not what was applied:\n%s", atHook)
-		}
-	})
-
 	// A killed process: from the cut on, none of its requests reach the apiserver.
 	for _, c := range []struct {
 		name string
@@ -544,6 +523,76 @@ func TestEnvtest_RetryFailed(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("killed in the pre-install hook: the record is still the previous attempt's", func(t *testing.T) {
+		rel := "killpre"
+		e.first(t, rel, url, bad)
+		before := e.last(t, rel).Manifest
+		// helm records the release again as it starts a hook, so the cut is right after it created the
+		// attempt's revision: what is stored then is all a killed process leaves.
+		rc, dead := killer(e.hc.restConfig, func(r *http.Request) (bool, bool) {
+			return false, r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/namespaces/default/secrets")
+		})
+		if _, err := e.retry(rel, url, edited, func(c *helmconfig.InstallConfig) { c.RestConfig = rc }); err == nil || !dead.Load() {
+			t.Fatalf("control: the attempt must be cut (err=%v)", err)
+		}
+		got := e.last(t, rel)
+		if got.Status != helmconfig.StatusPendingInstall || got.Revision != 2 {
+			t.Fatalf("control: revision %d %s, want a pending-install 2", got.Revision, got.Status)
+		}
+		if got.Manifest != before {
+			t.Fatalf("the record is not what is applied:\n%s", got.Manifest)
+		}
+		if err := e.hc.SettleInterruptedInstall(ctx, rel, 2); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.retry(rel, url, edited); err != nil {
+			t.Fatal(err)
+		}
+		if e.cm(t, rel+"-orphan") != nil || len(e.cm(t, rel+"-ok").Data) != 1 {
+			t.Error("left behind after a killed attempt was settled and retried")
+		}
+	})
+
+	t.Run("the record is written before the wait", func(t *testing.T) {
+		// Without hooks, nothing of helm's records the release between the objects and the end of the wait.
+		rel := "wait"
+		u := serveFiles(t, map[string]string{"Chart.yaml": chartYAML,
+			"templates/post.yaml": "{{- if eq (.Values.post | default \"ok\") \"bad\" }}\n" + hookDoc("post", "post-install", "post") + "{{- end }}\n",
+			"templates/pod.yaml":  "apiVersion: v1\nkind: Pod\nmetadata:\n  name: {{ .Release.Name }}-pod\n  namespace: default\nspec:\n  containers:\n  - name: c\n    image: a:1\n",
+			"templates/orph.yaml": unlessEdited + cmDoc("orphan", "  a: b\n") + "{{- end }}\n"})
+		e.first(t, rel, u, bad)
+		ac, err := e.hc.newActionConfig(ctx, "default", e.hc.restConfig, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rc := rest.CopyConfig(e.hc.restConfig)
+		var deleted atomic.Bool
+		var atWait atomic.Value
+		rc.Wrap(func(next http.RoundTripper) http.RoundTripper {
+			return roundTrip(func(r *http.Request) (*http.Response, error) {
+				if r.Method == http.MethodGet && deleted.Load() && strings.HasSuffix(r.URL.Path, "/pods/"+rel+"-pod") && atWait.Load() == nil {
+					if l, err := ac.Releases.Last(rel); err == nil {
+						atWait.Store(l.Manifest)
+					}
+				}
+				resp, err := next.RoundTrip(r)
+				if r.Method == http.MethodDelete && strings.HasSuffix(r.URL.Path, rel+"-orphan") {
+					deleted.Store(true)
+				}
+				return resp, err
+			})
+		})
+		if _, err := e.retry(rel, u, edited, func(c *helmconfig.InstallConfig) {
+			c.RestConfig, c.Wait, c.Timeout = rc, true, 3*time.Second
+		}); err == nil {
+			t.Fatal("control: the Pod never becomes ready here, so the wait must time out")
+		}
+		m, _ := atWait.Load().(string)
+		if !strings.Contains(m, rel+"-pod") || strings.Contains(m, rel+"-orphan") {
+			t.Errorf("during the wait the stored manifest is not what was applied:\n%s", m)
+		}
+	})
 
 	t.Run("a live object the baseline does not name is adopted only under TakeOwnership", func(t *testing.T) {
 		rel := "adopt"
