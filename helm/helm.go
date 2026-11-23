@@ -21,7 +21,18 @@ type Release struct {
 	Status       Status
 	// Values are the values this revision was installed or upgraded with: helm's release Config,
 	// the user-supplied values before the chart's defaults are coalesced in.
-	Values   map[string]interface{}
+	Values map[string]interface{}
+	// Manifest is the revision's stored manifest. For every revision but one kind it is the render.
+	//
+	// For a revision written by InstallConfig.RetryFailed it is what is APPLIED, so do not compare it
+	// with a render. Until the attempt's objects step it is the manifest of the revision it retries.
+	// After that step it is the render; or, if the step failed, each object's last confirmed document
+	// plus the dropped objects not yet deleted; or, if a deletion failed, the render plus that object.
+	// So the next attempt merges against what is there, and an uninstall deletes what is there.
+	//
+	// A process killed during the objects step, before that record, leaves the manifest of the revision
+	// it retried. The next attempt compares against that one, so at most the killed attempt's own new
+	// objects and fields can be left behind, and only if the next render drops them.
 	Manifest string
 	// Updated is helm's Info.LastDeployed for this revision — when the (possibly still
 	// pending) revision record was written. For a pending-install/upgrade/rollback status,
@@ -350,6 +361,11 @@ const (
 // changing it (a hook with before-hook-creation, or a versioned Job name) or the Job is removed.
 var ErrJobTemplateChanged = errors.New("the chart changed the pod template of a live Job, which is immutable")
 
+// ErrNotRetryableAsInstall is returned (wrapped) by Install with RetryFailed when the release is not a
+// failed first install: it has no revisions, its latest one is not failed, or one is deployed. Nothing
+// was written.
+var ErrNotRetryableAsInstall = errors.New("the release is not a failed first install, so it cannot be retried as an install")
+
 // ErrWriteNothingConflict: UpgradeConfig.WriteNothing was combined with an option that only means
 // something when Reconcile writes (Force, Wait, WaitForJobs, Atomic). The error names the options.
 // Nothing was sent.
@@ -447,6 +463,28 @@ type InstallConfig struct {
 	// does: each one adds a revision over the failed ones, so retrying without a limit adds a release
 	// Secret per attempt, forever (core-provider#636).
 	MaxHistory int
+	// RetryFailed retries a first install that failed, as an install (core-provider#636). It implies
+	// Replace, and keeps helm's install order: crds/, pre-install hooks, the objects, the wait,
+	// post-install hooks. Retrying with Upgrade instead runs the upgrade hooks and never the install ones.
+	//
+	// The release's latest revision must be failed and none may be deployed, or the call returns
+	// ErrNotRetryableAsInstall and writes nothing. Whether the release was EVER deployed is the caller's
+	// to know: pruning can remove the evidence from the history.
+	//
+	// The objects are merged against what the failed attempts applied, which Replace alone ignores:
+	//   - a field the new render drops is removed;
+	//   - an object it drops is DELETED, as an upgrade deletes it: unless the live object carries
+	//     helm.sh/resource-policy: keep, or is not annotated as this release's;
+	//   - an object it still has is reused, not recreated.
+	// The merge is helm's three-way one for every kind, whatever TakeOwnership says; TakeOwnership
+	// only decides whether an object owned by something else may be adopted.
+	//
+	// A render that changes the pod template of a live Job returns ErrJobTemplateChanged before the
+	// revision, the hooks or the objects are written (a chart's crds/ come first, as in any install).
+	// Another operation that takes the release meanwhile makes it return ErrOperationInProgress.
+	//
+	// The revision a retry writes stores what was APPLIED, see Release.Manifest.
+	RetryFailed bool
 }
 
 type UpgradeConfig struct {
