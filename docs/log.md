@@ -9,6 +9,12 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-23 — `helm`: `Reconcile` retries a failed release through helm upgrade alone**
+  (plumbing#232): with an unchanged desired state it ran the self-heal merge first, so a failed
+  revision's objects were applied before its pre hooks, the ordering core-provider#518 had removed
+  for a changed one. Measured: after a first install that failed in its pre-install hook, the next
+  reconcile created the objects although the hook failed again. Consequence: while a pre-upgrade hook
+  keeps failing, the release's objects are not healed either.
 - **2026-11-22 — `crdgen`: `const: null` is enforced or reported, never silently dropped**
   (plumbing#227): `schemas.Type.Const` is `any`, and JSON `null` left it nil, the same as no const,
   so "only null" became "any value" with no warning. `Type.ConstNull` now records it. Measured on

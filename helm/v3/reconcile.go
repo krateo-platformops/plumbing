@@ -358,15 +358,22 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 			ChangedJobTemplates: jobs.templateChanged,
 		}, nil
 	}
-	if change != "" {
+	// plumbing#232: so does the retry of a release whose latest revision FAILED (core-provider#403). A
+	// failed revision is not a deployed desired state to heal drift against: some of its hooks may
+	// never have run, and the merge applied its objects ahead of them. Measured: a first install that
+	// failed in its pre-install hook got its objects created by the next reconcile, although the hook
+	// failed again. helm's upgrade heals drift on what it writes, after the pre hooks.
+	retryFailed := stored.Status == helmconfig.StatusFailed && !writeNothing
+	if change != "" || retryFailed {
 		res := &helmconfig.ReconcileResult{
-			Changed: true, DesiredStateChange: change, ObjectsComplete: true,
+			Changed: change != "", DesiredStateChange: change, ObjectsComplete: true,
+			RetriedFailedRelease: change == "",
 			StaleManifestVersions: stale.names, StaleManifestVersionsOmitted: stale.omitted,
 			ChangedJobTemplates: jobs.templateChanged,
 		}
 		// core-provider#519: the caller must not move the release forward itself. Nothing is applied,
 		// not even by the merge below, which would apply the request's render.
-		if cfg.HoldDesiredStateChange {
+		if cfg.HoldDesiredStateChange && change != "" {
 			res.Changed, res.DesiredStateHeld, res.Release = false, true, stored
 			return res, nil
 		}
@@ -394,9 +401,16 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 		if err != nil {
 			// Some children written before the failure is a partial apply, as on the merge path.
 			res.AppliedPartially = res.Created+res.Deleted+res.PatchedUpdated > 0
+			if change == "" {
+				res.Changed, res.Release = res.AppliedPartially, stored
+				return res, fmt.Errorf("reconcile: retrying the upgrade of a release whose latest revision (%d) failed: %w", stored.Revision, err)
+			}
 			return res, fmt.Errorf("reconcile: upgrading to a changed desired state (%s): %w", change, err)
 		}
 		res.Release = op.Release
+		if change == "" {
+			res.Changed = res.Created+res.Deleted+res.PatchedUpdated > 0
+		}
 		return res, nil
 	}
 
@@ -595,18 +609,11 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 		return result, applyErr
 	}
 
-	// core-provider#403: a stored latest revision that FAILED is not a converged state. Its manifest
-	// is what the merge just compared against, so when nothing differs from it the merge reads
-	// changed=false, and the failed release was reported as converged on every reconcile after the
-	// one that failed. Retry the real upgrade instead: it either succeeds (a deployed revision) or
-	// returns its error again, so the failure stays visible for as long as it lasts.
-	retryFailed := stored.Status == helmconfig.StatusFailed
-	if !changed && !retryFailed {
+	if !changed {
 		// Steady state: the merge only touched server-owned fields the apiserver reverted. No
 		// revision, no hooks.
 		return result, nil
 	}
-	result.RetriedFailedRelease = retryFailed
 
 	// 7. A real change happened. Run ONE real Upgrade to persist a revision and run hooks with
 	// correct ordering + delete-policy. Step 5 already converged the cluster, so this is a near-no-op.
@@ -620,14 +627,9 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 		}
 	}
 	op, err := c.Upgrade(ctx, releaseName, chartRef, cfg)
-	// The upgrade's own writes join the merge's, on both outcomes (plumbing#139). After a converged
-	// merge they are few, but on the retryFailed path the merge read changed=false and the upgrade
-	// is the ONLY phase that writes; it also runs the hooks.
+	// The upgrade's own writes join the merge's, on both outcomes (plumbing#139).
 	foldOperation(result, op)
 	if err != nil {
-		if retryFailed && !changed {
-			return result, fmt.Errorf("reconcile: retrying the upgrade of a release whose latest revision (%d) failed: %w", stored.Revision, err)
-		}
 		return result, fmt.Errorf("reconcile: real upgrade after detected change: %w", err)
 	}
 	result.Release = op.Release
