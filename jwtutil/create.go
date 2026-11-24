@@ -90,9 +90,9 @@ type CreateTokenOptions struct {
 	Principal Principal
 	// Audience is the token's "aud" (RFC 7519 §4.1.3): the recipients it is
 	// meant for, such as "agentiko" for a token exchanged for one service.
-	// Empty leaves the claim out, as before it existed. The validators here
-	// don't check it, so a token carrying one is accepted everywhere a token
-	// without one is; a recipient opts into checking it.
+	// Empty leaves the claim out, as before it existed. A validator checks it
+	// only when it is given its own names (WithAudience, WithRequiredAudience):
+	// one that isn't accepts such a token as any other.
 	Audience []string
 }
 

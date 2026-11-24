@@ -2,8 +2,12 @@ package jwtutil
 
 import (
 	"crypto/rsa"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -12,7 +16,66 @@ import (
 var (
 	ErrTokenExpired = errors.New("token is expired")
 	ErrTokenInvalid = errors.New("token is invalid")
+	// ErrAudienceMismatch: the token verified, and is meant for another
+	// recipient (WithAudience, WithRequiredAudience). It also matches
+	// ErrTokenInvalid, so a caller that doesn't know it answers 401 as for any
+	// token it refuses. Signing in again doesn't help: it is the same kind of
+	// token again.
+	ErrAudienceMismatch = errors.New("token is for another audience")
 )
+
+// ValidateOption changes what a validator accepts. The last of several wins.
+type ValidateOption func(*validateOptions)
+
+type validateOptions struct {
+	check, required bool
+	names           []string
+}
+
+// WithAudience makes the validator a recipient called by any of names (RFC
+// 7519 §4.1.3): a token whose "aud" lists none of them is refused with
+// ErrAudienceMismatch. A token with no "aud", which every sign-in token is, is
+// accepted. Without this option, or WithRequiredAudience, "aud" isn't looked at.
+func WithAudience(names ...string) ValidateOption {
+	return func(o *validateOptions) { *o = validateOptions{check: true, names: names} }
+}
+
+// WithRequiredAudience is WithAudience for a recipient that accepts only
+// tokens issued for it: a token with no "aud" is refused too.
+func WithRequiredAudience(names ...string) ValidateOption {
+	return func(o *validateOptions) { *o = validateOptions{check: true, required: true, names: names} }
+}
+
+// admits reports whether a verified token with these audiences may be used
+// here. present is whether the token carries "aud" at all: an empty list names
+// no recipient, so it is for none.
+func (o validateOptions) admits(aud []string, present bool) bool {
+	if !o.check {
+		return true
+	}
+	if !present {
+		return !o.required
+	}
+	return slices.ContainsFunc(aud, func(a string) bool { return a != "" && slices.Contains(o.names, a) })
+}
+
+// hasAudience reports whether a token that verified carries an "aud" claim.
+// The parsed claims can't say: an empty list reads as no claim there. A null
+// is no claim.
+func hasAudience(tok *jwt.Token) bool {
+	parts := strings.Split(tok.Raw, ".")
+	if len(parts) != 3 {
+		return true
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return true
+	}
+	var c struct {
+		Aud any `json:"aud"`
+	}
+	return json.Unmarshal(raw, &c) != nil || c.Aud != nil
+}
 
 // validationLeeway absorbs clock skew between authn and the validator, for
 // expiry and for telling a retired key from a new one.
@@ -108,12 +171,14 @@ func Validate(publicKey *rsa.PublicKey, bearer string) (UserInfo, error) {
 // says nothing about the token. A token whose kid is absent from a key set
 // fetched after the token was issued is ErrTokenInvalid and ErrKeyNotPublished:
 // its key was retired, so it will never verify again.
-func ValidateWithKeySource(keys KeySource, bearer string) (UserInfo, error) {
-	claims, err := ValidateClaimsWithKeySource(keys, bearer)
-	if err != nil {
-		return UserInfo{}, err
-	}
-	return claims.UserInfo, nil
+//
+// WithAudience and WithRequiredAudience refuse a token meant for someone else.
+// ErrAudienceMismatch is the one error returned with the token's identity,
+// which verified: it says who presented the token, so the refusal can be
+// recorded, and never that they may be served.
+func ValidateWithKeySource(keys KeySource, bearer string, opts ...ValidateOption) (UserInfo, error) {
+	claims, err := ValidateClaimsWithKeySource(keys, bearer, opts...)
+	return claims.UserInfo, err
 }
 
 // ValidateClaimsWithKeySource verifies bearer exactly as ValidateWithKeySource
@@ -121,7 +186,7 @@ func ValidateWithKeySource(keys KeySource, bearer string) (UserInfo, error) {
 // identity and, unlike ValidateWithKeySource, the registered claims such as
 // ExpiresAt. Use it when a decision depends on one of those, for example a
 // token issued from this one that must not outlive it.
-func ValidateClaimsWithKeySource(keys KeySource, bearer string) (KrateoClaims, error) {
+func ValidateClaimsWithKeySource(keys KeySource, bearer string, opts ...ValidateOption) (KrateoClaims, error) {
 	if keys == nil {
 		return KrateoClaims{}, fmt.Errorf("key source cannot be nil")
 	}
@@ -170,5 +235,12 @@ func ValidateClaimsWithKeySource(keys KeySource, bearer string) (KrateoClaims, e
 		return KrateoClaims{}, ErrTokenInvalid
 	}
 
+	var o validateOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	if !o.admits(claims.Audience, hasAudience(tok)) {
+		return *claims, fmt.Errorf("%w: %w", ErrTokenInvalid, ErrAudienceMismatch)
+	}
 	return *claims, nil
 }

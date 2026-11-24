@@ -10,7 +10,9 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
+	"fmt"
 	"math/big"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -22,48 +24,76 @@ import (
 func TestDelegatedSecretName(t *testing.T) {
 	long := strings.Repeat("a", 300)
 	names := map[string]string{}
-	for _, tc := range []struct{ username, actor string }{
-		{"alice", "dispatcher"},
-		{"alice", "ide-agent"},
-		{"bob", "dispatcher"},
-		{"Alice@Corp", "dispatcher"},
-		{long, long},
+	for _, tc := range []struct {
+		username, actor string
+		groups          []string
+	}{
+		{"alice", "dispatcher", []string{"devs"}},
+		{"alice", "ide-agent", []string{"devs"}},
+		{"bob", "dispatcher", []string{"devs"}},
+		{"Alice@Corp", "dispatcher", []string{"devs"}},
+		{long, long, []string{long}},
+		// One person and actor, different sets of groups.
+		{"alice", "dispatcher", nil},
+		{"alice", "dispatcher", []string{"ops"}},
+		{"alice", "dispatcher", []string{"devs", "ops"}},
+		{"alice", "dispatcher", []string{"devsops"}},
+		{"alice", "dispatcher", []string{""}},
+		{"alice", "dispatcher", []string{"", "devs"}},
+		{"alice", "dispatcher", []string{"Devs"}},
 		// The join can't be shifted: "a"+"bc" and "ab"+"c" differ.
-		{"a", "bc"},
-		{"ab", "c"},
+		{"a", "bc", nil},
+		{"ab", "c", nil},
+		// Nor from one field to the next: an actor isn't a group.
+		{"a", "b", []string{"c"}},
+		{"a", "b1:c", nil},
+		{"a1:b", "c", nil},
+		{"a", "", []string{"b", "c"}},
 		// Nor with a NUL, which a JSON claim can carry (\u0000).
-		{"a\x00b", "c"},
-		{"a", "b\x00c"},
+		{"a\x00b", "c", nil},
+		{"a", "b\x00c", nil},
 		// Nor with the length prefix's own colon and digits.
-		{"1:a", "b"},
-		{"1", ":ab"},
-		{"", "1:a"},
-		{"", ""},
+		{"1:a", "b", nil},
+		{"1", ":ab", nil},
+		{"", "1:a", nil},
+		{"", "", []string{"1:a"}},
+		{"", "", nil},
 	} {
-		got := DelegatedSecretName(tc.username, tc.actor)
-		if got != DelegatedSecretName(tc.username, tc.actor) {
-			t.Errorf("DelegatedSecretName(%q, %q) isn't stable", tc.username, tc.actor)
+		what := fmt.Sprintf("%q / %q / %q", tc.username, tc.actor, tc.groups)
+		got := DelegatedSecretName(tc.username, tc.actor, tc.groups)
+		if got != DelegatedSecretName(tc.username, tc.actor, tc.groups) {
+			t.Errorf("%s isn't stable", what)
 		}
 		if errs := validation.IsDNS1123Subdomain(got); len(errs) > 0 {
-			t.Errorf("DelegatedSecretName(%q, %q) = %q isn't a valid Secret name: %v", tc.username, tc.actor, got, errs)
+			t.Errorf("%s: %q isn't a valid Secret name: %v", what, got, errs)
 		}
-		if !strings.HasPrefix(got, DelegatedSecretPrefix) {
-			t.Errorf("DelegatedSecretName(%q, %q) = %q lacks the prefix", tc.username, tc.actor, got)
+		if !IsDelegatedSecretName(got) {
+			t.Errorf("%s: %q isn't the shape readers know", what, got)
 		}
 		// Nothing that finds session Secrets by suffix finds it.
 		if strings.HasSuffix(got, ClientConfigSuffix) || strings.HasSuffix(got, StepUpSuffix) {
-			t.Errorf("DelegatedSecretName(%q, %q) = %q ends like a session Secret", tc.username, tc.actor, got)
+			t.Errorf("%s: %q ends like a session Secret", what, got)
 		}
-		pair := tc.username + " / " + tc.actor
 		if other, ok := names[got]; ok {
-			t.Errorf("%s and %s share %q", pair, other, got)
+			t.Errorf("%s and %s share %q", what, other, got)
 		}
-		names[got] = pair
+		names[got] = what
 	}
 	// Pinned: authn writes it and snowplow reads it, so it never changes.
-	if got, want := DelegatedSecretName("alice", "dispatcher"),
-		"delegated-"+sha256Hex("5:alicedispatcher"); got != want {
-		t.Errorf("DelegatedSecretName(alice, dispatcher) = %q, want %q", got, want)
+	want := "delegated-" + sha256Hex("5:alice10:dispatcher4:devs3:ops")
+	for _, groups := range [][]string{{"devs", "ops"}, {"ops", "devs"}, {"devs", "ops", "devs"}} {
+		if got := DelegatedSecretName("alice", "dispatcher", groups); got != want {
+			t.Errorf("DelegatedSecretName(alice, dispatcher, %q) = %q, want %q: the groups are a set", groups, got, want)
+		}
+	}
+}
+
+// The name doesn't reorder the caller's groups, which are the token's.
+func TestDelegatedSecretNameLeavesTheGroupsAlone(t *testing.T) {
+	groups := []string{"ops", "devs", "ops"}
+	DelegatedSecretName("alice", "dispatcher", groups)
+	if !slices.Equal(groups, []string{"ops", "devs", "ops"}) {
+		t.Errorf("groups = %q after naming", groups)
 	}
 }
 
@@ -91,8 +121,8 @@ func TestCheckDelegatedCredential(t *testing.T) {
 	ann := func(username, actor string) map[string]string {
 		return map[string]string{UsernameAnnotation: username, ActorAnnotation: actor}
 	}
-	name := DelegatedSecretName("alice", "dispatcher")
 	groups := []string{"devs", "ops"}
+	name := DelegatedSecretName("alice", "dispatcher", groups)
 
 	for _, tc := range []struct {
 		name   string
@@ -173,20 +203,20 @@ func sha256Hex(s string) string {
 func TestIsDelegatedSecretName(t *testing.T) {
 	digest := sha256Hex("5:alicedispatcher")
 	for name, want := range map[string]bool{
-		DelegatedSecretName("alice", "dispatcher"): true,
-		DelegatedSecretName("", ""):                true,
-		"delegated-" + digest:                      true,
-		"delegated-" + strings.ToUpper(digest):     false,
-		"delegated-" + digest[:63]:                 false,
-		"delegated-" + digest + "0":                false,
-		"delegated-" + digest[:63] + "g":           false,
-		"delegated-":                               false,
-		digest:                                     false,
-		"delegated-alice-clientconfig":             false,
-		"alice-clientconfig":                       false,
-		"alice-clientconfig-stepup":                false,
-		"x-delegated-" + digest:                    false,
-		"":                                         false,
+		DelegatedSecretName("alice", "dispatcher", []string{"devs"}): true,
+		DelegatedSecretName("", "", nil):                             true,
+		"delegated-" + digest:                                        true,
+		"delegated-" + strings.ToUpper(digest):                       false,
+		"delegated-" + digest[:63]:                                   false,
+		"delegated-" + digest + "0":                                  false,
+		"delegated-" + digest[:63] + "g":                             false,
+		"delegated-":                                                 false,
+		digest:                                                       false,
+		"delegated-alice-clientconfig":                               false,
+		"alice-clientconfig":                                         false,
+		"alice-clientconfig-stepup":                                  false,
+		"x-delegated-" + digest:                                      false,
+		"":                                                           false,
 	} {
 		if got := IsDelegatedSecretName(name); got != want {
 			t.Errorf("IsDelegatedSecretName(%q) = %v, want %v", name, got, want)

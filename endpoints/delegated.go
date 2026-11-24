@@ -24,23 +24,31 @@ const DelegatedSecretPrefix = "delegated-"
 
 // DelegatedSecretName names the Secret holding the credential authn issues
 // with a delegated token (authn#167): the one an actor uses to reach the
-// apiserver as username. There is one per person and actor, each exchange by
-// the actor for the person replacing it, so two actors never replace each
-// other's.
+// apiserver as username with groups. There is one per person, actor and set of
+// groups, each exchange of that set by the actor for the person replacing it.
+// Two actors never replace each other's, and nor do two sign-ins of one person
+// whose groups differ: were it one Secret for both, a token still held by a
+// client would find the other's groups and be refused until it expired.
 //
-// username is the token's username. actor is the actor the token was issued
-// to: its outermost act.sub, the name of the actor's ServiceAccount mapping
-// (jwtutil's UserInfo.Actor()), never a deeper link of the chain.
+// username, groups and actor are the token's: its username, its groups claim,
+// and the actor it was issued to, its outermost act.sub (the name of the
+// actor's ServiceAccount mapping, jwtutil's UserInfo.Actor()), never a deeper
+// link of the chain. groups is a set: order and repeats don't change the name,
+// exactly as CheckDelegatedCredential compares it.
 //
-// The name is DelegatedSecretPrefix and the hex SHA-256 of username's length
-// in decimal, a colon, username, then actor. The length prefix makes the
-// encoding injective whatever the two contain, NUL included: two distinct
-// (username, actor) pairs never share a name. It fits any username and actor,
-// and authn and a reader compute the same one. A reader still proves the
-// Secret is the token's with CheckDelegatedCredential before using it.
-func DelegatedSecretName(username, actor string) string {
-	sum := sha256.Sum256([]byte(strconv.Itoa(len(username)) + ":" + username + actor))
-	return DelegatedSecretPrefix + hex.EncodeToString(sum[:])
+// The name is DelegatedSecretPrefix and the hex SHA-256 of username, actor and
+// each group of the sorted set, every one preceded by its length in decimal
+// and a colon. The length prefixes make the encoding injective whatever the
+// values contain, NUL included: two distinct (username, actor, set) never share
+// a name. It fits any of them, and authn and a reader compute the same one. A
+// reader still proves the Secret is the token's with CheckDelegatedCredential
+// before using it.
+func DelegatedSecretName(username, actor string, groups []string) string {
+	h := sha256.New()
+	for _, v := range append([]string{username, actor}, set(groups)...) {
+		h.Write([]byte(strconv.Itoa(len(v)) + ":" + v))
+	}
+	return DelegatedSecretPrefix + hex.EncodeToString(h.Sum(nil))
 }
 
 // IsDelegatedSecretName reports whether name is a delegated credential
@@ -137,7 +145,10 @@ func CheckDelegatedCredential(sec *corev1.Secret, username, actor string, groups
 // sameSet reports whether a and b hold the same strings, ignoring order and
 // repeats.
 func sameSet(a, b []string) bool {
-	x := slices.Compact(slices.Sorted(slices.Values(a)))
-	y := slices.Compact(slices.Sorted(slices.Values(b)))
-	return slices.Equal(x, y)
+	return slices.Equal(set(a), set(b))
+}
+
+// set is a's strings, sorted and without repeats.
+func set(a []string) []string {
+	return slices.Compact(slices.Sorted(slices.Values(a)))
 }
