@@ -9,6 +9,18 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-24 — `jwtutil`: a recipient can refuse a token meant for someone else** (Diego's
+  decision): `WithAudience` and `WithRequiredAudience`, with `ErrAudienceMismatch`, the one error
+  returned with the token's identity, so a refusal can be recorded. Opt-in: without an option "aud"
+  isn't looked at, as before, and a token with no "aud" (every sign-in token) is accepted by
+  `WithAudience`. An empty "aud" list names no one and is refused, though the parsed claims can't tell
+  it from no claim.
+- **2026-11-24 — `endpoints`: one delegated credential per person, actor and set of groups** (Diego's
+  decision, changing 2026-11-21's one per person and actor): `DelegatedSecretName` takes the groups. A
+  client that caches a token while another of the person's sign-ins exchanges with other groups found
+  that Secret replaced, and was refused until its token expired (measured with agentgateway's token
+  exchange: 5 of 6 calls). The signature changed on purpose, so a caller with the old name doesn't
+  compile. Nothing was migrated: no delegated credential was in use.
 - **2026-11-23 — `helm`: `Reconcile` retries a failed release through helm upgrade alone**
   (plumbing#232): with an unchanged desired state it ran the self-heal merge first, so a failed
   revision's objects were applied before its pre hooks, the ordering core-provider#518 had removed
