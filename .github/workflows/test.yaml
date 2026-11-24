@@ -162,4 +162,4 @@ jobs:
 
   lint-docs:
     name: lint-docs
-    uses: krateo-platformops/.github/.github/workflows/lint-docs.yaml@main
+    uses: krateo-platformops/.github/.github/workflows/lint-docs.yaml@7da11cb60cee5cbfc7d9e8c9328692807b43cefd # 2.0.0
