@@ -315,7 +315,9 @@ type ReconcileResult struct {
 type FailedReleaseHeal struct {
 	// Revision is the failed revision whose record the heal used, or found without one.
 	Revision int
-	// Recorded is false when that revision holds no record of what was applied: nothing was healed.
+	// Recorded is false when that revision holds no record of what was applied (Err is nil), or when
+	// the heal could not tell (Err says why: it could not be read, or another revision was written
+	// after Reconcile read the release). Either way nothing was healed.
 	Recorded bool
 	// Created and PatchedUpdated count the heal's confirmed writes; Objects in the ReconcileResult
 	// carries their verdicts, with the retry's.
@@ -327,8 +329,8 @@ type FailedReleaseHeal struct {
 	// ChangedPaths names the paths it patched, per child (paths only, never values).
 	ChangedPaths        map[string][]string
 	ChangedPathsOmitted map[string]int
-	// Err is why the heal did not complete: some children failed (the others were healed), or the
-	// merge could not run at all. The retry runs regardless, since its upgrade is what recovers the
+	// Err is why the heal did not complete: some children failed (the others were healed), the
+	// merge could not run at all, or the revision was not the latest any more. The retry runs regardless, since its upgrade is what recovers the
 	// release; Reconcile returns this error only when the retry fails too.
 	Err error
 }
