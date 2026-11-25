@@ -9,6 +9,10 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-25 — `helm`: a superseded failed revision is reported as such** (found by core-provider
+  testing v1.110.0): when another writer adds a revision between Reconcile's read of the release and
+  the heal's, `FailedReleaseHeal.Err` now says so; it read as `Recorded` false with no error, the same
+  as a revision without a record.
 - **2026-11-25 — `helm`: a failed release is healed against what was applied** (core-provider#640,
   the follow-up Diego accepted with plumbing#232). Since #232 the retry of a failed release is a plain
   helm upgrade, so drift on its objects stayed until its pre-upgrade hooks passed. Now:

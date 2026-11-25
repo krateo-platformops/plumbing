@@ -24,9 +24,14 @@ func (c *client) healFailedRelease(ac *action.Configuration, releaseName string,
 		heal.Err = fmt.Errorf("reading revision %d: %w", stored.Revision, err)
 		return heal, nil, true
 	}
-	if last.Version != stored.Revision || !hasAppliedRecord(last) {
-		// Another revision since (the retry below will find it), or no record: nothing to heal against.
+	if last.Version != stored.Revision {
+		// Another writer added a revision after Reconcile read the release: what it records is not
+		// what Reconcile decided on, so nothing is healed this pass. Said as such, not as "no record".
+		heal.Err = fmt.Errorf("revision %d is no longer the latest: revision %d was written since", stored.Revision, last.Version)
 		return heal, nil, true
+	}
+	if !hasAppliedRecord(last) {
+		return heal, nil, true // no record: nothing to heal against, and not an error
 	}
 	heal.Recorded = true
 
