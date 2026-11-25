@@ -599,27 +599,35 @@ func TestEnvtest_HealFailedReleaseRepairedRecord(t *testing.T) {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	e.remove(t, rel+"-b")
-	// The kind is gone from discovery a little after the CRD; heal until the repair has run.
-	for i := 0; i < 50; i++ {
-		res, err := e.hc.Reconcile(ctx, rel, e.url, &helmconfig.UpgradeConfig{MaxHistory: 3,
-			ActionConfig:   &helmconfig.ActionConfig{Values: map[string]any{"postinst": "bad"}},
-			BeforeRevision: func(context.Context) error { return errNotRecorded }})
-		if errors.Is(err, errNotRecorded) && res != nil && res.FailedReleaseHeal != nil {
-			if !res.FailedReleaseHeal.Recorded {
-				t.Fatalf("the repaired record lost its mark: %+v", res.FailedReleaseHeal)
-			}
-			if e.data(t, rel+"-b") != "b" {
-				t.Errorf("b = %s, want healed", e.data(t, rel+"-b"))
-			}
-			if strings.Contains(e.raw(t, rel).Manifest, "kind: Gizmo") {
-				t.Error("control: the repair must have dropped the unserved kind")
-			}
-			return
+	// The kind leaves discovery a little after the CRD is gone; then the client's cached discovery is
+	// invalidated, as a mapping miss invalidates it in a controller.
+	for i := 0; ; i++ {
+		if _, err := e.kube.Discovery().ServerResourcesForGroupVersion("heal.test/v1"); apierrors.IsNotFound(err) {
+			break
+		}
+		if i == 100 {
+			t.Fatal("heal.test/v1 is still served")
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	t.Fatal("Reconcile never reached the heal once the kind was unserved")
+	e.hc.cachedClients.mapper.Reset()
+	e.remove(t, rel+"-b")
+
+	res, err := e.hc.Reconcile(ctx, rel, e.url, &helmconfig.UpgradeConfig{MaxHistory: 3,
+		ActionConfig:   &helmconfig.ActionConfig{Values: map[string]any{"postinst": "bad"}},
+		BeforeRevision: func(context.Context) error { return errNotRecorded }})
+	if !errors.Is(err, errNotRecorded) || res == nil || res.FailedReleaseHeal == nil {
+		t.Fatalf("heal: err=%v res=%+v", err, res)
+	}
+	if strings.Contains(e.raw(t, rel).Manifest, "kind: Gizmo") {
+		t.Fatal("control: the repair must have dropped the unserved kind")
+	}
+	if h := res.FailedReleaseHeal; !h.Recorded || h.Err != nil || h.Created != 1 {
+		t.Errorf("the repaired record must still be healed against: %+v", h)
+	}
+	if e.data(t, rel+"-b") != "b" {
+		t.Errorf("b = %s, want healed", e.data(t, rel+"-b"))
+	}
 }
 
 func ptrTo[T any](v T) *T { return &v }
