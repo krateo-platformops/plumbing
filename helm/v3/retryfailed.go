@@ -54,12 +54,17 @@ type failedRetry struct {
 	// the kinds the cluster no longer serves, which helm cannot build.
 	baseline         *release.Release
 	baselineManifest string
+	// baselineKnown: the failed revision's manifest is a record of what was applied
+	// (AppliedManifestLabel). A revision helm alone wrote stores its render, which may never have
+	// reached the cluster.
+	baselineKnown bool
 
-	mu       sync.Mutex
-	key      string // this attempt's storage key; empty until helm created its revision
-	rendered string // this attempt's render
-	recorded string // the manifest this attempt's revision stores
-	applied  bool   // the objects step ran
+	mu            sync.Mutex
+	key           string // this attempt's storage key; empty until helm created its revision
+	rendered      string // this attempt's render
+	recorded      string // the manifest this attempt's revision stores
+	recordedKnown bool   // recorded is what is applied, so the revision is marked (core-provider#640)
+	applied       bool   // the objects step ran
 }
 
 // prepareRetryFailed checks that the release can be retried as an install and installs both seams on
@@ -101,7 +106,7 @@ func (c *client) prepareRetryFailed(releaseName, namespace string, cfg *helmconf
 	r := &failedRetry{
 		releaseName: releaseName, namespace: namespace,
 		kube: inner, driver: ac.Releases.Driver, force: cfg.Force, debugLog: c.debugLog,
-		baseline: last, baselineManifest: manifest,
+		baseline: last, baselineManifest: manifest, baselineKnown: hasAppliedRecord(last),
 	}
 	if len(dropped) > 0 {
 		r.logf("retrying %s as an install: revision %d names kinds the cluster no longer serves, left out of the merge: %s",
@@ -215,7 +220,7 @@ func (r *failedRetry) apply(target kube.ResourceList) (*kube.Result, error) {
 		return nil, err
 	}
 	r.mu.Lock()
-	r.recorded = recordIntent(current, target, docs, fresh)
+	r.recorded, r.recordedKnown = recordIntent(current, target, docs, fresh), r.baselineKnown
 	err = r.persistLocked()
 	r.mu.Unlock()
 	if err != nil {
@@ -228,9 +233,9 @@ func (r *failedRetry) apply(target kube.ResourceList) (*kube.Result, error) {
 	defer r.mu.Unlock()
 	r.applied = true
 	if err == nil {
-		r.recorded = r.recordSuccess(current, target, res, docs)
+		r.recorded, r.recordedKnown = recordSuccess(r.rendered, current, target, res, docs), true
 	} else {
-		r.recorded = recordPartial(current, target, docs, fresh)
+		r.recorded, r.recordedKnown = recordPartial(current, target, docs, fresh), r.baselineKnown
 	}
 	// Best effort: helm's own record, after the wait and the post-install hooks, carries the same
 	// manifest, and the one written above already names every object.
@@ -272,15 +277,17 @@ func (r *failedRetry) renderedDocuments() (map[string]string, error) {
 
 // recordSuccess is the manifest after a merge helm reports as done: the render, plus each dropped
 // object whose deletion helm asked for and did not get (it logs those and carries on).
-func (r *failedRetry) recordSuccess(current, target kube.ResourceList, res *kube.Result, docs map[string]string) string {
+func recordSuccess(rendered string, current, target kube.ResourceList, res *kube.Result, docs map[string]string) string {
 	var deleted kube.ResourceList
 	if res != nil {
 		deleted = res.Deleted
 	}
-	out := r.rendered
+	out := rendered
 	_, notDone, unknown := pendingDeletions(current, target, deleted, getLive)
 	for _, key := range append(notDone, unknown...) {
-		out += "\n---\n" + docs[key]
+		if doc, ok := docs[key]; ok {
+			out += "\n---\n" + doc
+		}
 	}
 	return out
 }
@@ -314,6 +321,7 @@ func (r *failedRetry) persistLocked() error {
 		return err
 	}
 	rel.Manifest = r.recorded
+	markApplied(rel, r.recordedKnown)
 	return r.driver.Update(r.key, rel)
 }
 
@@ -333,6 +341,7 @@ func (r *failedRetry) finish(rel *release.Release) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	rel.Manifest = r.recorded
+	markApplied(rel, r.recordedKnown)
 	if err != nil {
 		return fmt.Errorf("removing what the failed install left: %w", err)
 	}
@@ -402,10 +411,11 @@ func (d *retryDriver) Create(key string, rel *release.Release) error {
 	}
 	stored := *rel
 	stored.Manifest = d.r.baseline.Manifest
+	markApplied(&stored, d.r.baselineKnown)
 	if err := d.Driver.Create(key, &stored); err != nil {
 		return err
 	}
-	d.r.key, d.r.rendered, d.r.recorded = key, rel.Manifest, d.r.baseline.Manifest
+	d.r.key, d.r.rendered, d.r.recorded, d.r.recordedKnown = key, rel.Manifest, d.r.baseline.Manifest, d.r.baselineKnown
 	return nil
 }
 
@@ -417,6 +427,7 @@ func (d *retryDriver) Update(key string, rel *release.Release) error {
 	}
 	stored := *rel
 	stored.Manifest = d.r.recorded
+	markApplied(&stored, d.r.recordedKnown)
 	return d.Driver.Update(key, &stored)
 }
 
