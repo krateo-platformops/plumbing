@@ -46,13 +46,8 @@ func (c *client) healFailedRelease(ac *action.Configuration, releaseName string,
 		heal.Err = fmt.Errorf("the kube client %T cannot merge", kc)
 		return heal, nil, true
 	}
-	// Two lists built from the same record: the merge refreshes the target's objects in place, and
-	// the original must stay as recorded.
-	current, err := kc.Build(strings.NewReader(manifest), false)
-	if err != nil {
-		heal.Err = fmt.Errorf("building revision %d's record: %w", last.Version, err)
-		return heal, nil, true
-	}
+	// The record is both sides of the merge, as one list: helm patches each object against its
+	// original before it refreshes it, and there is nothing to delete.
 	target, err := kc.Build(strings.NewReader(manifest), false)
 	if err != nil {
 		heal.Err = fmt.Errorf("building revision %d's record: %w", last.Version, err)
@@ -74,15 +69,12 @@ func (c *client) healFailedRelease(ac *action.Configuration, releaseName string,
 			}
 		}
 	}
-	for _, info := range current {
-		normalizeSecretStringData(info.Object)
-	}
 	for _, info := range target {
 		normalizeSecretStringData(info.Object)
 	}
 	// As Reconcile's 5a: a live Job is left alone. Its pod template is immutable and it runs once.
-	skip := classifyStoredJobs(current, target, liveObj).skip
-	current, target = withoutKeys(current, skip), withoutKeys(target, skip)
+	target = withoutKeys(target, classifyStoredJobs(target, target, liveObj).skip)
+	current := target
 
 	owned := ownedFieldMasks(current, target)
 	res, err := tw.UpdateThreeWayMerge(current, target, cfg.Force)

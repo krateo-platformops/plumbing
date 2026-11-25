@@ -12,9 +12,11 @@ import (
 	"helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/release"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apiextclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -33,8 +35,12 @@ func healChart() map[string]string {
 		"templates/imm.yaml": "{{- if .Values.imm }}\n" + cmDoc("imm", "  k: {{ .Values.k | default \"v1\" | quote }}\n") + "immutable: true\n{{- end }}\n",
 		"templates/ran.yaml": "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: {{ .Release.Name }}-ran\n  namespace: default\n" +
 			"  annotations:\n    helm.sh/hook: pre-upgrade\n    helm.sh/hook-weight: \"-5\"\n    helm.sh/hook-delete-policy: before-hook-creation\ndata:\n  k: v\n",
-		"templates/pre.yaml":      hookDoc("pre", "pre-upgrade", "pre"),
-		"templates/post.yaml":     hookDoc("post", "post-upgrade", "post"),
+		"templates/pre.yaml":  hookDoc("pre", "pre-upgrade", "pre"),
+		"templates/post.yaml": hookDoc("post", "post-upgrade", "post"),
+		"templates/tr.yaml": "{{- if .Values.trace }}\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: {{ .Release.Name }}-tr\n  namespace: default\n" +
+			"  annotations:\n    krateo.io/traceparent: 00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aaaaaaaaaaaaaaaa-01\ndata:\n  k: tr\n{{- end }}\n",
+		"templates/job.yaml": "{{- if .Values.job }}\napiVersion: batch/v1\nkind: Job\nmetadata:\n  name: {{ .Release.Name }}-job\n  namespace: default\n" +
+			"spec:\n  template:\n    spec:\n      restartPolicy: Never\n      containers:\n        - name: c\n          image: busybox:1.36\n          command: [\"sh\", \"-c\", \"echo a\"]\n{{- end }}\n",
 		"templates/preinst.yaml":  hookDoc("preinst", "pre-install", "preinst"),
 		"templates/postinst.yaml": hookDoc("postinst", "post-install", "postinst"),
 	}
@@ -271,19 +277,7 @@ func TestEnvtest_HealFailedRelease(t *testing.T) {
 	t.Run("a failed revision helm alone wrote is not healed", func(t *testing.T) {
 		rel := "hhelm"
 		e.install(t, rel, v1)
-		ac, err := e.hc.newActionConfig(context.Background(), "default", e.hc.restConfig, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ch, err := loader.LoadFiles(chartFiles(healChart()))
-		if err != nil {
-			t.Fatal(err)
-		}
-		up := action.NewUpgrade(ac)
-		up.Namespace = "default"
-		if _, err := up.Run(rel, ch, preBad); err == nil {
-			t.Fatal("control: the pre-upgrade hook must fail")
-		}
+		helmAloneUpgrade(t, e, rel, preBad)
 		if hasAppliedRecord(e.raw(t, rel)) {
 			t.Fatal("control: helm alone must not mark the revision")
 		}
@@ -376,6 +370,74 @@ func TestEnvtest_HealFailedRelease(t *testing.T) {
 		}
 	})
 
+	t.Run("a partial apply over an unknown baseline is not marked", func(t *testing.T) {
+		rel := "hunk"
+		e.install(t, rel, map[string]any{"imm": true})
+		helmAloneUpgrade(t, e, rel, map[string]any{"imm": true, "k": "v2", "pre": "bad"})
+		if err := e.upgrade(rel, map[string]any{"imm": true, "k": "v3"}); err == nil {
+			t.Fatal("control: the immutable ConfigMap's write must fail")
+		}
+		if e.data(t, rel+"-a") != "v3" {
+			t.Fatal("control: a's write must have succeeded")
+		}
+		if hasAppliedRecord(e.raw(t, rel)) {
+			t.Error("a partial apply over an unknown baseline was marked: the failed writes' documents are unknown")
+		}
+	})
+
+	t.Run("trace-context stamps a child carries are not healed", func(t *testing.T) {
+		rel := "htrace"
+		vals := map[string]any{"trace": true}
+		e.install(t, rel, vals)
+		if err := e.upgrade(rel, map[string]any{"trace": true, "k": "v2", "pre": "bad"}); err == nil {
+			t.Fatal("control: the pre-upgrade hook must fail")
+		}
+		cm := e.cm(t, rel+"-tr")
+		cm.Annotations[traceparentAnnotation] = "00-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-bbbbbbbbbbbbbbbb-01"
+		if _, err := e.kube.CoreV1().ConfigMaps("default").Update(context.Background(), cm, metav1.UpdateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		h := e.heal(t, rel, map[string]any{"trace": true, "k": "v2", "pre": "bad"}).FailedReleaseHeal
+		if h.Created+h.PatchedUpdated != 0 || e.cm(t, rel+"-tr").Annotations[traceparentAnnotation] != cm.Annotations[traceparentAnnotation] {
+			t.Errorf("heal = %+v: patched the trace stamp, so every pass of a failing release would", h)
+		}
+	})
+
+	t.Run("a live Job is left alone", func(t *testing.T) {
+		rel := "hjob"
+		vals := map[string]any{"job": true}
+		e.install(t, rel, vals)
+		if err := e.upgrade(rel, map[string]any{"job": true, "k": "v2", "pre": "bad"}); err == nil {
+			t.Fatal("control: the pre-upgrade hook must fail")
+		}
+		// Somebody re-created the Job with another pod template, which a patch can never change.
+		ctx := context.Background()
+		job, err := e.kube.BatchV1().Jobs("default").Get(ctx, rel+"-job", metav1.GetOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		bg := metav1.DeletePropagationBackground
+		if err := e.kube.BatchV1().Jobs("default").Delete(ctx, job.Name, metav1.DeleteOptions{PropagationPolicy: &bg}); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 50; i++ {
+			if _, err := e.kube.BatchV1().Jobs("default").Get(ctx, job.Name, metav1.GetOptions{}); apierrors.IsNotFound(err) {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		again := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: job.Name, Namespace: "default", Labels: job.Labels, Annotations: job.Annotations},
+			Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{RestartPolicy: corev1.RestartPolicyNever,
+				Containers: []corev1.Container{{Name: "c", Image: "busybox:1.36", Command: []string{"sh", "-c", "echo b"}}}}}}}
+		if _, err := e.kube.BatchV1().Jobs("default").Create(ctx, again, metav1.CreateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		h := e.heal(t, rel, map[string]any{"job": true, "k": "v2", "pre": "bad"}).FailedReleaseHeal
+		if h.Err != nil || h.PatchedUpdated != 0 {
+			t.Errorf("heal = %+v: a live Job must be left out of the merge", h)
+		}
+	})
+
 	t.Run("a retried first install is marked only when it knows what it applied", func(t *testing.T) {
 		rel := "hinst"
 		e.first(t, rel, e.url, map[string]any{"preinst": "bad"})
@@ -460,6 +522,25 @@ func TestEnvtest_HealFailedReleasePrunedField(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 	}
 	t.Error("spec.extra was never healed to the last applied document")
+}
+
+// helmAloneUpgrade is an upgrade by helm without plumbing (as an earlier plumbing release, or the
+// helm CLI, makes one); it must fail.
+func helmAloneUpgrade(t *testing.T, e *healEnv, rel string, vals map[string]any) {
+	t.Helper()
+	ac, err := e.hc.newActionConfig(context.Background(), "default", e.hc.restConfig, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch, err := loader.LoadFiles(chartFiles(healChart()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := action.NewUpgrade(ac)
+	up.Namespace = "default"
+	if _, err := up.Run(rel, ch, vals); err == nil {
+		t.Fatal("control: helm's own upgrade must fail")
+	}
 }
 
 // chartFiles is files as helm's loader takes them, for an upgrade run with helm alone.
