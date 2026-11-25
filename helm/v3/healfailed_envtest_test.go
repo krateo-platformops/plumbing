@@ -5,6 +5,7 @@ package helm
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -551,3 +552,74 @@ func chartFiles(files map[string]string) []*loader.BufferedFile {
 	}
 	return out
 }
+
+// A record stays one when Reconcile repairs it (step 1.5): a never-deployed release whose recorded
+// failed revision names a kind the cluster stopped serving.
+func TestEnvtest_HealFailedReleaseRepairedRecord(t *testing.T) {
+	e := &healEnv{retryEnv: newRetryEnv(t)}
+	ctx := context.Background()
+	ext, err := apiextclient.NewForConfig(e.hc.restConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	crd := &apiextensionsv1.CustomResourceDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: "gizmos.heal.test"},
+		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+			Group: "heal.test", Scope: apiextensionsv1.NamespaceScoped,
+			Names: apiextensionsv1.CustomResourceDefinitionNames{Plural: "gizmos", Singular: "gizmo", Kind: "Gizmo", ListKind: "GizmoList"},
+			Versions: []apiextensionsv1.CustomResourceDefinitionVersion{{Name: "v1", Served: true, Storage: true,
+				Schema: &apiextensionsv1.CustomResourceValidation{OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{Type: "object",
+					XPreserveUnknownFields: ptrTo(true)}}}},
+		},
+	}
+	if _, err := ext.ApiextensionsV1().CustomResourceDefinitions().Create(ctx, crd, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	waitEstablished(t, ext, crd.Name)
+
+	files := healChart()
+	// Rendered while the kind is served, so the request's values stay the same once it is not.
+	files["templates/gizmo.yaml"] = "{{- if .Capabilities.APIVersions.Has \"heal.test/v1/Gizmo\" }}\napiVersion: heal.test/v1\nkind: Gizmo\nmetadata:\n  name: {{ .Release.Name }}-g\n  namespace: default\n{{- end }}\n"
+	e.url = serveFiles(t, files)
+	rel := "hrep"
+	e.first(t, rel, e.url, map[string]any{"postinst": "bad"})
+	if _, err := e.retry(rel, e.url, map[string]any{"postinst": "bad"}); err == nil {
+		t.Fatal("control: the post-install hook must fail")
+	}
+	if !hasAppliedRecord(e.raw(t, rel)) || !strings.Contains(e.raw(t, rel).Manifest, "kind: Gizmo") {
+		t.Fatal("control: the retry ran its objects step, so it is recorded, Gizmo included")
+	}
+
+	if err := ext.ApiextensionsV1().CustomResourceDefinitions().Delete(ctx, crd.Name, metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 100; i++ {
+		if _, err := ext.ApiextensionsV1().CustomResourceDefinitions().Get(ctx, crd.Name, metav1.GetOptions{}); apierrors.IsNotFound(err) {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	e.remove(t, rel+"-b")
+	// The kind is gone from discovery a little after the CRD; heal until the repair has run.
+	for i := 0; i < 50; i++ {
+		res, err := e.hc.Reconcile(ctx, rel, e.url, &helmconfig.UpgradeConfig{MaxHistory: 3,
+			ActionConfig:   &helmconfig.ActionConfig{Values: map[string]any{"postinst": "bad"}},
+			BeforeRevision: func(context.Context) error { return errNotRecorded }})
+		if errors.Is(err, errNotRecorded) && res != nil && res.FailedReleaseHeal != nil {
+			if !res.FailedReleaseHeal.Recorded {
+				t.Fatalf("the repaired record lost its mark: %+v", res.FailedReleaseHeal)
+			}
+			if e.data(t, rel+"-b") != "b" {
+				t.Errorf("b = %s, want healed", e.data(t, rel+"-b"))
+			}
+			if strings.Contains(e.raw(t, rel).Manifest, "kind: Gizmo") {
+				t.Error("control: the repair must have dropped the unserved kind")
+			}
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatal("Reconcile never reached the heal once the kind was unserved")
+}
+
+func ptrTo[T any](v T) *T { return &v }
