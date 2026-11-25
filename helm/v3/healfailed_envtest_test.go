@@ -12,6 +12,7 @@ import (
 	"helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/release"
+	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apiextclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -32,8 +33,10 @@ func healChart() map[string]string {
 		"templates/imm.yaml": "{{- if .Values.imm }}\n" + cmDoc("imm", "  k: {{ .Values.k | default \"v1\" | quote }}\n") + "immutable: true\n{{- end }}\n",
 		"templates/ran.yaml": "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: {{ .Release.Name }}-ran\n  namespace: default\n" +
 			"  annotations:\n    helm.sh/hook: pre-upgrade\n    helm.sh/hook-weight: \"-5\"\n    helm.sh/hook-delete-policy: before-hook-creation\ndata:\n  k: v\n",
-		"templates/pre.yaml":  hookDoc("pre", "pre-upgrade", "pre"),
-		"templates/post.yaml": hookDoc("post", "post-upgrade", "post"),
+		"templates/pre.yaml":      hookDoc("pre", "pre-upgrade", "pre"),
+		"templates/post.yaml":     hookDoc("post", "post-upgrade", "post"),
+		"templates/preinst.yaml":  hookDoc("preinst", "pre-install", "preinst"),
+		"templates/postinst.yaml": hookDoc("postinst", "post-install", "postinst"),
 	}
 }
 
@@ -300,6 +303,13 @@ func TestEnvtest_HealFailedRelease(t *testing.T) {
 		if hasAppliedRecord(e.raw(t, rel)) {
 			t.Error("a guess was marked as a record")
 		}
+		// One that gets past its objects step knows what it applied.
+		if err := e.upgrade(rel, postBad); err == nil {
+			t.Fatal("control: the post-upgrade hook must fail")
+		}
+		if !hasAppliedRecord(e.raw(t, rel)) {
+			t.Error("an attempt whose objects step ran must be recorded")
+		}
 	})
 
 	t.Run("objects only a failed attempt applied are deleted when the render drops them (plumbing#232)", func(t *testing.T) {
@@ -319,6 +329,67 @@ func TestEnvtest_HealFailedRelease(t *testing.T) {
 		}
 		if last := e.raw(t, rel); last.Info.Status != release.StatusDeployed || !hasAppliedRecord(last) {
 			t.Errorf("revision %d: %s, recorded %v", last.Version, last.Info.Status, hasAppliedRecord(last))
+		}
+	})
+
+	t.Run("a dropped object that is gone, or not this release's, is left alone", func(t *testing.T) {
+		rel := "hgone"
+		e.install(t, rel, v1)
+		if err := e.upgrade(rel, map[string]any{"k": "v2", "post": "bad", "imm": true}); err == nil {
+			t.Fatal("control: the post-upgrade hook must fail")
+		}
+		// new is gone; imm now belongs to somebody else.
+		e.remove(t, rel+"-new")
+		imm := e.cm(t, rel+"-imm")
+		delete(imm.Annotations, helmReleaseNameAnnotation)
+		if _, err := e.kube.CoreV1().ConfigMaps("default").Update(context.Background(), imm, metav1.UpdateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.upgrade(rel, map[string]any{"k": "v3"}); err != nil {
+			t.Fatalf("upgrade: %v", err)
+		}
+		if e.data(t, rel+"-imm") != "v2" {
+			t.Errorf("imm = %s: deleted though it is not this release's", e.data(t, rel+"-imm"))
+		}
+	})
+
+	t.Run("a live object of this release that the record does not name is adopted", func(t *testing.T) {
+		rel := "hadopt"
+		e.install(t, rel, v1)
+		if err := e.upgrade(rel, preBad); err == nil {
+			t.Fatal("control: the pre-upgrade hook must fail")
+		}
+		// new is live and this release's, but no applied record names it.
+		if _, err := e.kube.CoreV1().ConfigMaps("default").Create(context.Background(), &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: rel + "-new", Namespace: "default",
+				Labels:      map[string]string{"app.kubernetes.io/managed-by": "Helm"},
+				Annotations: map[string]string{helmReleaseNameAnnotation: rel, helmReleaseNamespaceAnnotation: "default"}},
+			Data: map[string]string{"k": "other"},
+		}, metav1.CreateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.upgrade(rel, map[string]any{"k": "v2"}); err != nil {
+			t.Fatalf("upgrade: %v", err)
+		}
+		if e.data(t, rel+"-new") != "new" {
+			t.Errorf("new = %s, want the render", e.data(t, rel+"-new"))
+		}
+	})
+
+	t.Run("a retried first install is marked only when it knows what it applied", func(t *testing.T) {
+		rel := "hinst"
+		e.first(t, rel, e.url, map[string]any{"preinst": "bad"})
+		if _, err := e.retry(rel, e.url, map[string]any{"preinst": "bad"}); err == nil {
+			t.Fatal("control: the pre-install hook must fail")
+		}
+		if hasAppliedRecord(e.raw(t, rel)) {
+			t.Error("a retry over a plain install's render, failed in its pre-install hook, was marked")
+		}
+		if _, err := e.retry(rel, e.url, map[string]any{"postinst": "bad"}); err == nil {
+			t.Fatal("control: the post-install hook must fail")
+		}
+		if !hasAppliedRecord(e.raw(t, rel)) {
+			t.Error("a retry whose objects step ran must be marked")
 		}
 	})
 }
