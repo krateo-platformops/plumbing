@@ -229,6 +229,10 @@ type ReconcileResult struct {
 	// therefore ran the real upgrade again rather than treating that revision's manifest as
 	// converged (core-provider#403).
 	RetriedFailedRelease bool
+	// FailedReleaseHeal is set when RetriedFailedRelease is: the heal Reconcile ran before that retry
+	// (core-provider#640). The counts and names above include its writes; this says which were the
+	// heal's.
+	FailedReleaseHeal *FailedReleaseHeal
 
 	// Objects is the per-child verdict of the self-heal merge (plumbing#106), one entry per child
 	// it created, deleted, changed, kept or failed to delete, sorted by identity. It is UNCAPPED,
@@ -291,6 +295,42 @@ type ReconcileResult struct {
 	WouldDeleteObjectsOmitted int
 	WouldPatchObjects         []string
 	WouldPatchObjectsOmitted  int
+}
+
+// FailedReleaseHeal is the heal of a release whose latest revision failed, which Reconcile runs before
+// retrying its upgrade (core-provider#640).
+//
+// The retry is a plain helm upgrade (plumbing#232), so drift on the release's objects heals only once
+// its pre-upgrade hooks pass. The heal restores each object to what was really APPLIED, as the failed
+// revision records it (AppliedManifestLabel in package helm/v3): the last deployed objects when the
+// attempt failed in a pre-upgrade hook, its own objects when it failed after applying them, and each
+// object's last confirmed document after a partial apply. It is one three-way merge from that record
+// to that record: it creates objects deleted out of band and reverts edited fields, deletes nothing,
+// runs no hook, never applies the failed render, and leaves live Jobs alone (their pod template is
+// immutable).
+//
+// A failed revision helm wrote without that record (by helm alone, or by a plumbing release before
+// it) says nothing reliable about what is on the cluster: such a release is not healed, and Recorded
+// is false. It becomes healable once an attempt gets past its objects step.
+type FailedReleaseHeal struct {
+	// Revision is the failed revision whose record the heal used, or found without one.
+	Revision int
+	// Recorded is false when that revision holds no record of what was applied: nothing was healed.
+	Recorded bool
+	// Created and PatchedUpdated count the heal's confirmed writes; Objects in the ReconcileResult
+	// carries their verdicts, with the retry's.
+	Created        int
+	PatchedUpdated int
+	// ChangedObjects names the children the heal created or patched (capped, as in ReconcileResult).
+	ChangedObjects        []string
+	ChangedObjectsOmitted int
+	// ChangedPaths names the paths it patched, per child (paths only, never values).
+	ChangedPaths        map[string][]string
+	ChangedPathsOmitted map[string]int
+	// Err is why the heal did not complete: some children failed (the others were healed), or the
+	// merge could not run at all. The retry runs regardless, since its upgrade is what recovers the
+	// release; Reconcile returns this error only when the retry fails too.
+	Err error
 }
 
 // ObjectVerdict is one child's outcome in a Reconcile (plumbing#106).

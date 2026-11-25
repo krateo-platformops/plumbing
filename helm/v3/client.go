@@ -379,7 +379,21 @@ func (c *client) Upgrade(ctx context.Context, releaseName, chartRef string, cfg 
 			applyUpgradeConfig(upgradeClient, c.namespace, cfg)
 			upgradeClient.PostRenderer = withDuplicateResourceValidation(cfg.PostRenderer, ac.KubeClient)
 
+			// core-provider#640: the revision stores what this upgrade applied, not its render. A dry
+			// run writes no revision and applies nothing, so it gets no record; nor does a client that can
+			// only send dry runs (WriteNothing).
+			var record *upgradeRecord
+			if !upgradeClient.DryRun && c.dryRun == nil {
+				var perr error
+				if record, perr = c.prepareUpgradeRecord(releaseName, c.namespace, ac); perr != nil {
+					return fmt.Errorf("upgrade failed: %w", perr)
+				}
+			}
+
 			r, e := upgradeClient.RunWithContext(ctx, releaseName, chart, cfg.Values)
+			if record != nil {
+				record.finish(r)
+			}
 			if e != nil {
 				if operationInProgress(e) {
 					return fmt.Errorf("upgrade failed: %w: %w", helmconfig.ErrOperationInProgress, e)

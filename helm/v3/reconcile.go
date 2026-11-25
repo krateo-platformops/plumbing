@@ -377,33 +377,51 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 			res.Changed, res.DesiredStateHeld, res.Release = false, true, stored
 			return res, nil
 		}
+		// core-provider#640: before the retry, heal the release against what its failed revision
+		// records as applied. The retry's pre-upgrade hooks may keep failing, and until they pass helm
+		// upgrade writes none of the release's objects, so without this an object deleted or edited
+		// meanwhile would stay so. The heal never applies the render: with a changed desired state
+		// this is the first attempt at it, and its own revision is healed against on the next pass.
+		healWrites := 0
+		var healErr error
+		if change == "" {
+			heal, verdicts, complete := c.healFailedRelease(actionConfig, releaseName, stored, cfg)
+			res.FailedReleaseHeal = heal
+			res.Objects = append(res.Objects, verdicts...)
+			res.ObjectsComplete = res.ObjectsComplete && complete
+			healWrites, healErr = heal.Created+heal.PatchedUpdated, heal.Err
+			countConfirmedWrites(res)
+		}
 		// core-provider#403: helm upgrade can never apply a changed pod template to a live Job. The
 		// change is reported and NOTHING is applied, not even the other children's part of it: that
 		// would put new workloads in place without their pre-upgrade hooks ever running, the hazard
 		// this step exists to remove (Diego, 2026-11-15). It waits until the Job is renamed or deleted.
+		// What the heal restored was applied before, so it stays.
 		if len(jobs.templateChanged) > 0 {
-			res.Changed = false
+			res.Changed = healWrites > 0
 			res.Release = stored
-			return res, fmt.Errorf("reconcile: %w: %s", helmconfig.ErrJobTemplateChanged, strings.Join(jobs.templateChanged, ", "))
+			return res, errors.Join(fmt.Errorf("reconcile: %w: %s", helmconfig.ErrJobTemplateChanged, strings.Join(jobs.templateChanged, ", ")), healErr)
 		}
 		if cfg.BeforeRevision != nil {
 			if berr := cfg.BeforeRevision(ctx); berr != nil {
-				// core-provider#526: nothing written yet, and nothing will be.
-				res.Changed, res.Release = false, stored
-				return res, fmt.Errorf("reconcile: not upgrading, the operation could not be recorded: %w", berr)
+				// core-provider#526: no revision written yet, and none will be.
+				res.Changed, res.Release = healWrites > 0, stored
+				return res, errors.Join(fmt.Errorf("reconcile: not upgrading, the operation could not be recorded: %w", berr), healErr)
 			}
 		}
 		op, err := c.Upgrade(ctx, releaseName, chartRef, cfg)
 		foldOperation(res, op)
-		// The counts and names the merge path reports, from the upgrade's own write verdicts:
-		// confirmed writes only, so a child whose write failed is neither counted nor listed.
+		// The counts and names the merge path reports, from the upgrade's own write verdicts and the
+		// heal's: confirmed writes only, so a child whose write failed is neither counted nor listed.
+		res.Created, res.Deleted, res.PatchedUpdated = 0, 0, 0
 		countConfirmedWrites(res)
 		if err != nil {
-			// Some children written before the failure is a partial apply, as on the merge path.
-			res.AppliedPartially = res.Created+res.Deleted+res.PatchedUpdated > 0
+			// Some children written by the upgrade before the failure is a partial apply, as on the
+			// merge path. The heal's writes are not the upgrade's.
+			res.AppliedPartially = res.Created+res.Deleted+res.PatchedUpdated-healWrites > 0
 			if change == "" {
-				res.Changed, res.Release = res.AppliedPartially, stored
-				return res, fmt.Errorf("reconcile: retrying the upgrade of a release whose latest revision (%d) failed: %w", stored.Revision, err)
+				res.Changed, res.Release = res.Created+res.Deleted+res.PatchedUpdated > 0, stored
+				return res, errors.Join(fmt.Errorf("reconcile: retrying the upgrade of a release whose latest revision (%d) failed: %w", stored.Revision, err), healErr)
 			}
 			return res, fmt.Errorf("reconcile: upgrading to a changed desired state (%s): %w", change, err)
 		}
@@ -473,22 +491,99 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 		return nil, applyErr
 	}
 
-	// 6. Decide whether the server-PERSISTED state actually changed — not merely whether the merge
-	// bumped a resourceVersion. The old RV-delta over-counted: helm's merge patches (and bumps RV
-	// on) fields the apiserver then no-ops or re-defaults — removing a Namespace's server-owned
-	// kubernetes.io/metadata.name (auto-restored) or app.kubernetes.io/managed-by (helm-forced) —
-	// so a composition with such a child churned a helm revision every cycle at steady state
-	// (portal's demo-system Namespace, the umbrella's managed-by). Instead we compare each child's
-	// content BEFORE (liveObj, step 4) and AFTER (info.Object, refreshed by the merge above) with
-	// write-volatile + server-owned metadata stripped (see strippedJSON): identical => the merge
-	// fought a server-owned field and the apiserver reverted it — a no-op, not a real change;
-	// different => a genuine create/heal. This uses helm's OWN merge (no separate dry-run, so no
-	// patch-type mismatch) and immunizes against ANY server-owned/defaulted field. It also subsumes
-	// the per-field neutralizations (traceparent copy in 4.5, stringData fold in 4.6) — those keep
-	// the before/after identical for their children. created/deleted come from the merge result.
-	// A child counts only when helm confirmed its write (writeConfirmed): helm appends to Created
-	// before the create runs and to Updated whatever the patch's outcome, so its lists alone
-	// over-count a partial apply (plumbing#106).
+	// 6. Decide what the merge changed, child by child (judgeMerge).
+	judged := judgeMerge(res, current, target, liveObj, absent, owned, cfg)
+	changed := releaseChanged(judged.Created, judged.Deleted, judged.PatchedUpdated, judged.keptTotal, stale.total())
+
+	result := judged.ReconcileResult
+	result.Changed = changed
+	result.Release = stored
+	result.AppliedPartially = applyErr != nil
+	// Carried even when it equals Deleted, so a caller can always compare the two rather than
+	// having to infer that an absent field means "nothing was intended".
+	result.IntendedDeletions, result.IntendedDeletionsOmitted = intended.names, intended.omitted
+	result.StaleManifestVersions, result.StaleManifestVersionsOmitted = stale.names, stale.omitted
+	result.ChangedJobTemplates = jobs.templateChanged
+
+	// core-provider#403: a chart-changed template on a live Job is reported, never skipped silently.
+	// Returned before step 7, whose real upgrade would fail on the same Job. The rest of the result
+	// (what DID converge) is kept, as for a partial apply.
+	if len(jobs.templateChanged) > 0 {
+		jerr := fmt.Errorf("reconcile: %w: %s", helmconfig.ErrJobTemplateChanged, strings.Join(jobs.templateChanged, ", "))
+		if applyErr != nil {
+			jerr = errors.Join(jerr, applyErr)
+		}
+		return result, jerr
+	}
+
+	// A partial apply returns the diagnostics AND the error, and does not persist a revision.
+	//
+	// Returning here rather than falling through to step 7 is deliberate: that step runs a real
+	// Upgrade, which patches the same objects and would fail the same way — so proceeding would
+	// turn one honest partial result into a second identical failure, and could persist a revision
+	// for a release whose children are not all in the target state.
+	//
+	// The caller gets created/deleted/patched and the named ChangedObjects for the children that
+	// DID converge, which is the information that was being destroyed.
+	if applyErr != nil {
+		return result, applyErr
+	}
+
+	if !changed {
+		// Steady state: the merge only touched server-owned fields the apiserver reverted. No
+		// revision, no hooks.
+		return result, nil
+	}
+
+	// 7. A real change happened. Run ONE real Upgrade to persist a revision and run hooks with
+	// correct ordering + delete-policy. Step 5 already converged the cluster, so this is a near-no-op.
+	//
+	// core-provider#461: the caller learns here, and only here, that a revision is about to be
+	// written, so it can record the operation before helm takes the pending-upgrade lock.
+	if cfg.BeforeRevision != nil {
+		if berr := cfg.BeforeRevision(ctx); berr != nil {
+			// core-provider#526: the merge healed drift; the revision is not written unrecorded.
+			return result, fmt.Errorf("reconcile: not writing the revision, the operation could not be recorded: %w", berr)
+		}
+	}
+	op, err := c.Upgrade(ctx, releaseName, chartRef, cfg)
+	// The upgrade's own writes join the merge's, on both outcomes (plumbing#139).
+	foldOperation(result, op)
+	if err != nil {
+		return result, fmt.Errorf("reconcile: real upgrade after detected change: %w", err)
+	}
+	result.Release = op.Release
+	return result, nil
+}
+
+// mergeJudgement is what a self-heal merge changed, judged child by child: the counts, the capped
+// names and paths, the kept deletions and the uncapped verdicts of a ReconcileResult, plus the number
+// of kept deletions, which count toward a change.
+type mergeJudgement struct {
+	*helmconfig.ReconcileResult
+	keptTotal int
+}
+
+// judgeMerge is step 6 of Reconcile for one merge: from helm's result, the targets refreshed by the
+// merge, their state before it (live, absent) and the fields helm could write on each (owned).
+//
+// 6. Decide whether the server-PERSISTED state actually changed — not merely whether the merge
+// bumped a resourceVersion. The old RV-delta over-counted: helm's merge patches (and bumps RV
+// on) fields the apiserver then no-ops or re-defaults — removing a Namespace's server-owned
+// kubernetes.io/metadata.name (auto-restored) or app.kubernetes.io/managed-by (helm-forced) —
+// so a composition with such a child churned a helm revision every cycle at steady state
+// (portal's demo-system Namespace, the umbrella's managed-by). Instead we compare each child's
+// content BEFORE (liveObj, step 4) and AFTER (info.Object, refreshed by the merge above) with
+// write-volatile + server-owned metadata stripped (see strippedJSON): identical => the merge
+// fought a server-owned field and the apiserver reverted it — a no-op, not a real change;
+// different => a genuine create/heal. This uses helm's OWN merge (no separate dry-run, so no
+// patch-type mismatch) and immunizes against ANY server-owned/defaulted field. It also subsumes
+// the per-field neutralizations (traceparent copy in 4.5, stringData fold in 4.6) — those keep
+// the before/after identical for their children. created/deleted come from the merge result.
+// A child counts only when helm confirmed its write (writeConfirmed): helm appends to Created
+// before the create runs and to Updated whatever the patch's outcome, so its lists alone
+// over-count a partial apply (plumbing#106).
+func judgeMerge(res *kube.Result, current, target kube.ResourceList, liveObj map[string]runtime.Object, absent map[string]bool, owned map[string]fieldMask, cfg *helmconfig.UpgradeConfig) mergeJudgement {
 	created := 0
 	for _, info := range res.Created {
 		if writeConfirmed(info) {
@@ -553,29 +648,16 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 	keptKeys, notDoneKeys, unknownKeys := pendingDeletions(current, target, res.Deleted, getLive)
 	kept := cappedSet(keptKeys, maxChangedObjects)
 
-	changed := releaseChanged(created, deleted, patched, kept.total(), stale.total())
-
 	result := &helmconfig.ReconcileResult{
-		Changed:               changed,
 		Created:               created,
 		Deleted:               deleted,
 		PatchedUpdated:        patched,
-		Release:               stored,
 		ChangedObjects:        changedObjects.names,
 		ChangedPaths:          changedPathsByChild,
 		ChangedPathsOmitted:   changedPathsOmitted,
 		ChangedObjectsOmitted: changedObjects.omitted,
-		AppliedPartially:      applyErr != nil,
-
-		// Carried even when it equals Deleted, so a caller can always compare the two rather than
-		// having to infer that an absent field means "nothing was intended".
-		IntendedDeletions:            intended.names,
-		IntendedDeletionsOmitted:     intended.omitted,
-		KeptDeletions:                kept.names,
-		KeptDeletionsOmitted:         kept.omitted,
-		StaleManifestVersions:        stale.names,
-		StaleManifestVersionsOmitted: stale.omitted,
-		ChangedJobTemplates:          jobs.templateChanged,
+		KeptDeletions:         kept.names,
+		KeptDeletionsOmitted:  kept.omitted,
 	}
 	// Uncapped, one entry per child the merge changed (plumbing#106). Built from the same
 	// before/after objects and the same deletion reads as the counts above.
@@ -584,56 +666,7 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 		live: liveObj, absent: absent, owned: owned, kept: keptKeys, notDone: notDoneKeys, unknown: unknownKeys,
 		force: cfg.Force, contentKeys: contentKeysOf(cfg),
 	})
-
-	// core-provider#403: a chart-changed template on a live Job is reported, never skipped silently.
-	// Returned before step 7, whose real upgrade would fail on the same Job. The rest of the result
-	// (what DID converge) is kept, as for a partial apply.
-	if len(jobs.templateChanged) > 0 {
-		jerr := fmt.Errorf("reconcile: %w: %s", helmconfig.ErrJobTemplateChanged, strings.Join(jobs.templateChanged, ", "))
-		if applyErr != nil {
-			jerr = errors.Join(jerr, applyErr)
-		}
-		return result, jerr
-	}
-
-	// A partial apply returns the diagnostics AND the error, and does not persist a revision.
-	//
-	// Returning here rather than falling through to step 7 is deliberate: that step runs a real
-	// Upgrade, which patches the same objects and would fail the same way — so proceeding would
-	// turn one honest partial result into a second identical failure, and could persist a revision
-	// for a release whose children are not all in the target state.
-	//
-	// The caller gets created/deleted/patched and the named ChangedObjects for the children that
-	// DID converge, which is the information that was being destroyed.
-	if applyErr != nil {
-		return result, applyErr
-	}
-
-	if !changed {
-		// Steady state: the merge only touched server-owned fields the apiserver reverted. No
-		// revision, no hooks.
-		return result, nil
-	}
-
-	// 7. A real change happened. Run ONE real Upgrade to persist a revision and run hooks with
-	// correct ordering + delete-policy. Step 5 already converged the cluster, so this is a near-no-op.
-	//
-	// core-provider#461: the caller learns here, and only here, that a revision is about to be
-	// written, so it can record the operation before helm takes the pending-upgrade lock.
-	if cfg.BeforeRevision != nil {
-		if berr := cfg.BeforeRevision(ctx); berr != nil {
-			// core-provider#526: the merge healed drift; the revision is not written unrecorded.
-			return result, fmt.Errorf("reconcile: not writing the revision, the operation could not be recorded: %w", berr)
-		}
-	}
-	op, err := c.Upgrade(ctx, releaseName, chartRef, cfg)
-	// The upgrade's own writes join the merge's, on both outcomes (plumbing#139).
-	foldOperation(result, op)
-	if err != nil {
-		return result, fmt.Errorf("reconcile: real upgrade after detected change: %w", err)
-	}
-	result.Release = op.Release
-	return result, nil
+	return mergeJudgement{ReconcileResult: result, keptTotal: kept.total()}
 }
 
 // childWouldChange reports whether applying the rendered target to this live child would actually
@@ -969,7 +1002,13 @@ func (c *client) dropUnservedFromStoredManifest(ctx context.Context, cfg *helmco
 	if !persist {
 		return repaired, dropped, nil // WriteNothing: the caller reports the repair it cannot make
 	}
+	// A record of what was applied stays one without the kinds nobody serves (core-provider#640):
+	// their objects cannot exist.
+	recorded := hasAppliedRecord(rel)
 	rel.Manifest = repaired
+	if recorded {
+		markApplied(rel, true)
+	}
 	if err := actionConfig.Releases.Update(rel); err != nil {
 		return manifest, dropped, fmt.Errorf("persist repaired release: %w", err)
 	}
