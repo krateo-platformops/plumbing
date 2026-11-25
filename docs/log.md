@@ -9,6 +9,24 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-25 — `helm`: a failed release is healed against what was applied** (core-provider#640,
+  the follow-up Diego accepted with plumbing#232). Since #232 the retry of a failed release is a plain
+  helm upgrade, so drift on its objects stayed until its pre-upgrade hooks passed. Now:
+  - Every `Upgrade` stores what it **applied**, not its render, as `RetryFailed` does for first
+    installs: the last applied objects when it fails in a pre-upgrade hook, the render after a
+    successful objects step, each object's last confirmed document after a partial one. Such a
+    revision carries the label `plumbing.krateo.io/applied-manifest` (on the release Secret), a digest
+    of the release name, the revision and the manifest, so a label helm copies forward or one on a
+    rewritten manifest marks nothing. A `helm get manifest` of a failed revision shows that record.
+  - An upgrade whose latest revision is failed and recorded merges from that record, so an object only
+    a failed attempt applied is deleted when the render drops it (#232's second half).
+  - `Reconcile`, retrying a failed release with an unchanged desired state, first heals it against
+    the record (`ReconcileResult.FailedReleaseHeal`): one merge from the record to the record, no hook,
+    nothing of the render, live Jobs left alone, nothing deleted. Then the retry, as before.
+  - A failed revision with no record (written by helm alone, or before this release) is not healed:
+    `FailedReleaseHeal.Recorded` is false. One that keeps failing in its pre-upgrade hook can't gain a
+    record either, since its baseline is unknown; it becomes healable once an attempt gets past its
+    objects step.
 - **2026-11-24 — `jwtutil`: a recipient can refuse a token meant for someone else** (Diego's
   decision): `WithAudience` and `WithRequiredAudience`, with `ErrAudienceMismatch`, the one error
   returned with the token's identity, so a refusal can be recorded. Opt-in: without an option "aud"
