@@ -153,15 +153,19 @@ func TestReconcileReportsImmutableJobAndFailedRevision(t *testing.T) {
 			rev, st := p.latest()
 			require.Equal(t, helmconfig.StatusFailed, st, "setup: latest revision %d must be failed", rev)
 
-			// Stored (failed rev 2) and target agree on the Job, so only the failed-revision rule can
-			// keep this from reading as converged.
+			// The failed revision records what was applied (core-provider#640): the Job's write failed, so
+			// it records the Job at v1, and the render's v2 is a chart change to a live Job's template
+			// (#403), reported as such, with nothing applied and no revision written. Before the record,
+			// the failed revision stored its render, which agreed with the target, and only the
+			// failed-revision rule kept this from reading as converged.
 			res, err := p.reconcile(ctx, vals)
 			p.log("failed-r1", res, err)
 			require.Error(t, err, "a failed latest revision must not read as converged")
 			require.NotNil(t, res)
 			assert.True(t, res.RetriedFailedRelease)
-			assert.Contains(t, err.Error(), "whose latest revision")
-			assert.False(t, errors.Is(err, helmconfig.ErrJobTemplateChanged), "stored and target agree on the Job; err = %v", err)
+			assert.True(t, errors.Is(err, helmconfig.ErrJobTemplateChanged), "the record has the Job at v1; err = %v", err)
+			assert.Equal(t, []string{p.ns + "/probe-plain-job"}, res.ChangedJobTemplates)
+			assert.Equal(t, 2, helmRevisionCount(t, p.cs, p.ns, p.release), "no revision for a release that cannot be applied")
 
 			// Recovery: once the Job is gone, the retried upgrade succeeds.
 			bg := metav1.DeletePropagationBackground

@@ -227,9 +227,15 @@ func TestEnvtest_HealFailedRelease(t *testing.T) {
 		}
 	})
 
-	t.Run("four failed retries in a row, history 3: the record is still the latest revision's", func(t *testing.T) {
+	t.Run("four failed retries in a row, history 3: the record outlives the revision that made it", func(t *testing.T) {
 		rel := "hhist"
 		e.install(t, rel, v1)
+		// The record is made here: the objects step ran, so it is the render (a=v2 and new).
+		if err := e.upgrade(rel, postBad); err == nil {
+			t.Fatal("control: the post-upgrade hook must fail")
+		}
+		made := e.raw(t, rel).Version
+		// Then a pre-upgrade hook fails five times; each revision carries the record forward.
 		if err := e.upgrade(rel, preBad); err == nil {
 			t.Fatal("control: the pre-upgrade hook must fail")
 		}
@@ -243,20 +249,19 @@ func TestEnvtest_HealFailedRelease(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		deployed := 0
 		for _, r := range history {
-			if r.Status == helmconfig.StatusDeployed {
-				deployed++
+			if r.Revision == made {
+				t.Fatalf("control: revision %d, which made the record, must have aged out (%d revisions)", made, len(history))
 			}
 		}
-		if len(history) > 3 || deployed != 0 {
-			t.Fatalf("control: the deployed revision must have aged out: %d revisions, %d deployed", len(history), deployed)
-		}
 		e.edit(t, rel+"-a", "drift")
-		e.remove(t, rel+"-b")
+		e.remove(t, rel+"-new")
 		h := e.heal(t, rel, preBad).FailedReleaseHeal
-		if !h.Recorded || h.Created != 1 || h.PatchedUpdated != 1 || e.data(t, rel+"-a") != "v1" || e.data(t, rel+"-b") != "b" {
-			t.Errorf("heal = %+v a=%s b=%s", h, e.data(t, rel+"-a"), e.data(t, rel+"-b"))
+		if !h.Recorded || h.Revision != e.raw(t, rel).Version || h.Created != 1 || h.PatchedUpdated != 1 {
+			t.Errorf("heal = %+v", h)
+		}
+		if e.data(t, rel+"-a") != "v2" || e.data(t, rel+"-new") != "new" {
+			t.Errorf("a=%s new=%s, want v2 and new (the record of revision %d)", e.data(t, rel+"-a"), e.data(t, rel+"-new"), made)
 		}
 	})
 
