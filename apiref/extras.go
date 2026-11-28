@@ -9,9 +9,12 @@ const (
 	ExtraCompositionID        = "compositionId"
 )
 
-// CompositionExtras returns the extras sent to snowplow for one composition: a COPY of static, with
-// the composition's name, namespace and UID set over it (per-instance context wins over static
-// extras). static is never mutated and may be nil.
+// CompositionExtras returns the extras sent to snowplow for one composition: a SHALLOW copy of
+// static, with the composition's name, namespace and UID set over it (per-instance context wins over
+// static extras). static itself is never written to and may be nil. Only the top-level keys are
+// copied: nested values (maps or slices decoded from JSON) are shared with static, so callers must
+// not mutate the result's nested values. This is the behaviour of the composition controller's
+// original mergedExtras, which this function moved verbatim.
 //
 // static is the CompositionDefinition's apiRef.extras, which core-provider hands to the composition
 // controller as the environment variable COMPOSITION_CONTROLLER_API_REF_EXTRAS (read by
