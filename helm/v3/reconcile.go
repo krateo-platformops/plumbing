@@ -72,6 +72,14 @@ var volatileTraceAnnotations = []string{traceparentAnnotation, tracestateAnnotat
 //     This CREATES resources deleted out-of-band and PATCHES drifted ones,
 //     converging the cluster. The merge refreshes every target Info's Object in
 //     place to its POST-merge server state (patch branch: Refresh; no-op: Get).
+//     An object that exists live, is in both current and target, was not adopted
+//     in 4.7 and whose own three-way patch (helm's, computed from step 4's live
+//     object on the target as the merge receives it) is empty is NOT handed to
+//     the merge, which would read it three more times to send nothing
+//     (core-provider#697). Its Info keeps the live object, so step 6 reads it as
+//     unchanged, as it reads helm's no-op. Creations, adoptions, drifted objects
+//     and every deletion still go through the merge, which is not called at all
+//     when none of them exists. Under Force nothing is left out.
 //  6. changed := any Created || any Deleted || any surviving target whose content
 //     actually changed. We compare each child's BEFORE (step 4 live) and AFTER
 //     (step 5 refreshed) state with write-volatile and server-owned fields
@@ -276,6 +284,7 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 	// as the missing `current` entry, and helm three-way-merges (patches) it instead of erroring.
 	// Guarded on live-present AND genuinely-absent-from-current, so it can only convert an
 	// otherwise-certain "no <kind> found" into a normal patch — never alters a converging case.
+	adopted := map[string]bool{}
 	for _, tinfo := range target {
 		if absent[infoKey(tinfo)] {
 			continue // live absent -> helm's createResource path handles it
@@ -294,9 +303,10 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 		// PRESERVES every live-only field (ownership labels, controller-written fields). That is
 		// exactly adopt semantics — "helm last applied this target" — and it heals genuine drift
 		// in target-declared fields all the same.
-		adopted := *tinfo
-		adopted.Object = tinfo.Object.DeepCopyObject()
-		current = append(current, &adopted)
+		entry := *tinfo
+		entry.Object = tinfo.Object.DeepCopyObject()
+		current = append(current, &entry)
+		adopted[infoKey(tinfo)] = true
 	}
 
 	// 4.8. plumbing#155: children the stored manifest records at another apiVersion than the render
@@ -458,10 +468,33 @@ func (c *client) Reconcile(ctx context.Context, releaseName, chartRef string, cf
 
 	tw, ok := kc.(kube.InterfaceThreeWayMerge)
 	var res *kube.Result
-	if ok {
-		res, err = tw.UpdateThreeWayMerge(current, target, cfg.Force)
-	} else {
-		res, err = kc.Update(current, target, cfg.Force)
+	// 5d. core-provider#697: an object that exists live, is in both lists and whose own three-way
+	// patch is empty is left out of the merge, which would read it three more times to send nothing.
+	// Computed here, on the target exactly as the merge receives it (after 4.5 to 4.7), from step 4's
+	// live object. Only the three-way merge is helm's patch for every kind; Force replaces whatever
+	// the patch says; so neither leaves anything out.
+	var undrifted kube.ResourceList
+	if ok && !cfg.Force {
+		undrifted = undriftedTargets(current, target, liveObj, absent, adopted)
+	}
+	// What is left is every creation, adoption and drifted object, plus every deletion: helm deletes
+	// what is in the original and not in the target, so an object leaves BOTH lists or neither.
+	mergeCurrent, mergeTarget := withoutMatching(current, undrifted), withoutKeys(target, infoKeys(undrifted))
+	for _, info := range undrifted {
+		// What helm's own update leaves in an object whose patch is empty: its live state. The
+		// judgement below then reads it as unchanged, as it reads helm's.
+		info.Object = liveObj[infoKey(info)]
+	}
+	if len(undrifted) > 0 && c.debugLog != nil {
+		c.debugLog("reconcile: %d of %d object(s) have an empty three-way patch and are not handed to the merge", len(undrifted), len(target))
+	}
+	switch {
+	case len(mergeTarget) == 0 && len(mergeCurrent) == 0:
+		res = &kube.Result{} // nothing to create, patch or delete
+	case ok:
+		res, err = tw.UpdateThreeWayMerge(mergeCurrent, mergeTarget, cfg.Force)
+	default:
+		res, err = kc.Update(mergeCurrent, mergeTarget, cfg.Force)
 	}
 
 	// 5b. A PARTIAL apply keeps its result (#276).
@@ -1523,4 +1556,13 @@ func foldOperation(r *helmconfig.ReconcileResult, op *helmconfig.OperationResult
 	r.ObjectsComplete = r.ObjectsComplete && op.ObjectsComplete
 	r.ObjectsNotAttempted += op.ObjectsNotAttempted
 	r.HooksExcluded += op.HooksExcluded
+}
+
+// infoKeys is the infoKey of each of list.
+func infoKeys(list kube.ResourceList) []string {
+	out := make([]string, 0, len(list))
+	for _, info := range list {
+		out = append(out, infoKey(info))
+	}
+	return out
 }
