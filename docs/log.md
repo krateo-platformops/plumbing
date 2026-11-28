@@ -9,6 +9,19 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-28 — `helm`: Reconcile hands helm's three-way update only the objects whose own patch is
+  non-empty** (core-provider#697, step (b)): at steady state Reconcile read each child four times per
+  pass (step 4's read, then three inside helm's `UpdateThreeWayMerge`, which reads every object it is
+  given whether or not anything drifted) and wrote nothing. Now step 5 computes helm's own three-way
+  patch (`CreateThreeWayJSONMergePatch` for CRs and unstructured, strategic merge for built-in kinds,
+  the pieces helm's unexported `createPatch` is made of) from step 4's live object, on the target as
+  the merge receives it (after the trace-stamp copy, the `stringData` fold and the adoption), and
+  leaves out of the merge exactly the objects that exist live, are in both lists, were not adopted
+  and whose patch is empty. Creations, adoptions, drifted objects and every deletion still go through
+  the merge, which is not called when none exists; an object leaves both lists or neither, so a left-out
+  object is never read as deleted. A left-out object counts as unchanged, as before. Measured on
+  envtest (Deployment, ConfigMap, CR, ConfigMap): 16 reads of the four objects per steady pass, now 4,
+  and no write. `ReconcileResult` is unchanged and no field is added. Not applied under `Force`.
 - **2026-11-28 — `apiref`: one builder for a composition's apiRef extras** (#241, v1.112.0,
   core-provider#691): new package `apiref` with `CompositionExtras` and the key constants
   `ExtraCompositionName`, `ExtraCompositionNamespace`, `ExtraCompositionID`. It exists so the extras the
