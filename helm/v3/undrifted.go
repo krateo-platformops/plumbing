@@ -101,25 +101,14 @@ func undriftedTargets(current, target kube.ResourceList, live map[string]runtime
 	return out
 }
 
-// withoutMatching returns list without the entries helm matches (group, kind, name and namespace,
+// withoutMatching returns list without every entry helm matches (group, kind, name and namespace,
 // whatever the version) to one of drop. Matching by helm's own rule rather than by infoKey: a stored
 // entry at an older apiVersion has another key than its target, and leaving it in current while its
-// target left the merge would read to helm as a deletion.
+// target left the merge would read to helm as a deletion. EVERY match goes, not the first: a list
+// that names one object twice would otherwise keep the second, and helm would delete it.
 func withoutMatching(list, drop kube.ResourceList) kube.ResourceList {
 	if len(drop) == 0 {
 		return list
 	}
-	dropped := make(map[*resource.Info]bool, len(drop))
-	for _, d := range drop {
-		if m := list.Get(d); m != nil {
-			dropped[m] = true
-		}
-	}
-	out := make(kube.ResourceList, 0, len(list))
-	for _, info := range list {
-		if !dropped[info] {
-			out = append(out, info)
-		}
-	}
-	return out
+	return list.Filter(func(info *resource.Info) bool { return !drop.Contains(info) })
 }
