@@ -9,6 +9,12 @@ timestamp: 2026-08-07T00:00:00Z
 
 # History (curated, newest first)
 
+- **2026-11-28 — `apiref`: one builder for a composition's apiRef extras** (#241, v1.112.0,
+  core-provider#691): new package `apiref` with `CompositionExtras` and the key constants
+  `ExtraCompositionName`, `ExtraCompositionNamespace`, `ExtraCompositionID`. It exists so the extras the
+  composition-dynamic-controller's snowplow `/call` sends and the extras core-provider's snowplow
+  `GET /rbac` sends are built by one function and stay equal. Consumers: composition-dynamic-controller
+  and core-provider.
 - **2026-11-25 — `helm`: a superseded failed revision is reported as such** (found by core-provider
   testing v1.110.0): when another writer adds a revision between Reconcile's read of the release and
   the heal's, `FailedReleaseHeal.Err` now says so; it read as `Recorded` false with no error, the same
